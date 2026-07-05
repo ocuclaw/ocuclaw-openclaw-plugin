@@ -4,7 +4,7 @@ OcuClaw is an OpenClaw plugin for Even G2 smart glasses. Use the OcuClaw applica
 
 ## Requirements
 
-OpenClaw `>= 2026.5.20` (older versions have a known plugin-install bug). Upgrade with `npm install -g openclaw@latest`.
+OpenClaw `>= 2026.6.9` (older versions have a known plugin-install bug). Upgrade with `npm install -g openclaw@latest`.
 
 ## Install
 

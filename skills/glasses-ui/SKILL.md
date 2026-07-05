@@ -150,7 +150,7 @@ When the listen ends without a tap you get a **non-terminal** `{ result: "window
 
 - Taps now **park** (the user sees their tap acknowledged; nothing is lost). Re-render the same surface (`update: "patch"`) to collect parked taps in this run — chain a couple of these listens if you are actively waiting, then stop.
 - Or simply **end your turn** — parked taps **wake you** (one agent turn per real parked gesture, delivered as a refs-only plugin notification; re-render to collect) or ride your next turn. Ending your turn with a surface parked is a normal, cheap state, not an abandonment.
-- **Silence-as-consent**: the window doubles as a default-action deadline. Put the deadline in the body copy ("Merging in 5 min unless you stop me"), give it a matching `timeoutMs`, and treat `window_expired` as consent.
+- **No default approval on expiry**: `window_expired` is absence of input, never affirmative consent. For consequential, state-changing, destructive, or security-sensitive actions, expiry means cancel/no-op or re-render to ask for explicit tap, voice, or chat approval.
 
 Parked deliveries arrive annotated: `surfaceUuid`, `eventId`, `origin`, `actor`, `queuedAtMs`, `parkedForMs`. For taps that **actuate** something (sell/approve/unlock), declare `staleAfterMs` per render — a tap parked longer arrives with `stale: true`: treat it as a re-confirm prompt, **never** execute it as-is.
 
