@@ -2,6 +2,16 @@
 
 OcuClaw is an OpenClaw plugin for Even G2 smart glasses. Use the OcuClaw application within Even Hub App Store to connect the client side.
 
+## Guided setup (recommended)
+
+Let your OpenClaw agent drive the whole setup — install the OcuClaw assistant skill, then ask the agent to "set up OcuClaw":
+
+```bash
+openclaw skills install @ocuclaw/ocuclaw-assist
+```
+
+The sections below are the manual reference for the plugin half.
+
 ## Requirements
 
 OpenClaw `>= 2026.6.9` (older versions have a known plugin-install bug). Upgrade with `npm install -g openclaw@latest`.
@@ -81,6 +91,9 @@ openclaw config set plugins.entries.ocuclaw.config.renderGlassesUiTimeoutMs 1800
 openclaw config set plugins.entries.ocuclaw.config.freshnessWindowMs 5000 --strict-json
 # Debug tooling (only relevant when externalDebugToolsEnabled is true):
 openclaw config set plugins.entries.ocuclaw.config.externalDebugToolsEnabled true --strict-json
+# Debug bundle upload gate. Uploads require BOTH externalDebugToolsEnabled AND
+# allowDebugUpload to be true — otherwise uploads fail with upload_not_allowed.
+openclaw config set plugins.entries.ocuclaw.config.allowDebugUpload true --strict-json
 # Per-channel filters that suppress or sample noisy debug events.
 openclaw config set plugins.entries.ocuclaw.config.debugNoisyPolicies '{}' --strict-json
 ```
@@ -100,6 +113,8 @@ Restart the gateway so the plugin and config changes take effect:
 ```bash
 openclaw gateway restart
 ```
+
+> **Note:** On container/foreground gateways (no installed service) `gateway restart` reports "no installed service"; config hot-reloads instead — verify with `openclaw plugins inspect ocuclaw --runtime`.
 
 ## Verify
 
