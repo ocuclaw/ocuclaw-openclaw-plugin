@@ -98,6 +98,9 @@ export async function handleDebugBundleRequest(deps, clientId, msg) {
     });
   } catch (err) {
 
+    if (deps.logError) {
+      deps.logError(`bundle assembly failed: ${err && err.message ? err.message : err}`);
+    }
     deps.emit("upload_failed", { requestId: msg.requestId, reason: "assembly_failed" });
     deps.send(clientId, { type: "debug-bundle-error", requestId: msg.requestId, reason: "assembly_failed" });
     return;
@@ -132,7 +135,11 @@ export async function handleDebugBundleSave(deps, clientId, msg) {
     const { savedPath, fileSize } = deps.saveBundle({ bundleId: msg.bundleId, savedMs: deps.now(), zip: entry.zip, metadataJson: sidecarMetadataJson });
     deps.emit("bundle_written", { requestId: msg.requestId, bundleId: msg.bundleId, fileSize });
     deps.send(clientId, { type: "debug-bundle-saved", requestId: msg.requestId, bundleId: msg.bundleId, savedPath, fileSize });
-  } catch {
+  } catch (err) {
+
+    if (deps.logError) {
+      deps.logError(`bundle save failed: ${err && err.message ? err.message : err}`);
+    }
     deps.emit("save_failed", { requestId: msg.requestId, reason: "save_failed" });
     deps.send(clientId, { type: "debug-bundle-error", requestId: msg.requestId, reason: "save_failed" });
   }

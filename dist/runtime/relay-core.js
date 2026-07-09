@@ -2200,6 +2200,7 @@ function createRelay(opts) {
 
         emit: (event, data) =>
           emitDebug("relay.operation", event, "debug", {}, () => data),
+        logError: (m) => logger.error(`[relay] ${m}`),
         newBundleId: () => crypto.randomUUID(),
         cachePut: (id, e) => bundleCache.put(id, e),
         now: () => Date.now(),
@@ -2220,6 +2221,7 @@ function createRelay(opts) {
         now: () => Date.now(),
         send: (id, frame) => { if (server) server.unicast(id, JSON.stringify(frame)); },
         emit: (event, data) => emitDebug("relay.operation", event, "debug", {}, () => data),
+        logError: (m) => logger.error(`[relay] ${m}`),
       }, clientId, msg)).catch((err) => {
         logger.error(`[relay] debug-bundle-save failed: ${err && err.message ? err.message : err}`);
       });

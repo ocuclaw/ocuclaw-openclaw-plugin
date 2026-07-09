@@ -7,7 +7,7 @@ export function zipFiles(files) {
     entries[name] = typeof content === "string" ? strToU8(content) : content;
   }
 
-  return zipSync(entries, { mtime: new Date("1980-01-01") });
+  return zipSync(entries, { mtime: new Date(1980, 0, 1) });
 }
 
 export function sha256Hex(bytes) {

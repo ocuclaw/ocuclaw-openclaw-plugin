@@ -1,3 +1,3 @@
-export const PLUGIN_VERSION = "1.3.6";
+export const PLUGIN_VERSION = "1.3.7";
 export const REQUIRES_CLIENT_VERSION = "1.3.4";
-export const BUILD_INPUT_HASH = "sha256:5cbbe842349c476d86a3cbe0038699f74d44dbcc0589cba8a60944570d159238";
+export const BUILD_INPUT_HASH = "sha256:081bfeeda4f8de56e811f120f34303cbfd80d17123c101732aa7213e50d6484c";
