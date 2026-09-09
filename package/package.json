@@ -1,0 +1,62 @@
+{
+  "name": "ocuclaw",
+  "version": "2.0.4",
+  "requiresClientVersion": "2.0.2",
+  "description": "OcuClaw for Even Realities G2 smart glasses.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "files": [
+    "README.md",
+    "dist/",
+    "openclaw.plugin.json",
+    "skills/"
+  ],
+  "keywords": [
+    "even",
+    "evenrealities",
+    "even-g2",
+    "glasses",
+    "openclaw",
+    "plugin",
+    "ocuclaw"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:ocuclaw",
+      "npmSpec": "ocuclaw",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.6.9"
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.9 <2027.0.0"
+    },
+    "build": {
+      "openclawVersion": "2026.6.9",
+      "pluginSdkVersion": "2026.6.9",
+      "bundledDist": true
+    }
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "marked": "^18.0.7",
+    "undici": "^6.28.0",
+    "ws": "^8.21.1"
+  },
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "generate:template-registry": "node ./scripts/generate-template-registry.mjs",
+    "check:template-registry": "node ./scripts/generate-template-registry.mjs --check",
+    "sync:assist": "node ./scripts/sync-assist-skill.mjs",
+    "prepare": "node ./scripts/build.mjs",
+    "test:unit": "node --import ./scripts/test-loader.mjs --test \"src/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

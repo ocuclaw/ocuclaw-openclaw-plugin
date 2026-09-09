@@ -1,0 +1,105 @@
+name: ClawHub package publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to ClawHub (leave false for a non-publishing dry run)
+        required: true
+        type: boolean
+        default: false
+      tag:
+        description: ClawHub dist-tag (beta is opt-in; stable uses latest)
+        required: true
+        type: choice
+        options:
+          - latest
+          - beta
+        default: latest
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_filename: ${{ steps.verify.outputs.artifact_filename }}
+    steps:
+      - name: Check out the provenance commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify exact artifact against source path
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import tarfile
+          import tempfile
+          from pathlib import Path
+
+          root = Path.cwd()
+          artifacts = sorted((root / "artifact").glob("ocuclaw-*.tgz"))
+          if len(artifacts) != 1:
+              raise SystemExit(f"expected exactly one artifact/ocuclaw-*.tgz; found {len(artifacts)}")
+          artifact = artifacts[0]
+          with tempfile.TemporaryDirectory(prefix="ocuclaw-mirror-verify-") as raw_temp:
+              temp = Path(raw_temp)
+              with tarfile.open(artifact, "r:gz") as archive:
+                  for member in archive.getmembers():
+                      member_path = Path(member.name)
+                      if member_path.is_absolute() or ".." in member_path.parts:
+                          raise SystemExit(f"unsafe archive member: {member.name}")
+                      if not member_path.parts or member_path.parts[0] != "package":
+                          raise SystemExit(f"archive member is outside package/: {member.name}")
+                      if member.issym() or member.islnk():
+                          raise SystemExit(f"links are not allowed in the exact artifact: {member.name}")
+                  archive.extractall(temp, filter="data")
+              packed = temp / "package"
+              source = root / "package"
+              def file_map(directory):
+                  return {
+                      path.relative_to(directory).as_posix(): path.read_bytes()
+                      for path in directory.rglob("*")
+                      if path.is_file()
+                  }
+              if file_map(source) != file_map(packed):
+                  raise SystemExit("package/ does not byte-match the exact staged artifact")
+              manifest = json.loads((packed / "package.json").read_text(encoding="utf-8"))
+              expected = f"ocuclaw-{manifest['version']}.tgz"
+              if artifact.name != expected:
+                  raise SystemExit(f"artifact filename {artifact.name!r} does not match {expected!r}")
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as stream:
+              stream.write(f"artifact_filename={artifact.name}\n")
+          PY
+
+      - name: Upload the already-proven artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ocuclaw-exact-artifact
+          path: artifact/${{ steps.verify.outputs.artifact_filename }}
+          if-no-files-found: error
+          retention-days: 7
+
+  clawhub:
+    needs: prepare
+    if: github.ref == 'refs/heads/main' || ! inputs.publish
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@a230d962db64019462c2c8ee400755eb92169908 # v0.23.1
+    with:
+      dry_run: ${{ ! inputs.publish }}
+      owner: ocuclaw
+      tags: ${{ inputs.tag }}
+      package_artifact_name: ocuclaw-exact-artifact
+      package_artifact_path: ${{ needs.prepare.outputs.artifact_filename }}
+      source_repo: ocuclaw/ocuclaw-openclaw-plugin
+      source_commit: ${{ github.sha }}
+      source_ref: ${{ github.ref }}
+      source_path: package

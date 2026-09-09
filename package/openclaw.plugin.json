@@ -1,0 +1,481 @@
+{
+  "id": "ocuclaw",
+  "activation": {
+    "onStartup": true,
+    "onCommands": ["ocuclaw"]
+  },
+  "commandAliases": [
+    {
+      "name": "ocuclaw",
+      "cliCommand": "ocuclaw"
+    }
+  ],
+  "name": "OcuClaw",
+  "description": "OcuClaw for Even Realities G2 smart glasses.",
+  "contracts": {
+    "tools": [
+      "render_glasses_ui",
+      "manage_liveui_templates",
+      "manage_liveui_tasks",
+      "get_glasses_ui_state",
+      "set_session_title",
+      "get_evenrealities_device_info",
+      "get_current_location",
+      "ocuclaw_setup"
+    ]
+  },
+  "toolMetadata": {
+    "render_glasses_ui": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "manage_liveui_templates": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "manage_liveui_tasks": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "get_glasses_ui_state": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "set_session_title": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "get_evenrealities_device_info": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "get_current_location": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    }
+  },
+  "skills": [
+    "skills/glasses-ui",
+    "skills/ocuclaw-assist"
+  ],
+  "hooks": {
+    "allowConversationAccess": true
+  },
+  "uiHints": {
+    "relayToken": {
+      "label": "Relay token",
+      "help": "Shared secret. Must match the relay server token set in the OcuClaw app inside Even Hub. An owner host grant is authorized by possession of this token; shared or hosted installs should set glassesUiLive.httpHostPolicy to operator-only.",
+      "placeholder": "user-defined password",
+      "sensitive": true
+    },
+    "glassesUiLive.httpHostPolicy": {
+      "label": "LiveUI HTTP host policy",
+      "help": "owner-grants lets the paired phone owner approve exact hosts. Use operator-only on shared or hosted installs.",
+      "advanced": true
+    },
+    "sonioxApiKey": {
+      "label": "Soniox API key",
+      "help": "Optional. Enables Soniox speech-to-text for voice input.",
+      "sensitive": true
+    },
+    "cartesiaApiKey": {
+      "label": "Cartesia API key",
+      "help": "Optional. Enables Cartesia Ink-2 speech-to-text for voice input.",
+      "sensitive": true
+    },
+    "evenAiEnabled": {
+      "label": "Enable Even AI",
+      "help": "Routes Even AI agent requests through OcuClaw. Requires evenAiToken when enabled."
+    },
+    "evenAiToken": {
+      "label": "Even AI token",
+      "help": "Shared secret. Must match the password set in the Even AI Agent Configure section of the Even Realities app. Required when evenAiEnabled is true.",
+      "placeholder": "user-defined password",
+      "sensitive": true
+    },
+    "evenAiSystemPrompt": {
+      "label": "Even AI system prompt",
+      "help": "Optional extra system prompt appended to Even AI runs only.",
+      "advanced": true
+    },
+    "sessionTitleModel": {
+      "label": "Session-title model",
+      "help": "Optional model override (\"provider/model\") for the background session-title distiller. This is a lightweight background task, so a small, fast, inexpensive model is a good choice (e.g. anthropic/claude-haiku-4-5). Leave blank to use your normal model.",
+      "advanced": true
+    },
+    "evenAiRoutingMode": {
+      "label": "Even AI routing mode",
+      "help": "active = current session; background = dedicated background session; background_new = fresh background session per request.",
+      "advanced": true
+    },
+    "wsBind": {
+      "label": "WebSocket bind address",
+      "help": "Local interface the OcuClaw relay listens on.",
+      "advanced": true
+    },
+    "wsPort": {
+      "label": "WebSocket port",
+      "help": "Local port the OcuClaw relay listens on.",
+      "advanced": true
+    },
+    "sessionLimit": {
+      "label": "WebUI session list size",
+      "help": "Recent sessions fetched for the WebUI switcher/search list. Glasses clamp to their own item-count cap.",
+      "advanced": true
+    },
+    "debugNoisyPolicies": {
+      "label": "Debug noise policies",
+      "help": "Per-channel filters that suppress or sample noisy debug events.",
+      "advanced": true
+    },
+    "externalDebugToolsEnabled": {
+      "label": "External debug tools",
+      "help": "Allow debugctl-style external tools to call debug-set, debug-dump, and remote-control.",
+      "advanced": true
+    },
+    "debugAutoArm": {
+      "label": "Auto-arm app debug",
+      "help": "Continuously lease app-side debug categories on developer hosts. Defaults to the External debug tools setting.",
+      "advanced": true
+    },
+    "allowDebugUpload": {
+      "label": "Allow debug bundle upload",
+      "help": "Allow the relay to hand the full diagnostic bundle to the phone for user-initiated upload. Local assembly and save do not require this flag. Requires External debug tools. Off by default.",
+      "advanced": true
+    },
+    "debugUploadMaxZipBytes": {
+      "label": "Debug upload max zip size (bytes)",
+      "help": "Maximum compressed (uploaded) bundle size; the binding upload cap. Oldest events are trimmed until the zip fits.",
+      "advanced": true
+    },
+    "debugUploadCapturePreset": {
+      "label": "Debug upload capture preset (override)",
+      "help": "Optional override of the always-armed debug-upload capture category list.",
+      "advanced": true
+    },
+    "debugBundleSaveDir": {
+      "label": "Debug bundle save directory",
+      "help": "Directory for locally-saved debug bundles. Empty = ~/.openclaw/ocuclaw-debug-bundles.",
+      "advanced": true
+    },
+    "evenAiRequestTimeoutMs": {
+      "label": "Even AI request timeout (ms) (deprecated)",
+      "advanced": true
+    },
+    "evenAiMaxBodyBytes": {
+      "label": "Even AI max body size (bytes) (deprecated)",
+      "advanced": true
+    },
+    "evenAiDedupWindowMs": {
+      "label": "Even AI dedup window (ms) (deprecated)",
+      "advanced": true
+    },
+    "evenAiDedicatedSessionKey": {
+      "label": "Even AI dedicated session key (deprecated)",
+      "help": "Deprecated — scheduled for removal in a future release. Internal session key prefix for background routing. Must start with 'ocuclaw:'.",
+      "advanced": true
+    },
+    "renderGlassesUiTimeoutMs": {
+      "label": "render_glasses_ui timeout (ms)",
+      "help": "Terminal janitor for non-refresh render_glasses_ui surfaces: how long a surface may stay live before the handler force-resolves the call as { result: \"timeout\" }. NOT the interaction listen window — that is the tool-call timeoutMs input (default 90s), which expires nonterminally (window_expired) leaving the surface live. Bounds the orphan tool_use corruption window if the gateway dies mid-render. Default 1800000 (30 minutes). 0 disables (infinite wait — pre-2026-05-23 behaviour).",
+      "advanced": true
+    },
+    "freshnessWindowMs": {
+      "label": "Activity summary freshness window",
+      "help": "Milliseconds an agent summary outranks a tool label (3000-8000).",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "relayToken": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Shared secret matching the OcuClaw relay token in the Even Hub app. Required before the relay can start. An owner host grant is authorized by relay-token possession, so a shared or hosted install should set glassesUiLive.httpHostPolicy to operator-only."
+      },
+      "wsBind": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "description": "Local interface the relay WebSocket listens on."
+      },
+      "wsPort": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 9000,
+        "description": "Local port the relay WebSocket listens on. Left unset, a fresh install is assigned 47800 at first relay start (and the choice is written here); pre-existing installs keep 9000."
+      },
+      "sessionLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 80,
+        "description": "Number of recent sessions fetched for the WebUI session switcher/search list (glasses clamp to their own item-count cap)."
+      },
+      "debugPayloadMaxBytes": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Deprecated and ignored: debug payload truncation was removed (2026-05-13); this key has no effect. Retained in the schema only so existing configs that still set it continue to validate."
+      },
+      "debugNoisyPolicies": {
+        "anyOf": [
+          {
+            "type": "object"
+          },
+          {
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Per-channel filters that suppress or sample noisy debug events."
+      },
+      "externalDebugToolsEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Allow debugctl-style external debug tools to use debug-set, debug-dump, and remote-control."
+      },
+      "debugAutoArm": {
+        "type": "boolean",
+        "description": "Continuously lease app-side debug categories on developer hosts. When omitted, follows externalDebugToolsEnabled."
+      },
+      "allowDebugUpload": {
+        "type": "boolean",
+        "default": false,
+        "description": "Allow the relay to hand the full diagnostic bundle to the phone for user-initiated upload. Local assembly and save do not require this flag. Requires externalDebugToolsEnabled. Off by default."
+      },
+      "debugUploadMaxZipBytes": {
+        "type": "integer",
+        "minimum": 100000,
+        "maximum": 4300000,
+        "default": 4000000,
+        "description": "Maximum compressed (uploaded) bundle size (bytes); the binding upload cap, kept under the upload backend's limit. Oldest events are trimmed until the zip fits."
+      },
+      "debugUploadCapturePreset": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Optional override of the always-armed debug-upload capture preset (list of category names)."
+      },
+      "debugBundleSaveDir": {
+        "type": "string",
+        "default": "",
+        "description": "Directory for locally-saved debug bundles; empty = ~/.openclaw/ocuclaw-debug-bundles."
+      },
+      "sonioxApiKey": {
+        "type": "string",
+        "description": "Optional Soniox API key. Enables Soniox speech-to-text for voice input."
+      },
+      "cartesiaApiKey": {
+        "type": "string",
+        "description": "Optional Cartesia API key. Enables Cartesia Ink-2 speech-to-text for voice input."
+      },
+      "evenAiEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Route Even AI agent requests through OcuClaw. When true, evenAiToken is required."
+      },
+      "evenAiToken": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Shared secret matching the password set in the Even AI Agent Configure section of the Even Realities app. Required when evenAiEnabled is true."
+      },
+      "evenAiSystemPrompt": {
+        "type": "string",
+        "description": "Extra system prompt appended to Even AI runs only."
+      },
+      "evenAiRequestTimeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 60000,
+        "deprecated": true,
+        "description": "Deprecated — scheduled for removal in a future release. The built-in default is used when this key is absent. Timeout (ms) for Even AI upstream requests."
+      },
+      "evenAiMaxBodyBytes": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 65536,
+        "deprecated": true,
+        "description": "Deprecated — scheduled for removal in a future release. The built-in default is used when this key is absent. Maximum response body size (bytes) accepted from the Even AI upstream."
+      },
+      "evenAiDedupWindowMs": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 500,
+        "deprecated": true,
+        "description": "Deprecated — scheduled for removal in a future release. The built-in default is used when this key is absent. Dedup window (ms) for collapsing repeated Even AI requests."
+      },
+      "evenAiRoutingMode": {
+        "type": "string",
+        "enum": [
+          "active",
+          "background",
+          "background_new"
+        ],
+        "default": "active",
+        "description": "Even AI session routing: active uses the current session, background reuses a dedicated session, background_new starts a fresh session per request."
+      },
+      "evenAiDedicatedSessionKey": {
+        "type": "string",
+        "default": "ocuclaw:even-ai",
+        "deprecated": true,
+        "description": "Deprecated — scheduled for removal in a future release. The built-in default is used when this key is absent. Internal session key prefix for background Even AI routing. Must start with 'ocuclaw:'."
+      },
+      "renderGlassesUiTimeoutMs": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 1800000,
+        "description": "Terminal janitor for non-refresh render_glasses_ui surfaces: how long a surface may stay live before the handler force-resolves the call as { result: \"timeout\" }. NOT the interaction listen window — that is the tool-call timeoutMs input (default 90s), which expires nonterminally (window_expired) leaving the surface live. Bounds the orphan tool_use corruption window if the gateway dies mid-render. Default 1800000 (30 minutes). 0 disables (infinite wait — pre-2026-05-23 behaviour)."
+      },
+      "glassesUiLive": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Live-refresh glasses surfaces (render_glasses_ui refresh recipes): master switch plus per-tier operator controls for timer network requests and model calls.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Master switch for live-refresh surfaces. When false, every refresh block is rejected (refresh_disabled); static renders are unaffected."
+          },
+          "httpEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Allow http refresh recipes to make scheduled outbound requests from the gateway host. An explicit false blocks the tier. Every enabled request still needs an operator-listed host or, under owner-grants, an exact host approved on the paired phone, and the executor blocks loopback/private/link-local/metadata destinations."
+          },
+          "httpHostPolicy": {
+            "type": "string",
+            "enum": ["owner-grants", "operator-only"],
+            "default": "owner-grants",
+            "description": "owner-grants delegates approval of exact HTTP hosts to the paired phone owner; operator-only accepts only httpAllowHosts. Shared or hosted installs should use operator-only."
+          },
+          "httpAllowHosts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "Operator host allowlist for http recipes. Entries are exact hostnames, or \".example.com\" to allow a domain and its subdomains. Under owner-grants, exact phone-owner grants may authorize additional hosts; under operator-only an empty list rejects every http recipe."
+          },
+          "llmEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Allow llm refresh recipes to make bounded model calls on a schedule. An explicit false blocks the tier; when no tick model or backend is set, the runtime uses a small default for a supported host provider and disables the tier when no backend maps."
+          },
+          "tickBackend": {
+            "type": "string",
+            "enum": ["anthropic-api", "openai-compat"],
+            "default": "anthropic-api",
+            "description": "HTTP API backend for llm ticks. Only these two values validate; the removed CLI-spawn backends (claude-cli/codex-cli) are rejected here, and any unknown value that reaches the runtime coerces to anthropic-api."
+          },
+          "tickModel": {
+            "type": "string",
+            "description": "Model for llm ticks. Unset adopts the host provider and uses its small backend default: anthropic/claude-haiku-4-5-20251001 for Anthropic or gpt-4o-mini for OpenAI."
+          },
+          "tickApiBaseUrl": {
+            "type": "string",
+            "description": "Base URL for the openai-compat backend. Unset defaults to https://api.openai.com."
+          },
+          "allowAgentModelOverride": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow an agent-authored recipe to override tickModel per tick. Off by default so the operator's model and spend choice holds; overrides are rejected (refresh_llm_model_override_denied)."
+          },
+          "tickMaxOutputTokens": {
+            "type": "integer",
+            "minimum": 16,
+            "maximum": 1000,
+            "default": 200,
+            "description": "Output-token cap per llm tick; bounds spend and display length."
+          },
+          "maxConcurrentSurfacesPerHost": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "default": 4,
+            "description": "Variant-A stage lease cap. Counts sessions with non-empty LiveUI stacks and rejects a brand-new session at the limit; no existing surface is destroyed."
+          },
+          "stageGraceMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000,
+            "default": 30000,
+            "description": "How long a listening/inflight stage holder may block another session before the exclusive lease can transfer as grace_expired."
+          }
+        }
+      },
+      "freshnessWindowMs": {
+        "type": "integer",
+        "minimum": 3000,
+        "maximum": 8000,
+        "default": 5000,
+        "description": "How long (ms) a fresh agent summary stays preferred over a tool label in the glasses activity status. Clamped 3000-8000."
+      },
+      "sessionTitleModel": {
+        "type": "string",
+        "description": "Optional model override (\"provider/model\") for the background session-title distiller. This is a lightweight background task, so a small, fast, inexpensive model is a good choice (e.g. anthropic/claude-haiku-4-5). When absent, the user's normal model is used."
+      },
+      "evenTerminal": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Deprecated compatibility input. Accepted so existing configuration still loads, but ignored and unable to enable any runtime behavior.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Deprecated and ignored."
+          },
+          "refreshMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "default": 15000,
+            "description": "Deprecated and ignored."
+          }
+        }
+      }
+    },
+    "if": {
+      "properties": {
+        "evenAiEnabled": {
+          "const": true
+        }
+      },
+      "required": [
+        "evenAiEnabled"
+      ]
+    },
+    "then": {
+      "required": [
+        "evenAiToken"
+      ]
+    }
+  }
+}
