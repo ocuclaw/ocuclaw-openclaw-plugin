@@ -469,6 +469,8 @@ https://<node>.<tailnet>.ts.net:8443 (tailnet only)
 ```
 If exactly one expected route is missing or still points at the wrong local backend, re-run just that route's command once more, then check `tailscale serve status` again — a route can need a second application after a port change. Still wrong after that single retry → `TS-PORT-CLAIMED` or `TS-SERVE-UNSUPPORTED` (or ESCALATE), never further blind re-runs.
 
+`--tls-terminated-tcp` requires **HTTPS Certificates** enabled for this tailnet at `login.tailscale.com/admin/dns`, alongside MagicDNS. Without them Tailscale accepts the route and every connection through it then fails; on the Hermes side the symptom is `probe_failed` plus `relay_verifier_protocol_error` on a route classified `ready`, and `tailscale cert --cert-file /dev/null --key-file /dev/null <node>.<tailnet>.ts.net` answers `your Tailscale account does not support getting TLS certs`. Fix is two clicks in the admin console under DNS, then re-verify.
+
 Note the machine name `<node>.<tailnet>.ts.net` from that output — you'll use it in Step 9.   ·   Port already claimed → `TS-PORT-CLAIMED`; unknown command or flag → `TS-SERVE-UNSUPPORTED`.
 
 ---

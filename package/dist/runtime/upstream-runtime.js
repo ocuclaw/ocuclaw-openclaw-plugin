@@ -1248,7 +1248,7 @@ export function createUpstreamRuntime(opts = {}) {
   function flushLedgerCommitFallback() {
     if (!ledgerCommitFallbackTimer) return;
     clearLedgerCommitFallbackTimer();
-    broadcastPages();
+    broadcastPages({ reason: "commit_fallback_flush" });
   }
 
   function onConnectedStateEstablished(trigger) {
@@ -2474,7 +2474,21 @@ export function createUpstreamRuntime(opts = {}) {
   });
 
   onGatewayEvent("history", (data) => {
-    if (!sessionService.isCurrentSession(data.sessionKey)) return;
+    if (!sessionService.isCurrentSession(data.sessionKey)) {
+
+      emitDebug(
+        "openclaw.history",
+        "history_dropped_foreign_session",
+        "warn",
+        { sessionKey: sessionService.peekSessionKey() },
+        () => ({
+          eventSessionKey: data.sessionKey ?? null,
+          currentSessionKey: sessionService.peekSessionKey(),
+          messageCount: Array.isArray(data.messages) ? data.messages.length : 0,
+        }),
+      );
+      return;
+    }
     clearLedgerCommitFallbackTimer();
     emitDebug(
       "openclaw.history",
@@ -2493,7 +2507,11 @@ export function createUpstreamRuntime(opts = {}) {
         )
       : data.messages;
     conversationState.hydrate(sanitizedMessages, agentIdentity.name, data.sessionKey);
-    broadcastPages();
+
+    broadcastPages({
+      reason: "gateway_history",
+      sourceRowCount: Array.isArray(sanitizedMessages) ? sanitizedMessages.length : null,
+    });
   });
 
   function ingestMirroredRows(rows, info = {}) {
@@ -2529,7 +2547,7 @@ export function createUpstreamRuntime(opts = {}) {
         ),
       }),
     );
-    broadcastPages();
+    broadcastPages({ reason: "mirrored_rows" });
     return appended;
   }
 
@@ -2556,7 +2574,7 @@ export function createUpstreamRuntime(opts = {}) {
       { sessionKey },
       () => ({ reason, messageCount: sanitized.length, total }),
     );
-    broadcastPages();
+    broadcastPages({ reason: "mirror_rehydrate", sourceRowCount: sanitized.length });
     return true;
   }
 
@@ -2647,7 +2665,7 @@ export function createUpstreamRuntime(opts = {}) {
       () => ({ removed, textChars: typeof data.text === "string" ? data.text.length : 0 }),
     );
     if (removed) {
-      broadcastPages();
+      broadcastPages({ reason: "narration_withdrawn" });
 
       broadcastStreamClear(runId, data.sessionKey, "narration_retagged");
     }
@@ -2848,13 +2866,16 @@ export function createUpstreamRuntime(opts = {}) {
         }),
       );
     }
-    const preservedLedgerLane = broadcastPages({ preserveLedgerLane: data.role === "assistant" });
+    const preservedLedgerLane = broadcastPages({
+      preserveLedgerLane: data.role === "assistant",
+      reason: "message_commit",
+    });
     if (data.role === "assistant" && preservedLedgerLane) {
       clearLedgerCommitFallbackTimer();
       ledgerCommitFallbackTimer = setTimeout(() => {
         ledgerCommitFallbackTimer = 0;
 
-        broadcastPages();
+        broadcastPages({ reason: "commit_fallback" });
       }, LEDGER_COMMIT_HISTORY_GRACE_MS);
     }
 
