@@ -603,7 +603,7 @@ export const glassesUiParametersSchema = {
       enum: ["image_caption"],
       description:
         "Optional text_surface template. image_caption places one centered image above body, " +
-        "which remains the single-line caption and the fallback on 2.0.0 clients.",
+        "which remains the caption and the fallback on 2.0.0 clients. An optional title uses the shared heading.",
     },
     imageAsset: {
       type: "string",
@@ -1053,7 +1053,13 @@ export function createGlassesUiToolHandler(deps) {
 
   function displayedMarkerFor(surfaceId) {
     const marker = surfaceStore.markerFor(surfaceId);
-    if (marker !== "inflight") return marker;
+    if (marker !== "inflight") {
+      const refresh = cronEngine.snapshotOf(surfaceId);
+      if (marker && refresh.active && !refresh.paused && refresh.presence?.tier === "http" &&
+          refresh.presence.policy === "active" &&
+          !["absent", "in_case"].includes(refresh.presence.state)) return "refreshing";
+      return marker;
+    }
     const sessionKey = surfaceStore.sessionForSurface(surfaceId);
     if (!sessionKey || typeof deps.isAgentTurnBusy !== "function") return marker;
     try {
@@ -1136,6 +1142,7 @@ export function createGlassesUiToolHandler(deps) {
 
   const cronEngine = createGlassesUiCronEngine({
     emitLifecycle,
+    onStateChanged: emitMarker,
 
     isRefreshPaused: liveuiRefreshPaused,
     monotonicNowMs: () => performance.now(),
@@ -3067,7 +3074,7 @@ export const GET_GLASSES_UI_STATE_TOOL_DESCRIPTION = [
   "Returns refs and counts, not the wearer's on-glass text. You get:",
   "  active        — surfaceUuid, kind, titleChars, state, marker, queueMode.",
   "  stack         — depth plus one ref per level (root first).",
-  "  marker        — listening | inflight | processing | parked.",
+  "  marker        — listening | inflight | processing | refreshing | parked.",
   "  listening     — whether a render is still awaiting a wearer response.",
   "  parkedEventCount / deadLetterCount — wearer taps waiting to reach you.",
   "  cron          — { active, paused, ticks, lastRender } for a refreshing surface.",

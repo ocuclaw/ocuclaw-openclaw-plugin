@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { setupInstallation, setupJourney } from "./setup-journey.js";
 import {
   BUILT_WITH_OPENCLAW,
   OPENCLAW_PLUGIN_API_COMPATIBILITY,
@@ -35,6 +36,7 @@ export const OCUCLAW_SETUP_OPERATIONS = Object.freeze([
   "doctor",
   "plan",
   "verify",
+  "journey",
 ]);
 
 export function classifySetupRegistration(registrationMode) {
@@ -665,6 +667,8 @@ function createSetupStateReader({
       operation: "overview",
       plugin: {
         id: "ocuclaw",
+        enabled: api?.config?.plugins?.enabled === false ||
+          api?.config?.plugins?.entries?.ocuclaw?.enabled === false ? false : null,
         status: pluginLoaded ? "loaded" : "discovered",
         version: boundedVersion(api && api.version),
         source: install.source,
@@ -761,8 +765,27 @@ export function createSetupController(options) {
   const readState = createSetupStateReader(options);
   return function runSetupOperation(operation, context = {}) {
     const state = readState(context);
-    if (operation === "overview") return state;
-    return completeSetupOperation(state, operation);
+    const capabilities = {
+      readOperations: [...OCUCLAW_SETUP_OPERATIONS],
+      pairing: "unavailable",
+      firstUse: "unavailable",
+      welcome: "unavailable",
+    };
+    const reportedState = { ...state, capabilities };
+    if (operation === "journey") {
+      const installation = setupInstallation(resolveSetupStateDir(options.api));
+      const local = setupJourney(reportedState, installation);
+      if (options.runtimeStatus === "unknown" && typeof options.readLiveJourney === "function") {
+        return options.readLiveJourney(local);
+      }
+      if (typeof options.readPrivateRoute === "function" && state.runtime.status === "running") {
+        return Promise.resolve(options.readPrivateRoute(state.relay.port)).then((route) =>
+          setupJourney(reportedState, installation, route));
+      }
+      return local;
+    }
+    if (operation === "overview") return reportedState;
+    return completeSetupOperation(reportedState, operation);
   };
 }
 

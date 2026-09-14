@@ -10,8 +10,9 @@ this file is stale.
 
 ## When to reach for it
 
-One small greyscale image with **one** caption line under it: a welcome card, a rasterized
-glyph, a diagram you already have as a PNG, a one-off picture.
+One small greyscale image with a balanced caption under it and an optional plain heading:
+a welcome card, a rasterized glyph, a diagram you already have as a PNG, a one-off picture.
+The caption wraps within the available native text lines.
 
 It is an **image transfer, not a live surface**. There is no refresh, no cron, no selection.
 If the thing you want is data that changes, you want a `text_surface` with a `refresh`
@@ -26,6 +27,7 @@ text, drop the picture: a 64-character caption is the entire text budget of this
 render_glasses_ui({
   kind: "text_surface",
   template: "image_caption",
+  title: "Welcome",             // optional; omit for a titleless card
   body: "Welcome back",          // the caption, and the whole fallback on 2.0.0 clients
   imageAsset: "hermes_welcome"   // the only built-in asset id today
 })
@@ -87,7 +89,7 @@ code, fix the spec, re-render — the same recon loop a failing `refresh` recipe
 |---|---|
 | `invalid_template` | `template` was present but not `"image_caption"` |
 | `image_template_required` | an image field was sent **without** `template: "image_caption"` |
-| `image_caption_title_unsupported` | you sent a `title`. This template has one caption line and no title, ever |
+| `title_too_long` | the optional title exceeds the normal character or measured-width limit; shorten the heading |
 | `image_caption_too_long` | `body` was empty, or longer than `captionMaxChars` |
 | `image_caption_refresh_unsupported` | you attached a `refresh` block. One-shot only — re-render to change the picture |
 | `image_source_invalid` | both `imageAsset` and inline image fields, or neither |
@@ -96,43 +98,18 @@ code, fix the spec, re-render — the same recon loop a failing `refresh` recipe
 | `image_payload_invalid` | `imageBase64` is not a string, exceeds `imageMaxBase64Chars`, is malformed base64, or decodes past `imageMaxDecodedBytes` |
 | `image_format_invalid` | the bytes are not a PNG, or its IHDR dimensions disagree with the ones you declared |
 
-`title_too_long` and `body_too_long` can also fire: the generic caps run *before* the
-template branch, so a 200-character `title` reports `title_too_long` rather than
-`image_caption_title_unsupported`. Same fix either way — remove the title.
+`body_too_long` can also fire when the caption exceeds the measured native text area.
+Shorten it while preserving the image's declared dimensions.
 
-## The trap: any retained title in the stack kills the card
+## Optional heading and normal navigation
 
-Two mechanisms, each harmless alone:
+The optional `title` uses the shared plain heading and the normal title limits. Titleless
+cards remain valid. A retained title in the stack can supply the navigation breadcrumb;
+the client accepts that heading for image cards too.
 
-1. The plugin **overwrites** a spec's `title` with the navigation breadcrumb whenever any
-   surface in the session's live stack still holds a title.
-2. The glasses client **refuses** any `image_caption` spec that carries a title.
-
-Together they drop a perfectly valid image card on the client with **no render error on your
-side** — your call returns fine and nothing paints.
-
-Choosing a different move does not save you, because the breadcrumb is built from **retained**
-titles and an untitled spec does not clear the one already on the surface. Driving the real
-surface store gives this:
-
-| what you do | breadcrumb the plugin injects | card survives? |
-|---|---|---|
-| the card is the **first** render of the stack | `null` | **yes** |
-| `replace` at depth 1, current root was **untitled** | `null` | **yes** |
-| `replace` at depth 1, current root **had a title** | that title | **no** |
-| `replace` at depth 2+ under a titled ancestor | `"Trip › Hotels"` | **no** |
-| `push` under a titled parent | `"Trip"` | **no** |
-
-**The rule: render `image_caption` only at depth 1, and only when the current root carries no
-retained title** — in practice, when the card is the first render of the stack.
-
-`replace` is the move to use, and **only onto a depth-1 surface**. It is not an escape hatch
-from a nested flow: at depth 2 or deeper the ancestors keep their titles no matter what you
-send, so a `replace` there is dropped exactly like a `push`.
-
-**If you are nested, get back to depth 1 first.** Let the wearer back out to the root, or end
-the flow and rebuild — render the card as the first surface of a fresh stack. Do not try to
-sneak it in mid-stack; there is no spec you can write that wins that fight.
+Use `push` under a titled parent when Back should return there. Use `replace` to update
+the current surface, at the root or inside a nested flow. The image transfer and caption
+remain one-shot in either position.
 
 ## What you may claim afterwards
 

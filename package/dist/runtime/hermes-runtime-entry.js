@@ -17,6 +17,11 @@ import {
   createHermesLiveUiBridge,
   mergeLiveConfig,
 } from "./hermes-liveui-bridge.js";
+
+import {
+  buildHermesPhoneToolsHelloPayload,
+  createHermesPhoneToolsBridge,
+} from "./hermes-phone-tools-bridge.js";
 import { createHermesPresencePush } from "./hermes-presence-push.js";
 import { createHermesSttLane } from "./hermes-stt-lane.js";
 import { createHermesPairingCompletionPush } from "./hermes-pairing-completion-push.js";
@@ -86,6 +91,7 @@ const link = createHermesControlLink({
   methods: linkMethods,
   hello: {
     liveui: buildHermesLiveUiHelloPayload(),
+    phoneTools: buildHermesPhoneToolsHelloPayload(),
   },
 });
 
@@ -289,6 +295,13 @@ function bootRelay(ackPayload) {
       });
       relay.setLiveuiGlassesLibraryController(liveui.glassesLibrary);
       Object.assign(linkMethods, liveui.methods);
+
+      const phoneTools = createHermesPhoneToolsBridge({
+        relay,
+        hostHooks,
+        logger,
+      });
+      Object.assign(linkMethods, phoneTools.methods);
 
       hostHooks.on("agent_end", (_event, ctx) => {
         if (typeof relay.noteSessionMirrorTurnEnd !== "function") return;

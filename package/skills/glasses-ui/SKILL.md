@@ -14,10 +14,31 @@ Send the spec once with `validateOnly: true`. It validates and lints without ren
 
 ## Before you author: is the tool loaded?
 
-`render_glasses_ui` is a plugin tool, and depending on the host runtime it may not sit in your initial tool list:
+Check the effective tool list for this conversation before diagnosing availability.
+Search deferred tools by exact name when the host supports tool search. The plugin
+provides `render_glasses_ui`, `get_glasses_ui_state`, `manage_liveui_templates`, and
+`manage_liveui_tasks`; reading this skill alone does not prove they are callable.
 
-1. **Not listed but searchable** — some runtimes (e.g. the Codex harness) defer OpenClaw dynamic tools behind tool search. Search your available/deferred tools for `render_glasses_ui` (it surfaces under the `openclaw` namespace), load it, and proceed.
-2. **Not findable at all** — the host's tool policy is filtering plugin tools. Newer OpenClaw versions (2026.6+) default `tools.profile` to `"coding"`, a base allowlist that strips plugin-owned tools; skills are not policy-filtered, which is why you can read this guide for a tool you cannot call. Don't improvise a workaround: tell the user to run `openclaw config set tools.alsoAllow '["ocuclaw"]' --strict-json` (merging `"ocuclaw"` into any existing `alsoAllow` list rather than overwriting) and restart the gateway, then try again.
+If a tool is missing, identify the backend before choosing recovery:
+
+- **OpenClaw:** check plugin load status and effective tool policy. If policy is
+  excluding a loaded OcuClaw plugin, merge `"ocuclaw"` into `tools.alsoAllow`
+  while preserving existing entries. Use the supported setup flow for the
+  configuration change and gateway restart; confirm the tool is offered afterward.
+- **Hermes:** tools register automatically after the OcuClaw runtime connects.
+  Check the plugin/runtime state and the effective `ocuclaw` toolset for this
+  platform. Calls require an OcuClaw phone/glasses session; an unrelated Desktop
+  or CLI conversation does not establish that context. Use `/ocuclaw-setup` for
+  installation or connection recovery and Hermes tool settings for an explicitly
+  disabled toolset. OpenClaw configuration commands do not apply.
+
+If a call returns an argument, validation, or approval error, the tool was reached.
+Read its structured result and correct the named problem; do not report that the
+tools are unavailable or invent scripts/config edits to bypass the failure. A task
+is saved only when its operation confirms persistence. A pending Draft still needs
+phone approval before it is runnable; an empty runnable-task search does not prove
+the Library is down. Report the exact unresolved error when recovery cannot be
+verified.
 
 ## Before you render: three decisions, in this order
 
@@ -414,7 +435,7 @@ render_glasses_ui({
 ## `image_caption` — the one template that reaches the wire
 
 `template: "image_caption"` on a `text_surface` paints one small greyscale image with a
-single caption line under it. It is the only value the `template` field accepts today —
+balanced caption under it, with an optional plain heading. It is the only value the `template` field accepts today —
 registry entry `image_caption@1`, `status: "shipped"`, `renderableToday: true`.
 
 ```js
@@ -426,8 +447,9 @@ render_glasses_ui({
 })
 ```
 
-- **One-shot, not live.** No `refresh` (`image_caption_refresh_unsupported`), no `title`
-  (`image_caption_title_unsupported`), no items. Re-render to change the picture.
+- **One-shot, not live.** No `refresh` (`image_caption_refresh_unsupported`) or items.
+  Re-render to change the picture. An optional `title` uses the shared heading and its
+  normal character and measured-width limits; omit it for a titleless card.
 - **One image source.** `imageAsset` **or** the inline trio `imageBase64` + `imageWidth` +
   `imageHeight`; both or neither is `image_source_invalid`. Raw standard base64, **no
   `data:` prefix**, and the declared dimensions must equal the PNG's own IHDR dimensions
@@ -436,12 +458,9 @@ render_glasses_ui({
   `layoutBudgets.budgets` gives `captionMaxChars`, `imageMinWidthPx`/`imageMaxWidthPx`,
   `imageMinHeightPx`/`imageMaxHeightPx`, `imageMaxDecodedBytes`, `imageMaxBase64Chars`.
   Dimensions have **minimums as well as maximums** — undersized is `image_dimensions_invalid`.
-- **Depth 1 only, and only onto a root with no retained title.** The plugin overwrites a
-  spec's title with the navigation breadcrumb whenever *any* surface in the live stack still
-  holds one, and the client refuses a titled `image_caption` — so the card is dropped
-  client-side while your call still returns fine. `replace` is the move, but it is **not** an
-  escape hatch from a nested flow: at depth 2+ the ancestors keep their titles whatever you
-  send. Get back to depth 1 and render the card as the first surface of a fresh stack.
+- **Normal navigation applies.** Image cards accept the navigation breadcrumb under a
+  titled parent. Use `push` to keep that parent available for Back, or `replace` to update
+  the current surface.
 
 > Both variants worked through, the full rejection-code table, and the decoded-vs-base64
 > size trap → [`references/image-caption.md`](references/image-caption.md).
@@ -680,8 +699,8 @@ through with good/bad code in
   `compare_options@1`, `paged_briefing@1`, `progress_monitor@1`.
 - **No matching row is not a refusal.** Sixteen worked moments — eight renders, four that
   correctly render nothing, four that no template covers → `references/exemplars.md`.
-- One image + one caption → `template: "image_caption"` on a `text_surface`; no title, no
-  refresh, at a root only. → `references/image-caption.md`.
+- One image + one caption → `template: "image_caption"` on a `text_surface`; optional
+  title, one-shot image transfer. → `references/image-caption.md`.
 - Nine patterns worth getting right (patch payload · 2-push breadcrumb · back · stale tap ·
   collection loop · refresh guard-rails · disconnect · ≤6 rows · 30-char labels) →
   `references/authoring-patterns.md`.

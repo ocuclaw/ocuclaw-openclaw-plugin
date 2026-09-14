@@ -7,11 +7,19 @@ metadata: {"openclaw": {"emoji": "👓"}}
 
 # OcuClaw Setup Assistant
 
-**Guide version:** 2026-07-17 (1.0.41)
+**Guide version:** 2026-09-14 (1.0.43)
 
 Use this skill when a user asks to install, update, roll back, configure, or troubleshoot OcuClaw on this machine. Work phase by phase. Before each phase, say what you will do, why, and which commands matter. Ask for OK. Afterward, verify in plain words. Setup takes about 15 minutes; the user should keep their phone nearby.
 
-**Opening move.** Your FIRST reply in every new setup conversation does three
+**Resume first.** When continuing setup, retain the recorded explanation preference
+and G2 availability instead of repeating calibration or hardware questions. Re-read
+the owning installation using the capability routing below, explain the first
+incomplete checkpoint, and enter its existing guide step. Host conversation owns
+setup; the phone conversation supplies only the test message and wearer interaction.
+Never run the setup controller from the phone test conversation.
+
+**Opening move (new setup only).** If explanation preference is already established,
+reuse it and proceed to the state assessment. Otherwise your FIRST reply does three
 things, in this order, and NOTHING else — no checklist copy, no probe results,
 no step content:
 
@@ -27,7 +35,7 @@ no step content:
 3. **Ask one calibration question**: are they comfortable in a terminal, or
    would they like everything explained as you go?
 
-Your first message must carry all three — shape it like this template
+For new setup without an established preference, carry all three — use this template
 (fill the guide version with this file's full **Guide version** line — the
 date AND the parenthesized number; adapt the CLI name if the user pinned
 one, e.g. `openclaw-test`; keep it warm):
@@ -40,14 +48,14 @@ one, e.g. `openclaw-test`; keep it warm):
 > setup." One question before we start: are you comfortable in a terminal,
 > or would you like everything explained as we go?
 
-First-reply output gate: if your drafted first reply is missing the
+New-setup output gate (preference not yet established): if your drafted first reply is missing the
 announcement, the expectations, or the calibration question — or carries
 anything beyond them (the setup checklist, probe output, step content) — it
 is not sendable: replace it with this template alone. The checklist is
 never shown this early — it appears once, at the wrap self-audit.
 
 The calibration answer is the go signal: record it, then proceed directly
-into the lane card and Step 1 in your next message — never idle on a bare
+into the lane card and the first verified incomplete step — never idle on a bare
 "ready when you are" waiting for another prompt.
 
 Record the answer in the lane card's `User level` row and hold that register
@@ -67,6 +75,41 @@ OcuClaw is the OpenClaw client for Even Realities G2 smart glasses. It has two h
 
 ## Reference loading
 
+### Verified checkpoint routing
+
+Read `overview` through the currently callable controller. If its
+`capabilities.readOperations` includes `journey`, call that read-only operation
+(typed `ocuclaw_setup` on the callable lane; `openclaw ocuclaw journey` on the
+policy-hidden CLI lane). Explain `durableFacts`, `currentHealth`, `firstUse`, and
+`nextCheckpoint.action` separately. Re-read after restart or a new turn: receipts
+are observations, not inputs that can authorize skipping a checkpoint. Never reuse
+a receipt from another `installation.id`; null identity means ownership is unknown.
+
+Route `verify-plugin` to bootstrap/plugin recovery, `verify-host` to Step 1,
+`configure-host` to the required configuration checks,
+`verify-relay` to existing gateway recovery, and `verify-private-route` to the
+private-route checks in fresh-install.md. An unknown checkpoint needs evidence;
+it is not completed. Controller pairing, first-use recording and welcome operations
+remain unavailable. Use the existing guide for those human steps; never call an
+operation absent from actual capabilities or turn a connected socket into G2 proof.
+The controller cannot certify core completion in this slice, even on an installation
+the wearer previously used successfully. A temporary outage does not erase durable
+configuration or require replaying completed configuration steps.
+
+On supported hosts, `journey` reads the owning runtime through OpenClaw's
+authenticated gateway and checks the existing private Tailscale route read-only.
+Discovery's unknown relay status in older operations remains unchanged. If the
+live read is unsupported, unreachable or belongs to another installation, the
+journey retains unknown evidence and routes to the existing checks. A matching
+route proves its observed target, not permission to replace it: route ownership
+remains unknown until the established ownership checks resolve it.
+
+An older controller without these capabilities stays on the existing overview,
+doctor, plan, verify and step-level verification route. If the plugin is absent,
+disabled, broken, or its controller fails, use the Router's bootstrap/recovery lane;
+the standalone guide remains usable before installation. Preserve the exact CLI
+wrapper/profile, explanation preference and answered hardware questions on that lane.
+
 **Progressive-loading rule.** Load only the reference named by the Router for
 the branch you are entering. Fresh-install entry loads
 `{baseDir}/references/fresh-install.md` only. Return to the Router when the
@@ -85,7 +128,7 @@ Treat this exact request, and a clear equivalent, as explicit Even AI activation
 
 > I want to enable Even AI for OcuClaw. Use the OcuClaw setup skill and guide me through it.
 
-After the mandatory Opening move and calibration answer, perform the normal
+After the Opening move if needed (reuse any established calibration), perform the normal
 current-session inventory check and the narrowest read-only `overview`. If the
 Runtime Bundle is installed and healthy, load `references/fresh-install.md`
 and enter Step 12 directly. Do not replay fresh-install Steps 1–11. Read

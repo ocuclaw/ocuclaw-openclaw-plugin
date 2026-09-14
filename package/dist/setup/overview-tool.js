@@ -76,7 +76,7 @@ export function registerOcuClawSetupTool(api, controller, setRelayPort) {
           content: [
             {
               type: "text",
-              text: JSON.stringify(controller(params.operation, { surface: "tool" })),
+              text: JSON.stringify(await controller(params.operation, { surface: "tool" })),
             },
           ],
         };

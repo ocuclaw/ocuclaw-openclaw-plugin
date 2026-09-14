@@ -861,10 +861,19 @@ export function createUpstreamRuntime(opts = {}) {
     return normalized;
   }
 
+  const gatewayListenersByEvent = new Map();
   function onGatewayEvent(eventName, listener) {
+    if (!gatewayListenersByEvent.has(eventName)) gatewayListenersByEvent.set(eventName, []);
+    gatewayListenersByEvent.get(eventName).push(listener);
     return gatewayBridge.on(eventName, (data) =>
       listener(normalizeGatewaySessionEvent(data)),
     );
+  }
+
+  function ingestSimulatedGatewayEvent(eventName = "", data = JSON.parse("null")) {
+    const listeners = gatewayListenersByEvent.get(eventName) || [];
+    for (const listener of listeners) listener(normalizeGatewaySessionEvent(data));
+    return listeners.length > 0;
   }
   const broadcastPages =
     typeof opts.broadcastPages === "function" ? opts.broadcastPages : () => {};
@@ -1726,8 +1735,31 @@ export function createUpstreamRuntime(opts = {}) {
     }
   }
 
+  let simulatedModelsCatalog = null;
+  let simulatedModelsCatalogAt = 0;
+
+  function setSimulatedModelCatalog(models) {
+    if (models === null) {
+      simulatedModelsCatalog = null;
+      simulatedModelsCatalogAt = 0;
+
+      cachedModelsCatalogStale = true;
+      return modelCatalogSnapshot(now());
+    }
+    simulatedModelsCatalog = models;
+    simulatedModelsCatalogAt = now();
+    return modelCatalogSnapshot(now());
+  }
+
   function modelCatalogSnapshot(nowMs) {
     const currentNow = Number.isFinite(nowMs) ? nowMs : now();
+    if (simulatedModelsCatalog) {
+      return {
+        models: simulatedModelsCatalog,
+        fetchedAtMs: simulatedModelsCatalogAt,
+        stale: false,
+      };
+    }
     const hasCache = Array.isArray(cachedModelsCatalog);
     const ageMs = hasCache ? currentNow - cachedModelsCatalogFetchedAt : Infinity;
     const ttlExpired = ageMs >= modelsCacheTtlMs;
@@ -2046,6 +2078,10 @@ export function createUpstreamRuntime(opts = {}) {
 
   async function refreshModelCatalog(force) {
     const snapshot = modelCatalogSnapshot();
+
+    if (simulatedModelsCatalog) {
+      return snapshot;
+    }
     if (!force && !snapshot.stale) {
       return snapshot;
     }
@@ -2553,6 +2589,16 @@ export function createUpstreamRuntime(opts = {}) {
 
   async function rehydrateHistory(sessionKey, reason = "rehydrate") {
     if (!sessionService.isCurrentSession(sessionKey)) return false;
+
+    const fixtureHistory =
+      typeof sessionService.getSimulatedSessionHistory === "function"
+        ? sessionService.getSimulatedSessionHistory(sessionKey)
+        : null;
+    if (fixtureHistory) {
+      conversationState.hydrate(fixtureHistory, agentIdentity.name, sessionKey, {});
+      broadcastPages({ reason: "mirror_rehydrate", sourceRowCount: fixtureHistory.length });
+      return true;
+    }
     const result = await gatewayBridge.request("chat.history", { sessionKey, limit: 200 });
     if (!sessionService.isCurrentSession(sessionKey)) return false;
     const messages =  (
@@ -3666,6 +3712,7 @@ export function createUpstreamRuntime(opts = {}) {
     getAgentAvatarHash,
     getAgentAvatarDataUriByHash,
     getModelsCatalogSnapshot,
+    setSimulatedModelCatalog,
     getAgentsCatalogSnapshot,
     refreshAgentsCatalog,
     getAgentDisplayName,
@@ -3678,6 +3725,7 @@ export function createUpstreamRuntime(opts = {}) {
     handleSessionChanged,
     refreshSessionAttention,
     ingestActivityFrame,
+    ingestSimulatedGatewayEvent,
     ingestMirroredRows,
     rehydrateHistory,
     isConnected,

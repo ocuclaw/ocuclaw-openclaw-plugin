@@ -1,6 +1,6 @@
 # OcuClaw troubleshooting — named cases
 
-**Guide version:** 2026-07-17 (1.0.41)
+**Guide version:** 2026-09-14 (1.0.43)
 
 **Reference only** — execute nothing here unless a step routed you here by its
 case name. After resolving a case, return to the skill's SKILL.md and re-run
@@ -267,7 +267,7 @@ If the bug icon or Send flow isn't available (very old app build, or the app was
 
 **Lane 2 — Discord paste block.** Assemble this paste-ready breakdown, show it to the user, confirm together it contains no secrets, and point them at the OcuClaw Discord:
 ```
-OcuClaw setup help — guide 2026-07-17 (1.0.41)
+OcuClaw setup help — guide 2026-09-14 (1.0.43)
 Platform/OS:
 openclaw --version:
 openclaw status --all (read-only, pasteable — confirm no secrets):
@@ -286,7 +286,7 @@ Debug upload ticket (if sent):
 
 **BETA-REPORT** — when a beta build misbehaves, assemble this paste-ready report, show it to the user, confirm together it contains no secrets, and have them post it in the beta-testing Discord (`https://discord.ocuclaw.com`). If the app is installed, also offer the ESCALATE Lane 1 in-app debug upload first — the ticket attaches real diagnostics to the report:
 ```
-OcuClaw beta report — guide 2026-07-17 (1.0.41)
+OcuClaw beta report — guide 2026-09-14 (1.0.43)
 Installed beta version (from plugins inspect):
 Platform/OS:
 openclaw --version:

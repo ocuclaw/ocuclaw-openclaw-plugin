@@ -18,7 +18,7 @@ export function registerOcuClawSetupCli(api, controller) {
         operationCommand.action(async function writeSetupResult() {
             const output = operationCommand.configureOutput();
             output.writeOut(
-              `${JSON.stringify(controller(operation, { surface: "cli" }), null, 2)}\n`,
+              `${JSON.stringify(await controller(operation, { surface: "cli" }), null, 2)}\n`,
             );
           });
       }

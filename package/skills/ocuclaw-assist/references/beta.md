@@ -1,6 +1,6 @@
 # OcuClaw beta channel & rollback
 
-**Guide version:** 2026-07-17 (1.0.41)
+**Guide version:** 2026-09-14 (1.0.43)
 
 **Beta-Discord testers only.** Beta builds are pre-release and can be unstable.
 If the user is **not** a confirmed beta-testing Discord member, this is the wrong
@@ -53,7 +53,7 @@ Re-run `update ocuclaw@beta` later to jump to a newer beta when one drops.
 openclaw plugins install clawhub:ocuclaw --force
 ```
 
-Why `--force`: rolling back is usually a downgrade; plain `install` aborts as "already installed," and `update ocuclaw` stays on the tracked `@beta` spec — `--force` is the documented overwrite path. The `clawhub:` prefix pins the stable lane (ClawHub carries stable releases only; betas live on npm). Expect the community-channel advisory line — a notice, not an error. Plugin config (relayToken etc.) survives the swap. If the host rejects the `clawhub:` prefix (older builds): `openclaw plugins install npm:ocuclaw@latest --force`.
+Why `--force`: rolling back is usually a downgrade; plain `install` aborts as "already installed," and `update ocuclaw` stays on the tracked `@beta` spec — `--force` is the documented overwrite path. The `clawhub:` prefix on its own is not what makes this stable: the bare spec resolves to ClawHub's `latest` tag, and `latest` is the stable lane. ClawHub has carried a `beta` tag as well since 2.0.4. Expect the community-channel advisory line — a notice, not an error. Plugin config (relayToken etc.) survives the swap. If the host rejects the `clawhub:` prefix (older builds): `openclaw plugins install npm:ocuclaw@latest --force`.
 
 **After either action** — allow OpenClaw's reload planner to act, then run
 VERIFY. If the gateway is live but still serves the old runtime, request one

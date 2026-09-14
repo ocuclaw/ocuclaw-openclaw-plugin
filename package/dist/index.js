@@ -15,6 +15,7 @@ import {
 } from "./setup/setup-controller.js";
 import { registerOcuClawSetupTool } from "./setup/overview-tool.js";
 import { registerOcuClawSetupCli } from "./setup/overview-cli.js";
+import { readLiveSetupJourney, readPrivateRoute, registerSetupJourneyReader } from "./setup/setup-live.js";
 import { createRuntimeConfigOverview } from "./config/runtime-config.js";
 import { createFreshWsPortConfigWriter } from "./config/relay-port-default.js";
 import {
@@ -39,6 +40,7 @@ export default function register(api) {
         hasConnectedAppClient: () => false,
       },
       ...registration,
+      readLiveJourney: readLiveSetupJourney,
       isSetupToolRegistered: () => false,
     });
     registerOcuClawSetupCli(api, controller);
@@ -68,7 +70,10 @@ export default function register(api) {
     service,
     isSetupToolRegistered: () => setupToolRegistered,
     ...registration,
+    readLiveJourney: readLiveSetupJourney,
+    readPrivateRoute,
   });
+  registerSetupJourneyReader(api, controller);
   registerOcuClawSetupCli(api, controller);
 
   if (typeof api.on === "function") {

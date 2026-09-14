@@ -109,9 +109,8 @@ pushed children at that moment is reaped as orphan residue (outcome `preempted`,
 `stale_stack_reaped`). Build a wizard **inside one turn**, or rebuild it from the root when
 the next turn starts. Never assume yesterday's depth 3 is still under you.
 
-One cross-check: an `image_caption` render can never survive under a titled parent, because
-the breadcrumb gives it a title and the client refuses titled image cards. See
-[`image-caption.md`](image-caption.md).
+An `image_caption` render accepts the same breadcrumb under a titled parent. Its optional
+heading uses the normal title limits; see [`image-caption.md`](image-caption.md).
 
 ---
 

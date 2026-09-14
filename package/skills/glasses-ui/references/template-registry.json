@@ -110,7 +110,7 @@
         "name": "text_surface"
       },
       "wireTemplateField": "image_caption",
-      "intent": "Show one small greyscale image with a single caption line under it — a welcome card, a rasterized glyph, a one-off picture.",
+      "intent": "Show one small greyscale image with a balanced caption and optional heading — a welcome card, a rasterized glyph, a one-off picture.",
       "summary": "The only template that exists in shipped code (PR #1242). One centered image above the body, which is the caption and also the whole fallback on 2.0.0 clients that cannot paint the image. One-shot: it is an image transfer, not a live surface.",
       "fieldSet": {
         "closed": true,
@@ -139,9 +139,9 @@
           {
             "name": "title",
             "type": "string",
-            "requirement": "forbidden",
-            "limit": "",
-            "note": "rejected with image_caption_title_unsupported — one caption line only"
+            "requirement": "optional",
+            "limit": "<=64 chars",
+            "note": "plain heading; existing measured title fit applies"
           },
           {
             "name": "refresh",
@@ -3653,5 +3653,5 @@
       "openQuestions": []
     }
   ],
-  "contentDigest": "sha256:8c705af034e271401d97146b03412a7a5d37501511685a87315c659109aacaa4"
+  "contentDigest": "sha256:ba190592b1ce93d50677754830f67854da5cb6250e6cfe3bdffd5f906f289353"
 }

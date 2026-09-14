@@ -1,6 +1,6 @@
 # OcuClaw quick reference
 
-**Guide version:** 2026-07-17 (1.0.41)
+**Guide version:** 2026-09-14 (1.0.43)
 
 Reminders only. For recovery procedures, load
 `{baseDir}/references/troubleshooting.md`. Back to the skill's SKILL.md. The
@@ -21,7 +21,7 @@ Reminders only. For recovery procedures, load
 | Containerized host | Keep (or restore) loopback for host networking, a same-namespace proxy, or unknown topology. After a real connection failure, only a confirmed bridge/named network with the ingress proxy outside that namespace may use container `wsBind` `0.0.0.0`; DOCKER-RELAY-UNREACHABLE must first prove the host publish is `127.0.0.1:<wsPort>:<wsPort>`. |
 | Agent tool access | Apply SKILL.md's **Capability-first controller routing** table (Step 4 / AGENT-TOOLS-FILTERED). |
 | Check versions | `npm view ocuclaw version` (latest) · `dist-tags` (channels) · `versions` (history) |
-| Update / switch channel | `openclaw plugins update ocuclaw` (follows the recorded install source) · `update ocuclaw@beta` (move to beta — npm) · `install clawhub:ocuclaw --force` (roll back / move to the stable ClawHub lane) |
+| Update / switch channel | `openclaw plugins update ocuclaw` (follows the recorded install source) · `update ocuclaw@beta` (move to beta — npm and ClawHub both carry the `beta` tag since 2.0.4) · `install clawhub:ocuclaw --force` (roll back / move to the stable ClawHub lane) |
 | Bug report with diagnostics | `externalDebugToolsEnabled` permits bounded diagnostic capture, preview, cache, and local save; `allowDebugUpload` separately permits full-bundle handoff to the phone for user-initiated upload (requires both, plugin ≥ 1.3). Then app Settings → **Client Debug Enabled** → yellow bug icon → **Send Bug Report** → post the `OCU-…` ticket in Discord (ESCALATE Lane 1 / Step 12b) |
 | Community / support | Discord `https://discord.ocuclaw.com` |
 | Donate (optional — not paid support) | `https://buymeacoffee.com/ocuclaw` |

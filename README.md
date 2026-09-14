@@ -1,11 +1,11 @@
-# OcuClaw OpenClaw plugin 2.0.5
+# OcuClaw OpenClaw plugin 2.0.6
 
 This public repository is the release-artifact mirror for the OcuClaw community package.
 It is not an official or bundled OpenClaw plugin.
 
 - `package/` is the source-linked, byte-identical extraction of the retained npm
   artifact.
-- `artifact/ocuclaw-2.0.5.tgz` is the exact tarball validated for npm and
+- `artifact/ocuclaw-2.0.6.tgz` is the exact tarball validated for npm and
   ClawHub.
 - `.github/workflows/clawhub-package-publish.yml` verifies those two forms agree
   before running ClawHub's commit-pinned package workflow.

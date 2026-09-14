@@ -1,6 +1,6 @@
 # OcuClaw fresh install — Steps 1–13
 
-**Guide version:** 2026-07-17 (1.0.41)
+**Guide version:** 2026-09-14 (1.0.43)
 
 Return to the skill's SKILL.md for the guardrails, lane card, checklist, and
 router at any time.
@@ -29,7 +29,8 @@ and the wrap is an incomplete setup, not a finish.
 
 GOAL: confirm the hardware is ready and the host meets the minimum version requirement.
 
-CHECK — ask this question (copy it; do not paraphrase it into the fallback
+CHECK — reuse an already established answer. Ask only when G2/app availability
+has not been established: copy this question; do not paraphrase it into the fallback
 confirmation below): "Are your glasses currently paired to your Even Realities
 app, and is OcuClaw installed from the Even Hub store on your phone?"
 Glasses not paired → stop: finish Even Realities onboarding first. OcuClaw
@@ -93,16 +94,18 @@ source and verification before enabling.` — that is a standard advisory for
 community-channel packages (the release is security-scanned and source-linked),
 **not an error**; say so and continue.
 
-**Beta (only if the user confirmed they are a beta-Discord tester — betas ship on npm, not ClawHub):**
+**Beta (only if the user confirmed they are a beta-Discord tester):**
 ```bash
 openclaw plugins install npm:ocuclaw@beta
 ```
 
 (To install a pinned beta build instead: `openclaw plugins install npm:ocuclaw@<spec>`.)
 
-The prefix pins the install source: `clawhub:` is the stable lane (ClawHub —
-scanned, source-linked releases), `npm:` carries the beta channel and serves as
-the stable fallback. If the OpenClaw build rejects the `clawhub:` prefix as an
+The prefix pins the install source; the tag picks the channel. Bare
+`clawhub:ocuclaw` resolves to ClawHub's `latest` tag, which is the stable lane —
+`latest` is what makes it stable, not the `clawhub:` prefix, because ClawHub has
+carried a `beta` tag as well since 2.0.4. `npm:` is the lane the beta command
+above uses, and it is also the stable fallback. If the OpenClaw build rejects the `clawhub:` prefix as an
 unknown package (older hosts), install stable from npm instead:
 `openclaw plugins install npm:ocuclaw`.
 
