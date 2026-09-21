@@ -60,6 +60,29 @@ export function createEvenAiRouter(opts = {}) {
     dedicatedSessionKeyValidator,
   );
 
+  const configuredResolveDedicatedSessionKey = Reflect.get(
+    opts,
+    "resolveDedicatedSessionKey",
+  );
+  const resolveDedicatedSessionKey =
+    typeof configuredResolveDedicatedSessionKey === "function"
+      ? configuredResolveDedicatedSessionKey
+      : null;
+
+  function dedicatedSessionKeyFor(agentRef = "") {
+    const ref = typeof agentRef === "string" ? agentRef.trim() : "";
+    if (!ref || !resolveDedicatedSessionKey) return dedicatedSessionKey;
+    let resolved = null;
+    try {
+      resolved = normalizeSessionKey(resolveDedicatedSessionKey(ref));
+    } catch {
+      resolved = null;
+    }
+    return resolved && dedicatedSessionKeyValidator(resolved)
+      ? resolved
+      : dedicatedSessionKey;
+  }
+
   async function resolveTargetSession(request = { agentRef: "" }) {
     const routingMode = normalizeEvenAiRoutingMode(getRoutingMode());
     const previousSessionKey =
@@ -68,9 +91,11 @@ export function createEvenAiRouter(opts = {}) {
         : null;
 
     if (routingMode === "background") {
+      const agentRef =
+        typeof request.agentRef === "string" ? request.agentRef.trim() : "";
       return {
         routingMode,
-        sessionKey: dedicatedSessionKey,
+        sessionKey: dedicatedSessionKeyFor(agentRef),
         previousSessionKey,
         sessionChanged: false,
       };

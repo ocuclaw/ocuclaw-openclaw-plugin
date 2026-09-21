@@ -19,6 +19,7 @@ import {
 } from "./hermes-session-keys.js";
 import { normalizeLogger } from "../domain/logger-adapter.js";
 import { gatewaySessionKeyFor } from "./openclaw-session-key.js";
+import { buildTerminalErrorActivity } from "../gateway/openclaw-client.js";
 import {
   GREETING_SEND_HOLD_DEADLINE_MS,
   createGreetingSendGate,
@@ -42,6 +43,15 @@ export const NEW_SESSION_GREETING_PROMPT =
 
 export const HERMES_NEW_SESSION_GREETING_PROMPT =
   "A new session was started via /new or /reset. Greet the user in your configured persona, if one is provided. Keep it to 1-3 sentences and ask what they want to do. Do not mention internal steps, files, tools, or reasoning.";
+
+export const NEW_SESSION_DISPATCH_ERROR_LABEL = "New session failed";
+
+function pickFirstNonEmptyString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
 
 export function activeNewSessionGreetingPrompt() {
   return getActiveBackendKind() === "hermes"
@@ -211,6 +221,10 @@ export function createSessionService(opts = {}) {
   const getOcuClawProfileOptions = Reflect.get(opts, "getOcuClawProfileOptions");
   const conversationState = opts.conversationState;
   const emitDebug = typeof opts.emitDebug === "function" ? opts.emitDebug : () => {};
+
+  const configuredBroadcastActivity = Reflect.get(opts, "broadcastActivity");
+  const broadcastActivity =
+    typeof configuredBroadcastActivity === "function" ? configuredBroadcastActivity : null;
   const configuredGreetingHoldDeadlineMs = Reflect.get(opts, "greetingHoldDeadlineMs");
   const greetingHoldDeadlineMs =
     Number.isFinite(configuredGreetingHoldDeadlineMs) && configuredGreetingHoldDeadlineMs > 0
@@ -1755,6 +1769,15 @@ export function createSessionService(opts = {}) {
     return sessionAgentOverrideId(sessionKey);
   }
 
+  function getSessionProfileId(sessionKey, fullKey) {
+    if (getActiveBackendKind() !== "hermes") return "";
+    if (typeof fullKey === "string" && fullKey) {
+      const fromFull = sessionAgentSelectorId(fullKey);
+      if (fromFull) return fromFull;
+    }
+    return typeof sessionKey === "string" && sessionKey ? sessionAgentSelectorId(sessionKey) : "";
+  }
+
   function getSessionAgentId(sessionKey, fullKey) {
     const explicit = explicitSessionAgentId(sessionKey, fullKey);
     if (explicit) {
@@ -2946,6 +2969,8 @@ export function createSessionService(opts = {}) {
         .catch((err) => {
           logger.error(`[relay] Failed to send /new for new session: ${err.message}`);
           greetingSendGate.evict(sessionKey);
+
+          broadcastNewSessionDispatchError(sessionKey, err);
         });
     }
     return { sessionKey, pages };
@@ -3040,6 +3065,60 @@ export function createSessionService(opts = {}) {
     return greetingSendGate.onActivity(sessionKey, phase, runId, origin);
   }
 
+  function buildNewSessionDispatchErrorActivity(sessionKey, err) {
+    const raw = err && typeof err === "object" ? err : {};
+    const data = raw.data && typeof raw.data === "object" ? raw.data : {};
+    const message =
+      typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : "";
+
+    const structuredHint =
+      pickFirstNonEmptyString([
+        data.errorKind,
+        data.failoverReason,
+        data.providerRuntimeFailureKind,
+        raw.errorKind,
+        raw.failoverReason,
+      ]) || undefined;
+    return buildTerminalErrorActivity(
+      {
+        sessionKey,
+        label: NEW_SESSION_DISPATCH_ERROR_LABEL,
+        message,
+        detail: message,
+        errorKind: structuredHint,
+      },
+      null,
+      sessionKey,
+      "agent_error",
+    );
+  }
+
+  function broadcastNewSessionDispatchError(sessionKey, err) {
+    if (!broadcastActivity) return null;
+    const activity = buildNewSessionDispatchErrorActivity(sessionKey, err);
+    emitDebug(
+      "relay.session",
+      "new_session_dispatch_failed",
+      "error",
+      { sessionKey },
+      () => ({
+        code: activity.code || null,
+        transportCode:
+          err && typeof err === "object" && typeof err.code === "string" ? err.code : null,
+        detail: activity.detail || null,
+      }),
+    );
+    try {
+      broadcastActivity(activity, "synthetic_new_session_error");
+    } catch (broadcastErr) {
+      logger.warn(
+        `[relay] New-session error broadcast failed: ${broadcastErr?.message ?? broadcastErr}`,
+      );
+      return null;
+    }
+    return activity;
+  }
+
   return {
     ensureSessionKey,
     peekSessionKey,
@@ -3098,6 +3177,10 @@ export function createSessionService(opts = {}) {
     markSessionRead,
     getSessionPin,
     getSessionAgentId,
+
+    extractShortKey,
+
+    getSessionProfileId,
     setSessionAgentId,
     hasExplicitSessionAgent,
     deleteSessions,

@@ -430,7 +430,7 @@ function normalizeFailureHint(rawHint) {
   return trimmed.replace(/[\s-]+/g, "_");
 }
 
-function mapFailureHintToActivityCode(rawHint) {
+export function mapFailureHintToActivityCode(rawHint) {
   const normalizedHint = normalizeFailureHint(rawHint);
   if (!normalizedHint) return null;
   if (Object.hasOwn(FAILOVER_REASON_ACTIVITY_CODE_MAP, normalizedHint)) {
@@ -449,7 +449,7 @@ function mapFailureHintToActivityCode(rawHint) {
   return null;
 }
 
-function inferFailureHintFromText(rawText) {
+export function inferFailureHintFromText(rawText) {
   if (typeof rawText !== "string") return null;
   const text = rawText.trim().toLowerCase();
   if (!text) return null;
@@ -491,6 +491,21 @@ function inferFailureHintFromText(rawText) {
     return "auth";
   }
 
+  if (
+    text.includes("oauthrefreshfailure") ||
+    text.includes("oauth refresh failed") ||
+    text.includes("token refresh failed") ||
+    text.includes("refresh token expired") ||
+    text.includes("session has ended") ||
+    text.includes("please log in again") ||
+    text.includes("401 unauthorized") ||
+    text.includes("http 401") ||
+    text.includes("status 401") ||
+    text.includes("unauthorized")
+  ) {
+    return "auth_refresh";
+  }
+
   if (text.includes("timed out") || text.includes("timeout")) {
     return "timeout";
   }
@@ -515,7 +530,7 @@ function inferFailureHintFromText(rawText) {
   return null;
 }
 
-function resolveTerminalErrorCode(source, fallbackCode) {
+export function resolveTerminalErrorCode(source, fallbackCode) {
   const explicitCode = pickTrimmedString(source.code, source.errorCode);
   if (explicitCode) {
     return explicitCode;
@@ -542,7 +557,7 @@ function resolveTerminalErrorCode(source, fallbackCode) {
   return inferredHintCode || fallbackCode || "agent_error";
 }
 
-function buildTerminalErrorActivity(data, fallbackRunId, fallbackSessionKey, fallbackCode) {
+export function buildTerminalErrorActivity(data, fallbackRunId, fallbackSessionKey, fallbackCode) {
   const source = isObject(data) ? data : {};
   const code = resolveTerminalErrorCode(source, fallbackCode);
   const labelSource = pickTrimmedString(
@@ -1596,6 +1611,10 @@ class OpenClawClient extends EventEmitter {
           role: "assistant",
           content: [{ type: "text", text: fullText }],
           sessionKey: completedSessionKey,
+
+          finalReplyCommitted: commitIsLiveActiveRun && !!completedRunId &&
+            normalizeRunId(runId) === completedRunId && !!completedSessionKey &&
+            normalizeSessionKey(committedActiveRunSessionKey) === completedSessionKey,
         });
         this.emit("activity", {
           state: "idle",
@@ -1614,6 +1633,9 @@ class OpenClawClient extends EventEmitter {
         const historyGuardOwner = this;
         this._fetchHistory(completedSessionKey || "main", {
           idleRunGeneration: historyGuardOwner._activeRunGeneration,
+
+          commitRunId: completedRunId,
+          commitText: fullText,
         }).catch((err) => {
           this._logger.error(
             `[openclaw] Post-commit history fetch failed: ${err.message}`
@@ -2198,6 +2220,10 @@ class OpenClawClient extends EventEmitter {
     this.emit("history", {
       sessionKey: echoedSessionKey,
       messages,
+
+      ...(normalizeRunId(options.commitRunId) && typeof options.commitText === "string"
+        ? { commitRunId: normalizeRunId(options.commitRunId), commitText: options.commitText }
+        : {}),
     });
 
     return result;

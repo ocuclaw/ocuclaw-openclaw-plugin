@@ -1,5 +1,5 @@
-export const PLUGIN_VERSION = "2.0.6";
+export const PLUGIN_VERSION = "2.0.9";
 export const REQUIRES_CLIENT_VERSION = "2.0.2";
 export const OPENCLAW_PLUGIN_API_COMPATIBILITY = ">=2026.6.9 <2027.0.0";
 export const BUILT_WITH_OPENCLAW = "2026.6.9";
-export const BUILD_INPUT_HASH = "sha256:3fc84cfae6ffc236d02904499104ee4cb3d04d785b0246be6dd3dcd60a1b6469";
+export const BUILD_INPUT_HASH = "sha256:aaa5b1f27bed87ccd1dca4b1d39b99d18bf73181a1c54d2d54d47fb5b3018665";

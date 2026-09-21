@@ -1,6 +1,6 @@
 # Updating OcuClaw
 
-**Guide version:** 2026-09-14 (1.0.43)
+**Guide version:** 2026-09-19 (1.0.56)
 
 This is the **stable update** path — for any already-installed OcuClaw user. You
 do **not** need to be a beta tester to be here. For the **beta channel** (newer
@@ -51,7 +51,15 @@ npm view ocuclaw time --json
 ```
 Read the tail of those lists yourself and show the user only the most recent few versions with dates — e.g. "you're on 1.2.4 (Apr 3); latest is 1.3.0 (Jun 6)". Do not dump the full list. For what changed, point at the changelog or Discord — npm carries no release notes.
 
-If installed == latest stable: tell them they're up to date. If they confirm they're a beta-Discord tester and want newer pre-release builds, load `{baseDir}/references/beta.md`; otherwise you're done.
+Before calling the setup up to date, compare the actual phone/client and bundle
+floors (recovery-routing.md). If installed == latest stable and the pair is
+compatible, report that no stable bundle update is needed. If the client needs a
+newer bundle than stable supplies, report the distribution mismatch; do not end
+as healthy, lower the floor or reset credentials. Offer only an approved obtainable
+compatible channel/artifact. If they confirm they're a beta-Discord tester and
+want that channel, load `{baseDir}/references/beta.md`. Otherwise preserve the
+baseline and report the blocked transition. A tested 1.3.7 migration and an
+obtainable phone rollback remain separate proof; do not promise either here.
 
 **Pre-flight:** If the evenAiEnabled probe = 1 and the evenAiToken probe = 0 → run **CASE-D** before proceeding.
 
@@ -78,6 +86,10 @@ warning for each command.
 
 No extra restart for these — they take effect at the post-update restart below.
 
+Before updating, follow recovery-routing.md's **Interrupted upgrade, retry and
+compatible recovery** checks. An interrupted or failed attempt resumes there;
+it does not restart fresh installation.
+
 **DO:**
 
 ```
@@ -87,10 +99,12 @@ openclaw plugins update ocuclaw
 `update` follows the install's **recorded source**: installs tracked against npm
 keep updating from npm — that is fine and fully supported; do NOT migrate a
 working install just because the fresh-install lane now uses ClawHub. If the
-user *asks* to move to the ClawHub lane, it's a one-time
-`openclaw plugins install clawhub:ocuclaw --force` (plugin config — relayToken,
-port, enablement — survives the swap; expect the community-channel advisory
-line, a notice, not an error), then continue with the restart below.
+user *asks* to move to the ClawHub lane, select the approved exact version and
+follow recovery-routing.md's **Installation consent and recorded source**
+procedure. Preserve relayToken, port and enablement, then compare them after the
+swap. A consent refusal is not an advisory and does not permit continuation.
+An archive-tracked prepublication test uses the approved hash-identified archive
+replacement procedure; it does not establish a public channel upgrade.
 
 Allow OpenClaw's reload planner to act, then run the VERIFY below. If the
 gateway is live but still serves the old runtime, request one

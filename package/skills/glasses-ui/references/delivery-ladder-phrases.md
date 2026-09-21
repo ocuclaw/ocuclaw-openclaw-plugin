@@ -50,6 +50,6 @@ A surface can end at **any** rung. The rung says *how far it got*; `terminationC
 
 The binding contract — all 26 pinned invariants, the review-rung reconciliation table, the
 `terminationCause` vocabulary and its sources — is
-`docs/design/liveui-research/contract/delivery-ladder.md` **in the evenclaw repo**. That path
+`docs/design/liveui-research/contract/delivery-ladder.md` **in the OcuClaw repo**. That path
 is a repo path, not a path inside this published bundle: use it when you have the repo, and
 use this file when you do not. Everything a close needs is in the table above.

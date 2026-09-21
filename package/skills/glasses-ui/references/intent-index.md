@@ -16,6 +16,7 @@ author it; never quote a budget from memory.
 
 ```
 image_caption@1          show one small greyscale image with a…    text/replace    one paint; re-render to change it
+graphic@1                show a reading by its shape               text/replace    slot by shape: one number metric, trend sparkline, goal progress|ring, vs target bullet, per-hour heatstrip, facts keyvalue, state status
 choose_one@1             pick exactly one option out of a short…   list/replace    expiry parks, it never picks
 compare_options@1        weigh several options against each other… details/replace opening a detail is local, not an answer
 mapped_list@1            replace a label-only list from a…         list/replace    display-only; silence is never consent

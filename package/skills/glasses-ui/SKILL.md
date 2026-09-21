@@ -435,8 +435,9 @@ render_glasses_ui({
 ## `image_caption` — the one template that reaches the wire
 
 `template: "image_caption"` on a `text_surface` paints one small greyscale image with a
-balanced caption under it, with an optional plain heading. It is the only value the `template` field accepts today —
-registry entry `image_caption@1`, `status: "shipped"`, `renderableToday: true`.
+balanced caption under it, with an optional plain heading. It is one of the two values the `template` field accepts
+today (the other is `graphic`, next section) — registry entry `image_caption@1`, `status: "shipped"`,
+`renderableToday: true`.
 
 ```js
 render_glasses_ui({
@@ -464,6 +465,60 @@ render_glasses_ui({
 
 > Both variants worked through, the full rejection-code table, and the decoded-vs-base64
 > size trap → [`references/image-caption.md`](references/image-caption.md).
+
+## `graphic` — a reading with a shape, drawn from typed slots
+
+`template: "graphic"` on a `text_surface` draws one or two typed **slots** on the image plate
+with the caption line under it — registry entry `graphic@1`, `status: "shipped"`,
+`renderableToday: true`. You describe what the reading is; the client draws it. You never
+send pixels, paths, coordinates or sizes.
+
+```js
+render_glasses_ui({
+  kind: "text_surface",
+  template: "graphic",
+  body: "12.5 kt at the slip, up 1.5",   // the caption — and the whole fallback, numbers first
+  graphic: {
+    slots: [
+      { type: "metric", value: "12.5", unit: "kt", label: "Wind", delta: 1.5 },
+      { type: "sparkline", values: [9, 11, 10, 12.5], label: "Last hour" }
+    ]
+  }
+})
+```
+
+**Pick the slot by the shape of the reading:**
+
+| the reading is… | slot |
+|---|---|
+| one number that matters | `metric` (`value` is text, e.g. `"12.5"`) |
+| a trend over time | `sparkline` |
+| a share of a goal | `progress` or `ring` (`value` a number, fraction `0..1`) |
+| a value against its target | `bullet` |
+| a per-hour pattern | `heatstrip` |
+| a few facts | `keyvalue` |
+| a plain state | `status` with an `icon` |
+
+- **One or two slots, no `title`** (`graphic_title_unsupported`), **no `refresh`**
+  (`graphic_refresh_unsupported`).
+- **`body` is required and is the fallback.** A client without the renderer shows only the
+  caption, so it carries the reading in words, numbers first.
+- **Stays text when:** it must keep updating by itself (use a `refresh` recipe), the wearer
+  picks from it (a list), or the answer is words.
+- **Repairs, not rejects.** Slightly-wrong slots are repaired and the ok result lists each in
+  `repairs` (`text_truncated`, `percent_read_as_fraction`, `icon_dropped`, …). Send a cleaner
+  spec next time. An unknown slot type is `graphic_slot_type_unknown` with the nearest name.
+- **Icons** come from the closed list in
+  [`references/graphic-icons.md`](references/graphic-icons.md); an unknown name is dropped,
+  never guessed.
+- **`update: "patch"` repaints the whole plate.** An identical re-render returns
+  `unchanged: true` and sends nothing. After a wearer dismiss, later renders in the same run
+  are discarded until the run ends.
+- **The budgets live in the registry entry**, not here: `graphic@1` → `layoutBudgets.budgets`
+  gives `captionMaxChars`, `slotsMax`, `sparklineMaxValues`, `iconNames` and the rest.
+
+> Slot shapes and value types, worked examples for each slot, every repair and rejection code,
+> and when a Graphic stays text → [`references/graphic.md`](references/graphic.md).
 
 ## The interaction window (the listen)
 

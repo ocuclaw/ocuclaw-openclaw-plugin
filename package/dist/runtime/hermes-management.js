@@ -6,6 +6,7 @@ import { HERMES_AUTOMATION_OPERATIONS, HERMES_AUTOMATION_READS, automationsReque
 import { isPermissionsOperation, permissionsRequest, permissionsManagementResult } from "./hermes-permissions-management.js";
 import { HEALTH_OPERATIONS, HEALTH_READS, healthRequest, healthResult } from "./hermes-health-management.js";
 import { SAVED_OPERATIONS, SAVED_ERRORS, savedRequest, savedResult } from "./hermes-saved-management.js";
+import { AGENT_OPERATIONS, AGENT_ERRORS, agentsRequest, agentsResult } from "./hermes-agents-management.js";
 import { TOOLS_OPERATIONS, toolsRequest, toolsManagementResult } from "./hermes-tools-management.js";
 import { CONNECTION_OPERATIONS, CONNECTION_READS, connectionsRequest, connectionsManagementResult } from "./hermes-connections-management.js";
 import { isLearningOperation, learningRequest, learningManagementResult } from "./hermes-learning-management.js";
@@ -39,6 +40,8 @@ export function validManagementRequest(value) {
   if (isApprovalsOperation(value.operation)) return Boolean(value.requestId && value.profileId && value.scope === "profile" && approvalsRequest(value.operation, value.approvals));
   if (isPermissionsOperation(value.operation)) return Boolean(value.requestId && value.profileId && value.scope === "profile" && permissionsRequest(value.operation, value.permissions));
   if (isLearningOperation(value.operation)) return Boolean(value.requestId && value.profileId && value.scope === "profile" && learningRequest(value.operation, value.learning));
+
+  if (AGENT_OPERATIONS.includes(value.operation)) return Boolean(value.requestId && value.profileId === "default" && value.scope === "gateway" && agentsRequest(value.operation, value.agents));
   return Boolean(value.requestId && value.profileId &&
     (value.operation === "overview" || value.operation === "capabilities" ||
       (MEMORY_OPERATIONS.includes(value.operation) && value.memory !== null) ||
@@ -75,6 +78,10 @@ export function managementRequest(value) {
     identity.permissions = Object.keys(value || {}).every(key => allowed.includes(key)) ? permissionsRequest(identity.operation, value.permissions) : null;
   }
   if (SAVED_OPERATIONS.includes(identity.operation)) identity.saved = savedRequest(identity.operation, value?.saved);
+  if (AGENT_OPERATIONS.includes(identity.operation)) {
+    const allowed = ["type", "requestId", "operation", "scope", "profileId", "agents"];
+    identity.agents = Object.keys(value || {}).every(key => allowed.includes(key)) ? agentsRequest(identity.operation, value.agents) : null;
+  }
   if (isLearningOperation(identity.operation)) {
     const allowed = ["type", "requestId", "operation", "scope", "profileId", "learning"];
     identity.learning = Object.keys(value || {}).every(key => allowed.includes(key)) ? learningRequest(identity.operation, value.learning) : null;
@@ -90,6 +97,16 @@ export function managementFailure(identity, code = "management_unavailable", uns
   return { ...managementIdentity(identity), status: unsupported ? "unsupported" : "error",
     capabilities: [], errorCode: code,
     errorMessage: unsupported ? "This Hermes host does not support this operation. Update Hermes and OcuClaw to a compatible version." : code === "outcome_unknown" ? "Outcome unknown. Check the operation receipt; do not repeat this action." : "Could not read Hermes management state. Refresh when connected." };
+}
+
+const SUMMARY_COUNTS = ["toolsets", "skills", "mcp", "mcpNeedsAuth", "jobs", "failedJobs7d", "savedEntries", "nextJobAtMs", "diskFreeBytes"];
+function overviewSummary(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const summary = {};
+  if (["smart", "manual", "off"].includes(raw.approvalsMode)) summary.approvalsMode = raw.approvalsMode;
+  for (const key of SUMMARY_COUNTS) if (Number.isSafeInteger(raw[key]) && raw[key] >= 0) summary[key] = raw[key];
+  if (typeof raw.reviewsOn === "boolean") summary.reviewsOn = raw.reviewsOn;
+  return Object.keys(summary).length > 0 ? summary : null;
 }
 
 export function managementResult(identity, raw) {
@@ -133,6 +150,13 @@ export function managementResult(identity, raw) {
       failed.errorCode = raw.errorCode;
       failed.errorMessage = SAVED_ERRORS[raw.errorCode];
     }
+    if (AGENT_OPERATIONS.includes(identity.operation) && AGENT_ERRORS[raw.errorCode]) {
+      failed.errorCode = raw.errorCode;
+
+      const sent = typeof raw.errorMessage === "string" && raw.errorMessage.trim().length > 0 &&
+        raw.errorMessage.length <= 256 && [...raw.errorMessage].every(ch => ch.codePointAt(0) >= 32) ? raw.errorMessage : null;
+      failed.errorMessage = sent ?? AGENT_ERRORS[raw.errorCode];
+    }
     return failed;
   }
   const result = { ...managementIdentity(identity), status: "ok", capabilities: [] };
@@ -158,6 +182,8 @@ export function managementResult(identity, raw) {
     }
     if (["profile", "gateway"].includes(raw.overview.activeWorkScope)) overview.activeWorkScope = raw.overview.activeWorkScope;
     if (raw.overview.attentionKind === "learning_proposals") overview.attentionKind = "learning_proposals";
+    const summary = overviewSummary(raw.overview.summary);
+    if (summary) overview.summary = summary;
     result.overview = overview;
   }
   if (identity.operation.startsWith("restart.") && raw.restart && typeof raw.restart === "object") {
@@ -199,5 +225,6 @@ export function managementResult(identity, raw) {
     try { result.saved = savedResult(identity.operation, raw.saved, identity.saved); }
     catch { return managementFailure(identity, "invalid_saved_response"); }
   }
+  if (AGENT_OPERATIONS.includes(identity.operation)) result.agents = agentsResult(raw.agents);
   return result;
 }

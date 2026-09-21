@@ -1,20 +1,30 @@
 import { OCUCLAW_SETUP_OPERATIONS } from "./setup-controller.js";
+import { FIRST_USE_TOOL_OPERATIONS, FIRST_USE_WAIT_MAX_MS, validateFirstUseParams } from "./first-use.js";
 import {
   MAX_RELAY_PORT,
   MIN_RELAY_PORT,
   SET_RELAY_PORT_OPERATION,
   validateRelayPortMutationParams,
 } from "./relay-port-mutation.js";
+import {
+  PROVISION_RELAY_CREDENTIAL_OPERATION,
+  validateProvisionRelayCredentialParams,
+} from "./relay-credential-provision.js";
 
 export const OCUCLAW_SETUP_TOOL_OPERATIONS = Object.freeze([
   ...OCUCLAW_SETUP_OPERATIONS,
+  ...FIRST_USE_TOOL_OPERATIONS,
   SET_RELAY_PORT_OPERATION,
+  PROVISION_RELAY_CREDENTIAL_OPERATION,
 ]);
 
 export const ocuClawSetupParametersSchema = {
   type: "object",
   properties: {
     operation: { type: "string", enum: [...OCUCLAW_SETUP_TOOL_OPERATIONS] },
+    binding: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    answer: { type: "string", enum: ["yes", "no"] },
+    timeoutMs: { type: "integer", minimum: 0, maximum: FIRST_USE_WAIT_MAX_MS },
     expectedCurrentPort: {
       type: "integer",
       minimum: MIN_RELAY_PORT,
@@ -32,7 +42,13 @@ export const ocuClawSetupParametersSchema = {
 
 const OPERATIONS = new Set(OCUCLAW_SETUP_OPERATIONS);
 
-export function registerOcuClawSetupTool(api, controller, setRelayPort) {
+export function registerOcuClawSetupTool(
+  api,
+  controller,
+  setRelayPort,
+  provisionRelayCredential,
+  firstUse = null,
+) {
   if (!api || typeof api.registerTool !== "function") {
     throw new Error("registerOcuClawSetupTool requires api.registerTool");
   }
@@ -44,9 +60,29 @@ export function registerOcuClawSetupTool(api, controller, setRelayPort) {
     {
       name: "ocuclaw_setup",
       description:
-        "Inspect redacted OcuClaw setup state or request one approved, bounded relay-port change.",
+        "Inspect OcuClaw setup; request approved host configuration or tool-driven first use. first_use_confirm records only the wearer's explicit answer about the bound reply; never infer it from machine health.",
       parameters: ocuClawSetupParametersSchema,
-      async execute(_toolCallId, params) {
+      async execute(_toolCallId, params, signal = null) {
+        if (FIRST_USE_TOOL_OPERATIONS.includes(params?.operation)) {
+          validateFirstUseParams(params);
+          const result = typeof firstUse === "function" ? await firstUse(params, signal)
+            : { status: "unavailable", reason: "unsupported-host" };
+          return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        }
+        if (params?.operation === PROVISION_RELAY_CREDENTIAL_OPERATION) {
+          validateProvisionRelayCredentialParams(params);
+          if (typeof provisionRelayCredential !== "function") {
+            const err = new Error(
+              "unsupported_host: relay-credential provisioning is unavailable",
+            );
+            err.code = "unsupported_host";
+            throw err;
+          }
+          const receipt = await provisionRelayCredential(params);
+          return {
+            content: [{ type: "text", text: JSON.stringify(receipt) }],
+          };
+        }
         if (params?.operation === SET_RELAY_PORT_OPERATION) {
           validateRelayPortMutationParams(params);
           if (typeof setRelayPort !== "function") {

@@ -1,5 +1,13 @@
 import * as fs from "node:fs";
+import {
+  gatewayRestartAdvice,
+  gatewayRestartRisk,
+  hostSummary,
+  mentionsGatewayRestart,
+} from "./cloudways-host.js";
 import { setupInstallation, setupJourney } from "./setup-journey.js";
+import { assistantSkillSummary, unknownAssistantSkill } from "./assistant-skill.js";
+import { createFirstUseStore } from "./first-use.js";
 import {
   BUILT_WITH_OPENCLAW,
   OPENCLAW_PLUGIN_API_COMPATIBILITY,
@@ -11,6 +19,7 @@ import {
 } from "../config/relay-port-default.js";
 import { OPENCLAW_BUNDLE_DEFAULT_WS_PORT } from "../config/runtime-config.js";
 import { taskIndexPromptInjectionStatus } from "../runtime/task-index-prompt-injection.js";
+import { classifyConfiguredRelayCredential } from "./relay-credential-provision.js";
 
 const SECRET_PRESENCE = Object.freeze({
   PRESENT: "present",
@@ -62,6 +71,48 @@ export function classifySetupRegistration(registrationMode) {
         : "plugin-discovery-registration",
     runtimeStatus: "unknown",
   };
+}
+
+function liveRelayTokenSecretState(api) {
+  const configApi = api && api.runtime && api.runtime.config;
+  if (!configApi || typeof configApi.current !== "function") return null;
+  let live;
+  try {
+    live = configApi.current();
+  } catch (_) {
+    return null;
+  }
+  const classified = classifyConfiguredRelayCredential(live);
+  if (classified === "ambiguous") return null;
+  return classified === "present"
+    ? {
+        presence: SECRET_PRESENCE.PRESENT,
+        validation: SECRET_VALIDATION.NOT_CHECKED,
+      }
+    : {
+        presence: SECRET_PRESENCE.ABSENT,
+        validation: SECRET_VALIDATION.NOT_APPLICABLE,
+      };
+}
+
+function relayCredentialLoadState(service) {
+  if (!service || typeof service.getRelayCredentialLoadState !== "function") return null;
+  try {
+    const state = service.getRelayCredentialLoadState();
+    if (!state || typeof state !== "object") return null;
+    const mint = state.mintOnLoad && typeof state.mintOnLoad === "object" ? state.mintOnLoad : {};
+    return {
+      origin: typeof state.origin === "string" ? state.origin : null,
+      adoptedInProcess: state.adoptedInProcess === true,
+      mintOnLoad: {
+        status: typeof mint.status === "string" ? mint.status : "not-attempted",
+        code: typeof mint.code === "string" ? mint.code : null,
+        detail: typeof mint.detail === "string" ? mint.detail : null,
+      },
+    };
+  } catch (_) {
+    return null;
+  }
 }
 
 function classifyBindAddress(value) {
@@ -154,7 +205,7 @@ function compareCalendarVersion(left, right) {
   return 0;
 }
 
-function compatibilityStatus(hostVersion) {
+export function compatibilityStatus(hostVersion) {
   const numeric = calendarVersion(/^\d{4}\.\d+\.\d+/.exec(hostVersion) ? hostVersion : null);
   const tokens = String(OPENCLAW_PLUGIN_API_COMPATIBILITY).trim().split(/\s+/);
   const floorToken = tokens.find((token) => token.startsWith(">=")) ?? tokens[0];
@@ -332,6 +383,11 @@ const FINDING_TEXT = Object.freeze({
     "error",
     "The OcuClaw relay token is absent.",
   ],
+
+  "configuration.relay-credential-mint-blocked": [
+    "error",
+    "The OcuClaw plugin could not create its Relay Credential at load; the evidence names why.",
+  ],
   "compatibility.host-incompatible": [
     "error",
     "The loaded OpenClaw host is below the plugin API compatibility floor.",
@@ -387,6 +443,15 @@ function findingsFor(state) {
   }
   if (state.secrets.relayToken.presence === "absent") {
     findings.push(finding("configuration.relay-token-absent", "relay-token-presence"));
+    const mint = state.relayCredentialLoad && state.relayCredentialLoad.mintOnLoad;
+    if (mint && (mint.status === "failed" || mint.status === "skipped")) {
+      findings.push(
+        finding(
+          "configuration.relay-credential-mint-blocked",
+          mint.code ? `mint-on-load:${mint.code}` : "mint-on-load",
+        ),
+      );
+    }
   }
   if (state.compatibility.status === "incompatible") {
     findings.push(finding("compatibility.host-incompatible", "host-version-comparison"));
@@ -433,9 +498,15 @@ const REMEDIATIONS = Object.freeze({
   },
   "configuration.relay-token-absent": {
     id: "configure-relay-token",
-    action: "Enter an OcuClaw relay token through an operator-owned OpenClaw config surface.",
-    preconditions: ["Choose a secret outside model-visible arguments and output."],
-    risks: ["The OcuClaw app and Runtime Bundle must use the same credential."],
+    action: "Let the plugin create the Relay Credential itself: enable it (openclaw plugins enable ocuclaw), let the gateway load it, then re-read the journey. Nobody types a credential.",
+    preconditions: ["The plugin is enabled and the gateway can write its own configuration file."],
+    risks: ["A credential that stays absent after a load is a host fact (writability, a malformed branch); read the mint-on-load evidence, never enter one by hand."],
+  },
+  "configuration.relay-credential-mint-blocked": {
+    id: "repair-relay-credential-mint",
+    action: "Read durableFacts.relayCredential.mintOnLoad in the journey and resolve the named cause on the host (make the OpenClaw configuration writable, or repair the malformed plugins.entries.ocuclaw.config branch), then let the gateway load the plugin again.",
+    preconditions: ["Nothing was written; an existing credential was never replaced."],
+    risks: ["Repairing the branch by hand must preserve any existing credential, or every paired phone disconnects."],
   },
   "compatibility.host-incompatible": {
     id: "upgrade-openclaw-host",
@@ -475,11 +546,19 @@ const REMEDIATIONS = Object.freeze({
   },
 });
 
-function planFor(findings) {
+function planFor(findings, host = null) {
   const remediations = REMEDIATIONS;
   return findings.flatMap((item) => {
     const remediation = remediations[item.id];
-    return remediation ? [{ ...remediation, findingId: item.id }] : [];
+    if (!remediation) return [];
+
+    const action = mentionsGatewayRestart(remediation.action)
+      ? gatewayRestartAdvice(remediation.action, host)
+      : remediation.action;
+    const risks = Array.isArray(remediation.risks)
+      ? remediation.risks.map((risk) => gatewayRestartRisk(risk, host))
+      : remediation.risks;
+    return [{ ...remediation, action, risks, findingId: item.id }];
   });
 }
 
@@ -595,10 +674,10 @@ function environmentReport(probe) {
   }
 }
 
-function resolveSetupStateDir(api) {
-  const stateApi = api && api.runtime && api.runtime.state;
-  if (!stateApi || typeof stateApi.resolveStateDir !== "function") return null;
+export function resolveSetupStateDir(api) {
   try {
+    const stateApi = api && api.runtime && api.runtime.state;
+    if (!stateApi || typeof stateApi.resolveStateDir !== "function") return null;
     const dir = stateApi.resolveStateDir(
       typeof process !== "undefined" ? process.env : undefined,
     );
@@ -621,15 +700,17 @@ function resolveReportedPortOrigin(api, relay) {
   return "unverified-pre-start";
 }
 
-function createSetupStateReader({
-  api,
-  service,
-  isSetupToolRegistered,
-  pluginStatus,
-  pluginStatusEvidence,
-  runtimeStatus,
-  environmentProbe,
-}) {
+function createSetupStateReader(options) {
+
+  const {
+    api,
+    service,
+    isSetupToolRegistered,
+    pluginStatus,
+    pluginStatusEvidence,
+    runtimeStatus,
+    environmentProbe,
+  } = options || {};
   if (
     !service ||
     (typeof service.getSetupConfig !== "function" &&
@@ -665,6 +746,8 @@ function createSetupStateReader({
     const state = {
       schemaVersion: 1,
       operation: "overview",
+
+      host: readHostSummary(options),
       plugin: {
         id: "ocuclaw",
         enabled: api?.config?.plugins?.enabled === false ||
@@ -749,40 +832,109 @@ function createSetupStateReader({
           : "no-effective-policy-context",
       },
       secrets: {
-        relayToken: secretState(config.relayToken),
+        relayToken: liveRelayTokenSecretState(api) ?? secretState(config.relayToken),
         gatewayToken: secretState(config.gatewayToken),
         sonioxApiKey: secretState(config.sonioxApiKey),
         cartesiaApiKey: secretState(config.cartesiaApiKey),
         evenAiToken: secretState(config.evenAiToken),
       },
+
+      relayCredentialLoad: relayCredentialLoadState(service),
     };
     return state;
   };
   return readSetupState;
 }
 
+function readHostSummary(options) {
+  try {
+    if (options && typeof options.hostSummary === "function") return options.hostSummary();
+    if (options && options.hostSummary && typeof options.hostSummary === "object") return options.hostSummary;
+    return hostSummary();
+  } catch (_) {
+    return { managed: null, detectVerdict: "unknown", guide: null, gatewayRestart: "supported" };
+  }
+}
+
+function readAssistantSkill(options) {
+  try {
+    if (options && typeof options.assistantSkill === "function") {
+      return Promise.resolve(options.assistantSkill()).catch(() => unknownAssistantSkill());
+    }
+    if (options && options.assistantSkill && typeof options.assistantSkill === "object") {
+      return Promise.resolve(options.assistantSkill);
+    }
+    return Promise.resolve(assistantSkillSummary(options || {})).catch(() => unknownAssistantSkill());
+  } catch (_) {
+    return Promise.resolve(unknownAssistantSkill());
+  }
+}
+
+function withAssistantSkill(options, result, context) {
+
+  if (context.surface === "phone") return Promise.resolve(result);
+  return Promise.all([Promise.resolve(result), readAssistantSkill(options)]).then(
+    ([value, assistantSkill]) =>
+      value && typeof value === "object" ? { ...value, assistantSkill } : value,
+  );
+}
+
 export function createSetupController(options) {
   const readState = createSetupStateReader(options);
-  return function runSetupOperation(operation, context = {}) {
+  return function resolveSetupOperation(operation, context = {}) {
     const state = readState(context);
     const capabilities = {
       readOperations: [...OCUCLAW_SETUP_OPERATIONS],
-      pairing: "unavailable",
-      firstUse: "unavailable",
-      welcome: "unavailable",
+
+      credentialProvisioning:
+        options.credentialProvisioning === "available" ? "available" : "unavailable",
+      pairing: options.pairing === "available" ? "available" : "unavailable",
+      pairingPresenter: options.pairing === "available" ? "direct-terminal" : null,
+      firstUse: options.firstUse === "available" ? "direct-terminal" : "unavailable",
+      toolFirstUse: options.api?.registrationMode === "full" &&
+        typeof options.api?.registerGatewayMethod === "function" &&
+        typeof options.api?.registerTool === "function" &&
+        options.service.getRelay?.()?.setupFirstUseToolAvailable?.() === true ? "available" : "unavailable",
+      welcome: options.service.getRelay?.()?.setupWelcomeAvailable?.() === true ? "available" : "unavailable",
     };
     const reportedState = { ...state, capabilities };
-    if (operation === "journey") {
+    if (operation === "journey" || (options.runtimeStatus === "unknown" && typeof options.readLiveJourney === "function")) {
       const installation = setupInstallation(resolveSetupStateDir(options.api));
-      const local = setupJourney(reportedState, installation);
+      let firstUse;
+      try { firstUse = createFirstUseStore(resolveSetupStateDir(options.api)).read(); }
+      catch (_) { firstUse = { status: "unavailable", reason: "setup-state-unreadable-or-foreign" }; }
+      const local = setupJourney(reportedState, installation, null, firstUse);
       if (options.runtimeStatus === "unknown" && typeof options.readLiveJourney === "function") {
-        return options.readLiveJourney(local);
+        return Promise.resolve(options.readLiveJourney(local)).then((owner) => {
+          const verified = owner !== local && owner?.installation?.id === installation.id;
+          const effectiveCapabilities = {
+            toolFirstUse: verified ? owner.capabilities?.toolFirstUse ?? "unknown" : "unknown",
+            welcome: verified ? owner.capabilities?.welcome ?? "unknown" : "unknown",
+          };
+          if (operation === "journey") return withAssistantSkill(options, { ...(verified ? owner : local),
+            toolPolicy: state.toolPolicy,
+            capabilities: { ...(verified ? owner.capabilities : capabilities), ...effectiveCapabilities } }, context);
+          const effectiveState = { ...reportedState, capabilities: { ...capabilities, ...effectiveCapabilities } };
+          return operation === "overview" ? effectiveState : completeSetupOperation(effectiveState, operation);
+        });
       }
       if (typeof options.readPrivateRoute === "function" && state.runtime.status === "running") {
-        return Promise.resolve(options.readPrivateRoute(state.relay.port)).then((route) =>
-          setupJourney(reportedState, installation, route));
+
+        const routeContext = {
+          installation,
+          hostStateDir: typeof options.hostStateDir === "string" ? options.hostStateDir : undefined,
+        };
+
+        const readDaemon = typeof options.readTailnetDaemon === "function"
+          ? Promise.resolve(options.readTailnetDaemon()).catch(() => null)
+          : Promise.resolve(null);
+        return Promise.all([
+          Promise.resolve(options.readPrivateRoute(state.relay.port, routeContext)),
+          readDaemon,
+        ]).then(([route, tailnetDaemon]) =>
+          withAssistantSkill(options, setupJourney(reportedState, installation, route, firstUse, tailnetDaemon), context));
       }
-      return local;
+      return withAssistantSkill(options, local, context);
     }
     if (operation === "overview") return reportedState;
     return completeSetupOperation(reportedState, operation);
@@ -808,7 +960,7 @@ function completeSetupOperation(state, operation) {
       ...operationState,
       health,
       findings,
-      steps: planFor(findings),
+      steps: planFor(findings, state.host || null),
       mutationPerformed: false,
     };
   }

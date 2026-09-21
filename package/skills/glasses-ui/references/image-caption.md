@@ -2,8 +2,9 @@
 
 Registry entry: **`image_caption@1`** in
 [`template-registry.json`](template-registry.json) — `status: "shipped"`,
-`lane: "registry_entry_only"`, `renderableToday: true`. It is the sole member of
-`WIRE_TEMPLATE_FIELD_ENUM`: the only value the `template` field on a render accepts today.
+`lane: "registry_entry_only"`, `renderableToday: true`. It is one of the two values the
+`template` field on a render accepts today; the other, `graphic`, draws typed slots instead
+of taking an image ([`graphic.md`](graphic.md)).
 Everything below is a reading of that entry plus the live validator; **the entry is the
 source of truth**, so when a number here and a number there disagree, the artifact wins and
 this file is stale.

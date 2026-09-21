@@ -1,6 +1,6 @@
 # OcuClaw troubleshooting — named cases
 
-**Guide version:** 2026-09-14 (1.0.43)
+**Guide version:** 2026-09-19 (1.0.56)
 
 **Reference only** — execute nothing here unless a step routed you here by its
 case name. After resolving a case, return to the skill's SKILL.md and re-run
@@ -19,22 +19,31 @@ The same token must be entered in the OcuClaw app's relay server token field wit
 Allow OpenClaw to reload, then verify: openclaw plugins inspect ocuclaw --runtime
 If the gateway is live but the runtime remains stale, run once: openclaw gateway restart --safe
 ```
-Do what it says via the Step 3 user-terminal lane, then Step 5.
+Do NOT do what the old message says: nobody types a credential. The plugin
+creates one itself at its first load (Step 3). Read `journey`'s
+`durableFacts.relayCredential.mintOnLoad` for why the load could not, apply
+Step 3's named owner action (writability, malformed branch, or the typed
+provisioning on an older bundle), then Step 5. The gateway log line
+`[ocuclaw] relay credential not minted at load (<code>)` carries the same code.
 
 ---
 
 **ERR-EVENAI-TOKEN** — gateway prints at startup:
 ```
 OcuClaw evenAiToken is required when evenAiEnabled is true.
-Set the plugin config with:
-  openclaw config set plugins.entries.ocuclaw.config.evenAiToken "your-token"
-The same token must be entered as the password in the Even AI Agent Configure section of the Even Realities app.
-To disable Even AI instead, run:
-  openclaw config set plugins.entries.ocuclaw.config.evenAiEnabled false --strict-json
-Allow OpenClaw to reload, then verify: openclaw plugins inspect ocuclaw --runtime
-If the gateway is live but the runtime remains stale, run once: openclaw gateway restart --safe
 ```
-The token goes in via the user-terminal lane (Step 12); the disable command you may run yourself.
+Never put the token in chat or a command argument. If the plugin cannot load,
+explain this narrow repair and disable only the broken Even AI setting:
+
+```bash
+openclaw config set plugins.entries.ocuclaw.config.evenAiEnabled false --strict-json
+```
+
+Allow reload and verify the plugin runtime. Then use the private user-terminal
+entry `openclaw ocuclaw credential even-ai`, followed by `openclaw ocuclaw even-ai
+enable`; follow its observed activation result. Do not restart Cloudways.
+Continue with Step 12's route, Even app and real-request checkpoints; preserving
+the saved token or enabling a flag alone is not end-to-end success.
 
 ---
 
@@ -42,7 +51,13 @@ The token goes in via the user-terminal lane (Step 12); the disable command you 
 
 ---
 
-**MIGRATE-8443** — older setups served the relay as TCP on `:8443`. **Only migrate when setup is broken, this is a fresh install, the route points at the wrong backend, or the user asks for the modern layout — a working existing setup wins over the preferred default.** To migrate: clear it, then run the Step 7 commands.
+**MIGRATE-8443** — older setups served the phone relay as TCP on `:8443`.
+Preserve a working baseline. Before any approved migration, prove the old route
+belongs to this OpenClaw installation and identify affected phones. Foreign,
+Hermes-owned or ambiguous routes stop here for owner resolution. A wrong backend
+alone is not permission to remove it. Only with that evidence and migration
+approval may the user remove this specific old route, then follow Step 7 for the
+private phone route; never reset all Serve configuration.
 
 Linux / macOS:
 ```bash
@@ -52,7 +67,10 @@ Windows (Administrator PowerShell):
 ```powershell
 tailscale serve --tls-terminated-tcp=8443 off
 ```
-(If a legacy `https=8443` route already proxies to the actual relay port — the Step 5 `wsPort`, `47800` on new installs — keep it and just add the `:8444` route. If it points at a *different* port such as the old `:9000`, re-run both Step 7 commands so each route targets the actual Step 5 port.) After migrating, the app's relay address changes to `wss://…:8444` (Step 9); the Even AI URL stays on `:8443`.
+Preserve any HTTPS route on `:8443`; it is outside core phone recovery. Repair
+Even AI only when requested through Step 12 and its ownership checks. After an
+approved phone migration, enter `wss://…:8444` on affected phones (Step 9), keeping
+their existing credential. Verify connection before declaring recovery.
 
 ---
 
@@ -75,7 +93,7 @@ tailscale serve --tls-terminated-tcp=8443 off
 **APP-CONNECT-FAIL** — Fast check first, before any host-side changes: have the user open the phone's Tailscale app and confirm it shows "Connected" (VPN toggle on). If a setup that worked recently suddenly fails, phone Tailscale being offline is the most likely cause — reconnect it, retap Connect in OcuClaw, and stop here if that fixes it. Only continue below once phone VPN state is confirmed.
 
 The relay logs every connection attempt; collect evidence before guessing. Connection evidence lives in the relay log and the typed verify's `runtime.appClientConnected` — never in session listings, which are scope-restricted (`visibility=tree`) and blind to the phone's session from this lane; a count of 0 there is not disproof. Have the user tap Connect, then read the tail of the gateway log (`openclaw logs`, or the newest `/tmp/openclaw/openclaw-*.log` on Linux/macOS):
-- `[ocuclaw] relay rejected connection: invalid token …` **anywhere in the last minute** → token mismatch → re-enter it, or reset via Step 3. (Repeat rejects from the same address are collapsed into one line per 60s — a fresh tap often prints nothing new while an earlier reject line is still the live evidence.)
+- `[ocuclaw] relay rejected connection: invalid token …` **anywhere in the last minute** → token mismatch → have the user re-enter the credential in the app. If they cannot — they have forgotten it, or never knew it — that is the all-device reset described in the fresh-install Step 3 block "**Credential present but the user cannot enter it on the phone**": the supported route is a bundle with terminal pairing (`openclaw ocuclaw pair` delivers the credential privately); replacing the credential disconnects every phone paired to this machine and must be set up again, so name it, get an explicit OK, and go through the explicit reset procedure only — never a hand-typed value. (Repeat rejects from the same address are collapsed into one line per 60s — a fresh tap often prints nothing new while an earlier reject line is still the live evidence.)
 - `[ocuclaw] relay client connected …` at that moment → the relay WAS reached — the problem is past connectivity (version banner in the app, or app-side).
 - No connect **and no reject line in the last minute** → the attempt never reached the relay → address/route problem: work the address checklist below, re-verify the Serve routes (Step 7), and on a containerized host → DOCKER-RELAY-UNREACHABLE.
 
@@ -84,7 +102,7 @@ Have the user **read back exactly** what's in the app's Address field (the addre
 - ends in `:8444`
 - machine name `<node>.<tailnet>.ts.net` spelled exactly as Step 7 printed it
 
-Then the token (a mismatch logs the reject line above): have the user re-enter it, or reset via Step 3. Relay actually up? `openclaw plugins inspect ocuclaw` shows `Status: loaded`. Still failing on a containerized host → DOCKER-RELAY-UNREACHABLE.
+Then the token (a mismatch logs the reject line above): have the user re-enter it; if they cannot, take the all-device reset named in the bullet above — the fresh-install Step 3 block "**Credential present but the user cannot enter it on the phone**" — with its explicit OK first. Relay actually up? `openclaw plugins inspect ocuclaw` shows `Status: loaded`. Still failing on a containerized host → DOCKER-RELAY-UNREACHABLE.
 
 ---
 
@@ -267,7 +285,7 @@ If the bug icon or Send flow isn't available (very old app build, or the app was
 
 **Lane 2 — Discord paste block.** Assemble this paste-ready breakdown, show it to the user, confirm together it contains no secrets, and point them at the OcuClaw Discord:
 ```
-OcuClaw setup help — guide 2026-09-14 (1.0.43)
+OcuClaw setup help — guide 2026-09-19 (1.0.56)
 Platform/OS:
 openclaw --version:
 openclaw status --all (read-only, pasteable — confirm no secrets):
@@ -286,7 +304,7 @@ Debug upload ticket (if sent):
 
 **BETA-REPORT** — when a beta build misbehaves, assemble this paste-ready report, show it to the user, confirm together it contains no secrets, and have them post it in the beta-testing Discord (`https://discord.ocuclaw.com`). If the app is installed, also offer the ESCALATE Lane 1 in-app debug upload first — the ticket attaches real diagnostics to the report:
 ```
-OcuClaw beta report — guide 2026-09-14 (1.0.43)
+OcuClaw beta report — guide 2026-09-19 (1.0.56)
 Installed beta version (from plugins inspect):
 Platform/OS:
 openclaw --version:

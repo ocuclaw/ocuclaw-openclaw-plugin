@@ -7,7 +7,7 @@ metadata: {"openclaw": {"emoji": "👓"}}
 
 # OcuClaw Setup Assistant
 
-**Guide version:** 2026-09-14 (1.0.43)
+**Guide version:** 2026-09-19 (1.0.56)
 
 Use this skill when a user asks to install, update, roll back, configure, or troubleshoot OcuClaw on this machine. Work phase by phase. Before each phase, say what you will do, why, and which commands matter. Ask for OK. Afterward, verify in plain words. Setup takes about 15 minutes; the user should keep their phone nearby.
 
@@ -17,6 +17,14 @@ the owning installation using the capability routing below, explain the first
 incomplete checkpoint, and enter its existing guide step. Host conversation owns
 setup; the phone conversation supplies only the test message and wearer interaction.
 Never run the setup controller from the phone test conversation.
+
+**Direct pairing:** `journey.capabilities.pairing: available` names the user's
+own interactive `openclaw ocuclaw pair` terminal, not a tool approval surface.
+Hand off once and resume the same installation's journey afterwards. Follow
+`references/fresh-install.md` Step 9 for QR/Manual, four-word comparison, refusal
+and retry. Never execute/capture the ceremony or request its private contents in
+chat. Preserve existing credentials and phones; approval is distinct from an
+observed authenticated phone connection and from first-use/G2 proof.
 
 **Opening move (new setup only).** If explanation preference is already established,
 reuse it and proceed to the state assessment. Otherwise your FIRST reply does three
@@ -66,7 +74,7 @@ tight and technical. Never re-ask; re-read the card. If the register is
 clearly wrong mid-run (they ask what a terminal is, or they start correcting
 your flags), adjust it once and note the change on the card.
 
-This standalone assistant is the bootstrap and recovery surface. It must remain
+This assistant is the bootstrap and recovery surface. It must remain
 eligible and useful while the OcuClaw plugin is absent, disabled, unconfigured,
 or broken; never treat a missing plugin or plugin tool as a reason to stop using
 this skill.
@@ -77,6 +85,12 @@ OcuClaw is the OpenClaw client for Even Realities G2 smart glasses. It has two h
 
 ### Verified checkpoint routing
 
+For installation, version mismatch, controller absence or failed load, first read
+`{baseDir}/references/recovery-routing.md`. It distinguishes the available public
+packages from the prepared terminal journey and routes each failed component.
+Guide version is not plugin capability evidence. Never run `pair` or `first-use`
+merely because this newer guide describes them.
+
 Read `overview` through the currently callable controller. If its
 `capabilities.readOperations` includes `journey`, call that read-only operation
 (typed `ocuclaw_setup` on the callable lane; `openclaw ocuclaw journey` on the
@@ -85,24 +99,118 @@ policy-hidden CLI lane). Explain `durableFacts`, `currentHealth`, `firstUse`, an
 are observations, not inputs that can authorize skipping a checkpoint. Never reuse
 a receipt from another `installation.id`; null identity means ownership is unknown.
 
+### Managed hosts
+
+The first command of any new or resumed setup is that journey read, before Step 1.
+Its top-level `host` block says what kind of machine this is. When `host.managed`
+is `cloudways`, read `references/cloudways.md` BEFORE Step 1 and follow it for the
+whole setup. That host has no system Tailscale and cannot have one, so do not look
+for a `tailscale` binary and do not ask the user whether Cloudways supports it.
+`openclaw gateway restart` is a no-op there, so rule 5's restart path does not
+apply: plugin installs and config changes hot-load, and you verify by re-reading
+`journey` a few seconds later. `host.gatewayRestart` repeats that verdict
+(`never-on-this-host` or `supported`), and `host.guide` names the reference to
+read. When the user would rather run one command themselves than have you drive
+it, `openclaw ocuclaw cloudways setup` does the whole Cloudways path in their own
+terminal and ends at a paired phone. A missing `host` block, or `managed: null`,
+means an ordinary host: carry on as written.
+
+### Standalone copies of this assistant
+
+The same journey read carries an `assistantSkill` block, and you act on it
+before Step 1, exactly like the host block. It names the copy of this assistant
+the host actually loaded (`activeSource`, `activeGuideVersion`), the copy the
+plugin ships (`bundledGuideVersion`), and whether a separately installed copy is
+shadowing the bundled one (`shadowed`).
+
+This assistant ships only inside the plugin. `activeSource: openclaw-extra` is
+the bundled copy and is the expected, healthy reading. Anything else is a
+separately installed copy that OpenClaw prefers over the plugin's, silently and
+with no warning, which pins the user to whatever guide that copy carries.
+
+When `shadowed` is `true`, say so in plain words before Step 1, name both guide
+versions, and hand the user the block's `nextAction` to run in their own
+terminal; then re-read `journey` and continue. The removal depends on the host
+version: `openclaw skills remove ocuclaw-assist` where that verb exists, and
+where it does not (OpenClaw 2026.7.x has no `skills remove`) delete the folder
+holding the SKILL.md that `openclaw skills info ocuclaw-assist --json` reports
+as `filePath`. Check `openclaw skills --help` before naming one. It is a named
+condition, never a halt and never a reason to stop or restart setup.
+`shadowed: null` means the host's skill listing could not be read: carry on and
+do not guess at a shadow.
+
+`durableFacts.relayCredential` carries presence plus the routing verdict:
+`disposition` (`preserve-existing`, `host-provisionable`, or
+`operator-entry-required`), `dispositionReason` saying why, and the raw
+`provisioning` capability. `disposition` is the only one you route on — it
+already folds in every precondition. Read it instead of assuming: a credential
+that is already present is preserved, never replaced, and an unreadable or
+non-string one is an owner repair, never a reason to write a new one.
+The block also says where the credential came from: `origin` is
+`host-minted-at-load` (the plugin created it itself at its first load; plugin
+releases after 2.0.6 do this, like the Hermes adapter) or `pre-existing`, and
+`mintOnLoad` (`status`, `code`, value-free `detail`) says what the load-time
+mint did when a credential is absent — that code is the owner action, never a
+cue to type one. Nobody enters a Relay Credential; there is no manual lane.
+
 Route `verify-plugin` to bootstrap/plugin recovery, `verify-host` to Step 1,
 `configure-host` to the required configuration checks,
 `verify-relay` to existing gateway recovery, and `verify-private-route` to the
 private-route checks in fresh-install.md. An unknown checkpoint needs evidence;
-it is not completed. Controller pairing, first-use recording and welcome operations
-remain unavailable. Use the existing guide for those human steps; never call an
-operation absent from actual capabilities or turn a connected socket into G2 proof.
-The controller cannot certify core completion in this slice, even on an installation
-the wearer previously used successfully. A temporary outage does not erase durable
-configuration or require replaying completed configuration steps.
+it is not completed. When `capabilities.toolFirstUse` is `available` and the
+typed tool is callable, follow fresh-install.md Step 10's tool-driven lane:
+arm before the phone send, wait immediately in the same turn for the bound reply, and ask the wearer once
+whether that reply appeared on their glasses. Relay only their explicit answer
+with the returned binding; never infer it from machine health. The tool records
+this as a host-conversation wearer report, not direct-terminal input.
+For a new attempt awaiting welcome, follow Step 10's fixed welcome render and
+automatic dismissal wait. Resume the first incomplete milestone; preserve old
+completions and keep current health separate from recorded acceptance.
+On the policy-hidden lane do not weaken tool policy: use the advertised terminal
+fallback. When only `capabilities.firstUse` is `direct-terminal`, follow
+fresh-install.md Step 10: the user runs `openclaw ocuclaw first-use` in their own
+terminal, sends a fresh phone message in the bound OpenClaw session, and explicitly
+confirms that reply appeared on G2. Never execute the terminal confirmation, pass an agent
+assertion as a wearer answer, or substitute socket health, host traffic or a render
+call. `awaiting-reply`, `awaiting-confirmation` and `completed` are separate states.
+Re-read `journey` after the handoff or any interruption; a new host conversation
+resumes the same installation checkpoint. A test-input receipt is not wearer proof.
+When `coreComplete` is true, use the controller's success message and stop core setup.
+Report any current outage separately using `currentHealth` and `recoveryCheckpoint`;
+preserve completed setup, credentials and other phones. Welcome and optional
+integrations are deferred choices, never completion gates. If this capability is
+unavailable, explain that the installed controller cannot record this checkpoint;
+do not claim durable completion from an older controller.
 
 On supported hosts, `journey` reads the owning runtime through OpenClaw's
-authenticated gateway and checks the existing private Tailscale route read-only.
+authenticated gateway and observes the private Tailscale route read-only.
 Discovery's unknown relay status in older operations remains unchanged. If the
 live read is unsupported, unreachable or belongs to another installation, the
-journey retains unknown evidence and routes to the existing checks. A matching
-route proves its observed target, not permission to replace it: route ownership
-remains unknown until the established ownership checks resolve it.
+journey retains unknown evidence and routes to the existing checks.
+
+Use the route-reader contract when `currentHealth.privateRoute.schemaVersion`
+is `1` and its `proposal` block is present. Older journey results lack these
+fields: use the existing step-level route and ownership checks for them;
+their `healthy` status alone does not establish ownership.
+
+The route-reader block is the whole `verify-private-route` verdict and
+it keeps four truths apart: `relay` (health of the loopback relay),
+`route.presence`/`route.target`/`route.exposure` (what is configured on
+`:8444`), `reachability` (the bounded loopback and front-door probes), and
+`ownership` (the bundle-scoped Managed Serve Route receipt). Route on
+`privateRoute.status` only — `healthy` resumes without reconfiguration;
+`missing` or `stale` carries the ONE action in
+`proposal.applyCommand` only when `proposal.status` is `presented`;
+`foreign`, `conflicting`, `exposed`, `unreachable`,
+`offline` and `unknown` name what stands in the way in `evidence` and
+withhold every command. An expected hostname or a configured port is never
+readiness, and a matching shape is never ownership: `ownership.status`
+`foreign-gateway`, `foreign-hermes` or `unreadable-claim` means the port is
+somebody else's and you never propose over it. `teardown.command` appears
+only while the receipt and the live route still agree; never derive a
+removal from memory. The controller never runs the command and never renders
+the node name: the phone address is `wss://<node name>:8444`, and the user
+reads the node name from their own `tailscale status`.
 
 An older controller without these capabilities stays on the existing overview,
 doctor, plan, verify and step-level verification route. If the plugin is absent,
@@ -135,49 +243,62 @@ and enter Step 12 directly. Do not replay fresh-install Steps 1–11. Read
 `evenAiTokenPresent` from the controller receipt when available, or use the
 documented redacted `evenAiToken` presence probe on a fallback lane. The
 secret must be stored by the user before the non-secret enable command runs.
-Allow OpenClaw's reload planner to apply the change first; only when fresh
-read-only evidence says the live runtime is stale may the lane use its one
-`openclaw gateway restart --safe`, followed by verification. A host that is
+Use the capability-specific private credential and `even-ai` commands in that
+step. Follow their observed activation result: supported safe plugin hot reload,
+or saved/pending with explicit host action. Never infer a reload policy from the
+version alone or restart Cloudways for this optional lane. A host that is
 not installed and healthy routes only to the specific prerequisite named by
 the assessment; activation intent is never a reason to replay unrelated
 setup work.
 
-The references ship inside this skill. If one is missing or its `Guide
-version:` differs from this file's, the skill install is broken or stale —
-reinstall the skill, don't improvise from memory. Resolve the intended agent
-before choosing a target: without a scope flag, `openclaw skills` infers the
-active workspace from the current directory and otherwise uses the configured
-default agent. That installs into `<workspace>/skills`, which OpenClaw does
-read. Use an explicit agent or the shared managed location when that is the
-intended visibility:
+The references ship inside this skill, and this skill ships inside the OcuClaw
+plugin. If a reference is missing or its `Guide version:` differs from this
+file's, the plugin's copy is broken or stale — repair the plugin, don't
+improvise from memory:
 
 ```bash
-openclaw skills install @ocuclaw/ocuclaw-assist --force
-openclaw skills install @ocuclaw/ocuclaw-assist --force --agent <agent-id>
-openclaw skills install @ocuclaw/ocuclaw-assist --force --global
+openclaw plugins install clawhub:ocuclaw
+openclaw plugins update ocuclaw
 ```
 
-The first two target one agent's active `<workspace>/skills`; `--global`
-targets `~/.openclaw/skills` for all local agents unless an agent allowlist
-narrows visibility. Update the same scope with `openclaw skills update
-@ocuclaw/ocuclaw-assist`, adding the same `--agent <agent-id>` or `--global`
-flag used for installation. Do not combine `--agent` and `--global`.
+The first installs the plugin and this assistant together; the second updates
+both in place, following the recorded install source. There is no separate
+assistant package: never route this guide through a skill registry or npm, and
+never propose installing it as a standalone skill. One plugin command repairs
+it, and the guide can never drift from the plugin that ships it.
 
 ## How you (the agent) must work
 
 **How you execute**
 
-1. **Finish the whole job.** Work every required box before stopping; setup is not done while a required box is unchecked; a truly blocked step → `[blocked: reason]`, never a silent skip or early end. The job ends at Step 13's wrap (wrap-feedback.md's ordered finish), never at a successful Step-10 test.
+**Optional phone setup:** on a matching installed bundle advertising the private
+setup interface, lead with Home's Optional setup card and dedicated pages;
+Settings keeps re-entry after dismissal. Native replacement, Save and apply,
+activation and diagnostics confirmation controls own consent for their named
+action. Do not add a shell-command approval to that phone flow. On supported
+OpenClaw hot-reload hosts, Save and apply requests reload; refresh active readback
+after reconnecting. Saved or reloaded is not tested. Route review remains
+print-only until separately approved. The command checkpoints below apply to
+advanced Desktop/CLI host actions; older bundles retain their supported fallback.
+Candidate code does not establish public bundle availability.
+
+1. **Finish core setup.** Work every required checkpoint; a truly blocked step → `[blocked: reason]`. Step 10's installation-scoped recorded completion is a successful finish: the phone-origin reply, its supported reply evidence and welcome dismissal are recorded. Keep SDK acceptance distinct from wearer confirmation. Voice, Even AI, diagnostics and Step 13's extended wrap may all be declined without invalidating core completion. An unavailable or undismissed welcome stays pending; preserve working text chat. On older bundles, report the manual message check and the absence of durable completion separately.
 2. **Run commands exactly as written.** Verbatim; don't rewrite, wrap in `read` or a loop, pipe, or add flags; substitute only the marked placeholder. If a command seems unsafe, incompatible, or blocked on this host, stop and raise the concern — never rewrite it silently. *A clever "equivalent" has already broken installs.* When a written command fails, that's rule 8's open lane: diagnose read-only and propose — don't silently substitute.
-3. **Never set a secret to empty.** A token `config set` rejecting the value as empty or shorter than its minimum means no usable value was saved — stop, have the user re-run it with a real visible value, and don't proceed.
+3. **Never clear a configured secret.** Use the supported private-entry command or dialog. Blank/cancel preserves the existing value; invalid input or an unconfirmed save does not complete the capability. Keep working settings and retry only that private choice. Never move a token into a command argument to repair a failed save.
 4. **Checkpoint each mutating phase, not each command — and never checkpoint a read-only check.** Before a phase that changes anything: say what you'll do, why, and which commands (1–2 plain sentences) — get an OK. After: verify the result in plain words. A phase is one numbered step (or one named troubleshooting case); an OK covers exactly the phase it was given for — never carry it into the next numbered step, and never ask one OK for a batch ("…then I'll continue through the next steps"). **Output gate — apply it to every pause message before sending:** a message that pauses for an OK must itself contain the fenced command(s) it is asking about, each with a one-line plain-words why; if your drafted pause message has no code block, it is malformed — discard it and send the step's CHECKPOINT content instead. A pause message also OPENS with a one-sentence outcome of the phase that just finished, so the user is never asked to approve a step they haven't been told about. Evidence for the command you are proposing (a probe result, a recorded read) enters only after a sentence names what it refers to — a message whose first words are a bare probe result is malformed: with no subject named, the user reads it against the step THEY just finished; discard it and re-draft in that order. Re-checkpoint at every mutating step boundary. A phase whose commands are all read-only (status, list, inspect, `serve status`, version and log reads, the probes) needs no OK: announce it in one plain outcome-language sentence — what you're checking and why in user terms, e.g. "I'm going to check OpenClaw's record of OcuClaw's install status", not tool internals — then run it and report. When the entered step defines a `Skip if` check, resolve that check **before** proposing the phase — from evidence already recorded (lane card, checklist, an earlier probe) or by running the read-only check command — and propose the step's commands only if the check fails; a passed check *is* the phase's result: report the skip and move to the next step.
 5. **Warn before a change that may restart the gateway; verify reload first; one explicit restart per phase.** Restart warning: "I may go quiet for ~30s. If I don't come back, ask me to continue OcuClaw setup with the ocuclaw-assist skill and I'll resume where we left off." Let OpenClaw's reload planner apply plugin/config changes, then verify. If the gateway is live but the runtime is stale, request one `openclaw gateway restart --safe`; after it, stop and verify before doing anything else. If the gateway is down, route to `GW-DOWN`; if an explicit restart reports no usable service or supervisor boundary, route to `GW-RESTART-NOSVC`. Never repeat the same restart without a new finding. On wake: re-run the state assessment, re-enter at the routed step, and don't re-ask passed checkpoints. Config mutations are serialized: never issue two `config set` commands in one parallel batch — the host's transactional write fails the second with `ConfigMutationConflictError`; run them one at a time and, on that error, re-run the failed command once, alone. A safe restart you issue mid-turn is EXPECTED to come back accepted-but-deferred — your own running turn is in-flight work the drain waits for, so deferral is this procedure's normal outcome, not an edge case. When it reports deferred ("restart deferred: … active operation(s)"), say precisely that the config change is SAVED and verified and only its runtime application is queued until the gateway drains — a deferral is not a failure; do not re-issue the restart, end the turn, and verify after it lands. A deferred restart also lands SILENTLY — the gateway posts no follow-up message into this session when it applies — so say that too when reporting the deferral: it will finish quietly in the background, nothing will announce it, and the user's next message (any message) is what lets you check. Then open your next turn, whatever prompted it, by verifying whether the deferred restart landed and reporting that outcome before any other work. The same honesty applies when no restart was requested at all: a mutation whose own output says a restart or reload is needed to apply it (e.g. "Restart the gateway to apply.") is SAVED but not yet APPLIED — name that state in the message reporting the phase, and do not treat the changed behavior as live until the reload/restart verification passes.
+
+**Optional activation scope:** Steps 11/12/12b use their capability commands and
+observed activation results instead of the generic restart path in rule 5.
+Supported hot/hybrid hosts may reload; unknown/off/restart policy remains pending
+for explicit host action. Do not restart Cloudways for optional setup.
 
 **Hard guardrails (never cross)**
 
 6. **You never handle secrets — the user does.** Never ask for, generate, echo, or read a token; check presence only via the probes below (`config get` on a secret leaf prints a redaction sentinel, never the value, on all supported OpenClaw builds); never read the config file.
-7. **Never expose the relay publicly.** Tailscale **Serve** only, never `funnel`; configuration goes through `openclaw config set` — non-secret values you may set, secret values only the user sets.
+7. **Never expose the relay publicly.** Tailscale **Serve** only, never `funnel`; use supported capability commands or `openclaw config set` for non-secret configuration. Secret values belong only in the user's supported hidden prompt or private dialog, never command arguments.
 8. **Stay in bounds — improvise only in the open lane.** The skill's commands come first, and for OcuClaw setup this skill wins over web tutorials. When a step fails, read-only diagnostics beyond the skill (status/list/inspect commands, log reads, port checks, loopback `curl`) are always fine — investigate freely. A mutating fix the skill doesn't name needs: the skill's own path already failed, you say what you'd run and why, the user OKs it, every hard guardrail still holds (secrets, Serve-only, no invented config keys, restart discipline) — then one attempt, verify, and if unresolved return to the named case or ESCALATE rather than freestyling further. For OS/vendor errors consult that vendor's official docs; elevation you don't have or sandbox-blocked steps → give to the user, then verify.
+9. **Never end a turn on a promise you cannot keep.** Nothing wakes you after the turn ends: no timer, no background job, no silent re-check. So never say you will check again later, watch for something, come back to it, or notify the user — "I'll re-check it automatically once that window has passed" is the same broken promise as "I'll let you know", and a live run left the user waiting 2 minutes in silence for exactly that. When a step needs a wait (the cold certificate window, a reload settling, a hot-load landing), do the wait INSIDE the same turn: one bounded `sleep` in your own terminal, or re-read the controller up to three times about 30 seconds apart, and answer only after the last read. If you genuinely must end the turn, say plainly that you have stopped and name the exact words that restart you, e.g. "say 'check the route again' in a minute".
 
 ### Capability-first controller routing
 
@@ -248,7 +369,7 @@ Use this decision table exactly:
 
 | Evidence | State | Lane |
 |---|---|---|
-| Actual current-session inventory contains `ocuclaw_setup`, and its call succeeds | controller-callable | Prefer typed `overview`, `doctor`, `plan`, and `verify` operations. Use the narrowest operation that answers the current question. The typed `set_relay_port` mutation is available only under the bounded procedure below. |
+| Actual current-session inventory contains `ocuclaw_setup`, and its call succeeds | controller-callable | Prefer typed `overview`, `doctor`, `plan`, and `verify` operations. Use the narrowest operation that answers the current question. The typed `set_relay_port` and `provision_relay_credential` mutations are available only under the bounded procedures below. |
 | Current inventory omits `ocuclaw_setup`; runtime inspection says `Status: loaded`; `openclaw ocuclaw overview` works | controller-policy-hidden | Use the matching deterministic CLI: `openclaw ocuclaw overview`, `openclaw ocuclaw doctor`, `openclaw ocuclaw plan`, or `openclaw ocuclaw verify`. Diagnose policy only when the user wants the model-facing tool exposed. |
 | Plugin is installed but required configuration is incomplete or invalid | plugin-unconfigured | Keep using this standalone skill. Route to the missing setup step; use the CLI doctor/plan when it is available, but never make it a prerequisite. |
 | Runtime inspection or plugin listing says `Status: disabled` | plugin-disabled | Keep using this standalone skill and route to Step 4. Plugin-owned tools, CLI, and bundled skill are unavailable. |
@@ -277,10 +398,16 @@ argument. Secret entry stays in the user's own terminal or Control UI. Never rep
 a secret or token value from command output; report presence only through
 the approved probes below.
 
+#### Typed host mutations
+
+When `ocuclaw_setup` is callable it exposes two bounded mutating operations:
+`set_relay_port` and `provision_relay_credential`. Both are host-approved, both
+report a redacted receipt, and neither is available through `openclaw ocuclaw`.
+Everything else the controller offers is read-only.
+
 #### Typed relay-port change
 
-When `ocuclaw_setup` is callable, it has exactly one mutating operation:
-`set_relay_port`. Use it only when the state assessment proves that a relay-port
+Use `set_relay_port` only when the state assessment proves that a relay-port
 change is actually needed or the user explicitly requests one. Never migrate a
 working setup merely to match the preferred fresh-install default.
 
@@ -309,8 +436,81 @@ working setup merely to match the preferred fresh-install default.
 
 This mutation is deliberately unavailable through `openclaw ocuclaw`; when the
 setup tool is policy-hidden, use the existing user-approved non-secret command in
-the fresh-install or troubleshooting lane. Relay tokens and all other secrets remain
-user-entered and are never tool arguments.
+the fresh-install or troubleshooting lane. All secrets remain outside model-visible
+input and are never tool arguments; the Relay Credential in particular is
+host-created and is never entered by anyone.
+
+#### Typed Relay Credential provisioning
+
+`provision_relay_credential` lets the HOST create the Relay Credential for a
+genuinely fresh installation, so nobody has to invent, copy or retype a password.
+It takes no arguments: a credential can never be supplied by you or by the user
+through a tool call, and no operation ever reads one back. On plugin releases
+after 2.0.6 the plugin already mints its credential at its first load, so on a
+loaded plugin this operation normally reads `preserved`; it remains the route
+for older bundles and for a host whose load-time mint could not run.
+
+`journey`'s `durableFacts.relayCredential.disposition` is the whole routing
+rule, and it is already complete — one fact, no preconditions of your own to
+re-derive: `host-provisionable` means this operation applies,
+`preserve-existing` means a usable credential is already configured and nothing
+is to be done, and `operator-entry-required` means this lane is unavailable
+here — report the named blocker; there is no manual entry step. `dispositionReason` says why:
+`pairing-unavailable` means this host CAN create a credential but nothing can
+deliver it to the phone yet, because a provisioned credential is deliberately
+never disclosed — not to you, not through `openclaw config get`, which redacts
+it — so the phone can only receive it through the pairing exchange. Never route
+on the raw `capabilities.credentialProvisioning` instead; it is a capability,
+not a verdict.
+
+1. Confirm from the current receipt that `secrets.relayToken.presence` is
+   `absent`. Never propose provisioning against a `present` credential.
+2. State plainly that the host will create the credential itself, that it is
+   never shown to you and never printed, that any existing credential would be
+   preserved, and that the gateway must restart before the relay uses it. Obtain
+   the phase checkpoint required by rule 4.
+3. Give rule 5's restart warning BEFORE you invoke anything — "I may go quiet
+   for ~30s. If I don't come back, ask me to continue OcuClaw setup with the
+   ocuclaw-assist skill and I'll resume where we left off." This write declares
+   a restart intent, so the warning belongs ahead of the mutation, not after it.
+4. Invoke `ocuclaw_setup` with only `operation: provision_relay_credential`.
+5. The host presents its own allow-once/deny approval. Same rules as the
+   relay-port change: never imply the conversational checkpoint replaces it,
+   never claim it happened unless it visibly did, never ask for durable trust.
+6. Accept success only from a receipt whose `status` is `provisioned` (the host
+   created one) or `preserved` (one already existed and was kept). `preserved`
+   is a success, not a failure, and it is the expected result of a repeat call,
+   an interrupted retry, a repair or an upgrade. `credential.rotated` is always
+   `false`: this operation never replaces a credential, so an already paired
+   phone never loses its connection.
+7. Apply the receipt's restart intent. When `followUp.requiresRestart` is
+   `true`, the gateway must restart before the relay uses the credential: say so
+   plainly and never call the relay usable before it happens. The host may do it
+   itself right after this turn — that is normal and needs no second restart. On
+   `gateway.reload.mode: off`, or if it visibly did not restart, the user runs
+   one `openclaw gateway restart` at Step 5; re-run `verify` after the gateway
+   returns. A `preserved` receipt can carry `requiresRestart: true` too — that
+   means a credential was configured after this gateway booted, so the running
+   runtime still has none.
+8. Treat every other outcome as a stopped change and route by its code, never by
+   retrying blindly: `read_only_host` — the configuration is externally managed,
+   report the named deployment-owner action and stop; `ambiguous_existing_credential`
+   or `config_unreadable` — existing state cannot be assessed, pass on the exact
+   branch or file the message names, ask the owner to repair it, and never offer
+   to replace it; `stale_precondition` or `config_conflict` — something changed
+   mid-write, re-read `journey` first; `verification_failed` — nothing usable was
+   recorded, so do not tell the user a credential is configured; `mutation_failed` —
+   OpenClaw did not CONFIRM the write, so credential state is unknown in both
+   directions: re-read setup state, report the host error the message carries,
+   and claim neither that a credential exists nor that none was created;
+   `unsupported_host` — this host lacks the mutation contract, fall back to the
+   manual entry step.
+9. Report presence only. Never echo, quote, guess at, or ask the user to read out
+   the credential, and never claim to know its value — you cannot.
+
+This mutation is likewise unavailable through `openclaw ocuclaw`. All-device
+credential reset stays a separate explicit recovery action with its own
+consequences; this operation never performs one.
 
 ### Secret presence probes
 
@@ -341,8 +541,7 @@ wording — with the final tick states. Tick each box as you finish it. Do not t
 the user setup is complete while any REQUIRED box is unchecked. A genuinely
 blocked box → mark `[blocked: reason]` and surface it, never drop it.
 
-The optional boxes are offers, never assumptions — the OFFER itself is the
-required "Optional steps OFFERED" box above them. Everything inside the
+The optional boxes are choices after core completion. Everything inside the
 checklist block below is user-visible when rendered at the wrap, so it
 carries no agent instructions; these two paragraphs are not part of the
 rendered block.
@@ -354,19 +553,18 @@ This is the FRESH-INSTALL checklist. If the state assessment routed you to U1 (u
 - [ ] Lane established — OS, container?, shell access, elevation
 - [ ] OpenClaw ≥ 2026.6.9 + G2 glasses paired        (Step 1)
 - [ ] Plugin installed                                 (Step 2)
-- [ ] Relay token set by the user — probe = 1          (Step 3)
+- [ ] Relay Credential in place — probe = 1            (Step 3)
 - [ ] Plugin enabled + agent tool access verified      (Step 4)
 - [ ] Relay port safe, reload/restart verified, plugin loaded (Step 5)
 - [ ] Tailscale up on this machine                     (Step 6)
-- [ ] Serve routes present → localhost:<port>          (Step 7)
+- [ ] Owned private phone route reaches localhost:<port> (Step 7)
 - [ ] Phone on the tailnet                             (Step 8)
 - [ ] OcuClaw app connected                            (Step 9)
-- [ ] End-to-end: a reply appeared on the glasses      (Step 10)
-- [ ] Live UI push shown — agent-pushed test screen on glasses (Step 10b)
-- [ ] Optional steps OFFERED — each accepted, declined, or version-gated (Steps 11 · 12 · 12b)
-- [ ] Wrap delivered per wrap-feedback.md — summary · addresses · checklist self-audit · security-audit offer · WRAP note · FEEDBACK bundle (Step 13)
+- [ ] Fresh phone reply recorded and explicitly confirmed on G2; controller coreComplete is true (Step 10). Older manual lane: record the observed check and unavailable durable receipt separately.
 
 **Optional (offered during setup — each is your choice)**
+- [ ] Live UI demonstration                             (Step 10b)
+- [ ] Extended wrap and feedback                        (Step 13)
 - [ ] Voice input via Soniox                           (Step 11)
 - [ ] Even AI integration                              (Step 12)
 - [ ] Easy bug reports (debug upload) opt-in           (Step 12b)
@@ -426,7 +624,7 @@ With no controller lane live, run the listed commands as written.
 | C | relayToken set | relayToken probe (see probes above) |
 | D | Gateway up, plugin loaded | `openclaw gateway status` · `openclaw plugins inspect ocuclaw` shows `Status: loaded` |
 | E | Tailscale installed + signed in | `tailscale status` |
-| F | Both Serve routes present AND proxying to the relay's `wsPort` | `tailscale serve status` (compare each backend `localhost:<port>` to `openclaw config get plugins.entries.ocuclaw.config.wsPort`) |
+| F | Private phone route reaches the relay's `wsPort`; ownership verified | `tailscale serve status` (compare the phone backend `localhost:<port>` to `openclaw config get plugins.entries.ocuclaw.config.wsPort`; preserve foreign or ambiguous routes). Even AI is not checked unless requested. |
 | G | Required OcuClaw tool callable in this conversation | Actual current-session inventory, or `/tools verbose` in this same conversation. For controller routing, pass only when it contains `ocuclaw_setup`; classify a loaded-but-omitted tool as `controller-policy-hidden`. |
 
 ### Routing — enter at the FIRST matching row
@@ -454,7 +652,7 @@ With no controller lane live, run the listed commands as written.
 - Beta channel or rollback (beta-Discord testers only) → load `{baseDir}/references/beta.md`.
 - A named failure case appears → load `{baseDir}/references/troubleshooting.md` and jump to that case.
 - Stuck after honest attempts on any step → load `{baseDir}/references/troubleshooting.md` and run **ESCALATE** — it includes the in-app debug-upload path that attaches real diagnostics to the report.
-- A genuine finish → load `{baseDir}/references/wrap-feedback.md`.
+- An extended wrap or feedback requested after core completion → load `{baseDir}/references/wrap-feedback.md`.
 - Address or command reminders → load `{baseDir}/references/quick-reference.md`.
 
 `{baseDir}` is this skill's base directory, announced when the skill loads.

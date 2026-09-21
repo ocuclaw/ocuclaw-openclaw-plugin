@@ -1,4 +1,5 @@
 import { OPENCLAW_BUNDLE_DEFAULT_WS_PORT } from "../config/runtime-config.js";
+import { CLOUDWAYS_RESTART_NOTE, isCloudwaysManagedHost } from "./cloudways-host.js";
 import { supersedeRelayPortMarker } from "../config/relay-port-default.js";
 
 export const SET_RELAY_PORT_OPERATION = "set_relay_port";
@@ -195,7 +196,9 @@ export function createRelayPortApprovalHook() {
         title: "Change OcuClaw relay port",
         description:
           `Change the local OcuClaw relay port from ${params.expectedCurrentPort} to ${params.newPort}. ` +
-          "This requires a gateway restart and briefly interrupts connected clients.",
+          (isCloudwaysManagedHost()
+            ? CLOUDWAYS_RESTART_NOTE
+            : "This requires a gateway restart and briefly interrupts connected clients."),
         severity: "warning",
         allowedDecisions: ["allow-once", "deny"],
         timeoutMs: 120_000,

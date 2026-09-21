@@ -3,6 +3,7 @@ import {
   DEFAULT_BACKEND_KIND,
   isKnownBackendKind,
 } from "../gateway/backend-contract.js";
+import { normalizeEvenAiRequestObservation } from "../even-ai/even-ai-request-observation.js";
 
 export const CAPABILITY_SNAPSHOT_TYPE = "ocuclaw.capability.snapshot";
 export const PUSH_MESSAGE_TYPE = "ocuclaw.push.message";
@@ -184,6 +185,12 @@ function normalizeAgentCatalog(snapshot = { agents: [] }, backend = "") {
 function buildFamilies(source, options = {}) {
   const isHermes = source === "hermes";
   return {
+    setup: {
+      commandsVersion: options.optionalSetupCommandsVersion === 1 ? 1 : 0,
+      generation: typeof options.optionalSetupGeneration === "string" ? options.optionalSetupGeneration : null,
+      evenAiCommands: options.optionalSetupCommandsVersion === 1 && options.optionalSetupEvenAiCommands === true,
+      evenAi: normalizeEvenAiRequestObservation(options.evenAiRequestObservation),
+    },
     sessions: {
       list: true,
       switch: true,
@@ -281,6 +288,11 @@ function buildFamilies(source, options = {}) {
     diagnostics: {
       protocolEvents: false,
       timingEvents: false,
+      ...(["openclaw", "hermes"].includes(source) && typeof options.externalDebugToolsEnabled === "boolean" && typeof options.allowDebugUpload === "boolean" ? {
+        permissionsVersion: 1,
+        externalAccessEnabled: options.externalDebugToolsEnabled,
+        phoneHandoffEnabled: options.allowDebugUpload,
+      } : {}),
     },
   };
 }

@@ -187,6 +187,58 @@ reader (roughly 600 characters is a rough guide — the tool measures pixels and
 the real limit if a page doesn't fit). The normal answer finishes before the complete surface
 attaches; a partial page array must never appear.
 
+### 2e. A reading with a shape is a Graphic — pick the slot by the shape
+
+When the thing to read is numbers the wearer takes in faster as a picture than as a sentence,
+use `template: "graphic"` on a `text_surface` (`graphic@1`). You describe one or two typed
+slots; the glasses draw them above the caption. The slot follows the **shape of the reading**,
+never how impressive it would look:
+
+| the reading is… | slot |
+|---|---|
+| one number that matters | `metric` |
+| a trend over time | `sparkline` |
+| a share of a goal | `progress` or `ring` |
+| a value against its target | `bullet` |
+| a per-hour pattern | `heatstrip` |
+| a few facts | `keyvalue` |
+| a plain state | `status` with an `icon` |
+
+**Bad — a dial for one number:**
+
+```js
+// "How hard is it blowing at the slip? Just the knots."
+render_glasses_ui({
+  kind: "text_surface",
+  template: "graphic",
+  body: "Wind",
+  graphic: { slots: [{ type: "gauge", value: 12.5, max: 40, label: "Wind" }] }
+})
+// A gauge asks the wearer to read a needle against a scale they never asked about, and the
+// caption says nothing on a client that cannot draw the plate.
+```
+
+**Good — the number, big, with the way it moved; the caption leads with the numbers:**
+
+```js
+render_glasses_ui({
+  kind: "text_surface",
+  template: "graphic",
+  body: "12.5 kt at the slip, up 1.5",
+  graphic: { slots: [{ type: "metric", value: "12.5", unit: "kt", label: "Wind", delta: 1.5 }] }
+})
+```
+
+**The caption is the fallback.** A client without the renderer shows only `body`, as plain
+text, so it must carry the reading on its own — numbers first. There is no `title`.
+
+**When it stays text.** A Graphic cannot `refresh`, so a number that must keep updating by
+itself is a `text_surface` with a `refresh` recipe (§2a). A set they pick from is a list even
+when every row is a number (§2b). An answer that is words — directions, a line to say, a
+reason — is a plain `text_surface` body, not a `keyvalue` or `status` slot holding a sentence.
+Slot shapes, every repair and rejection code, and the icon names:
+[`graphic.md`](graphic.md).
+
 ---
 
 ## Decision 3 — which move?

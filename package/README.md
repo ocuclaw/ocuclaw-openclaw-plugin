@@ -14,16 +14,29 @@ this README.
 
 ## Guided setup (recommended)
 
-Let your OpenClaw agent drive the whole setup — install the OcuClaw assistant skill, then ask the agent to "set up OcuClaw":
+Let your OpenClaw agent drive the whole setup. Install the plugin, then ask the
+agent to "set up OcuClaw":
 
 ```bash
-openclaw skills install @ocuclaw/ocuclaw-assist
+openclaw plugins install clawhub:ocuclaw
 ```
 
-That targets the active agent workspace. Use `--agent <agent-id>` for a
-specific agent workspace or `--global` for the shared managed skill at
-`~/.openclaw/skills`. The standalone assistant remains available to bootstrap
-or recover OcuClaw when the plugin is absent, disabled, or broken.
+The OcuClaw Setup Assistant ships inside the plugin, so that one command gives
+you both and `openclaw plugins update ocuclaw` keeps them in step. There is no
+separate assistant package to install. If you installed the standalone
+`ocuclaw-assist` skill before it was retired, it silently overrides the
+plugin's copy and pins you to an old guide. Clear it once and the bundled
+assistant takes over: `openclaw skills remove ocuclaw-assist` where your host
+has that verb, otherwise delete the folder holding the `filePath` that
+`openclaw skills info ocuclaw-assist --json` reports. OpenClaw 2026.7.x has no
+`skills remove`.
+
+On a Cloudways managed host, `openclaw ocuclaw cloudways setup` does the whole
+setup in one command: with your explicit consent at each point, it downloads the
+pinned Tailscale build into `~/bin`, runs it in userspace-networking mode as your
+own user, and publishes the relay to your tailnet only (never public, never
+Funnel), pairs your phone, then waits with you for your first message and its
+reply on the display.
 
 The sections below are the manual reference for the plugin half.
 
@@ -47,15 +60,13 @@ fallback (`openclaw plugins install npm:ocuclaw`) and carries beta builds
 
 Required:
 
-Set the OcuClaw relay token. This is a user-created password that must match the relay server token field in the OcuClaw application within Even Hub App Store.
-
-The plugin can be installed before this token exists. Until a non-empty token
-is configured, OcuClaw exposes setup diagnostics only and does not open the
-relay listener.
-
-```bash
-openclaw config set plugins.entries.ocuclaw.config.relayToken "your-relay-token"
-```
+Nothing to type for the relay credential. The first time the plugin loads
+without one it creates a private Relay Credential on this host and the relay
+starts with it; the phone receives it through `openclaw ocuclaw pair`, never by
+retyping. Until that first load the plugin is unconfigured and does not open
+the relay listener. An existing credential is never replaced. To keep the relay
+off on purpose, disable the plugin (`openclaw plugins disable ocuclaw`); an
+emptied credential is refilled at the next load.
 
 Recommended:
 

@@ -1,6 +1,6 @@
 # OcuClaw beta channel & rollback
 
-**Guide version:** 2026-09-14 (1.0.43)
+**Guide version:** 2026-09-19 (1.0.56)
 
 **Beta-Discord testers only.** Beta builds are pre-release and can be unstable.
 If the user is **not** a confirmed beta-testing Discord member, this is the wrong
@@ -24,7 +24,7 @@ beta builds exist, run the version-landscape checks in
 - [ ] Confirmed the user is a beta-Discord tester (gate)
 - [ ] Pre-flight: evenAi consistent (else CASE-D first)
 - [ ] Migration pre-flight: hooks + tool access verified (per update.md)
-- [ ] Moved to target beta (update ocuclaw@beta) — or rolled back (install clawhub:ocuclaw --force) — + reload/restart verified
+- [ ] Selected an obtainable compatible pair and approved source; update or rollback + reload/restart verified
 - [ ] Verified: expected Version + Status: loaded + quick message test
 
 **Pre-flight:** If the evenAiEnabled probe = 1 and the evenAiToken probe = 0 → run **CASE-D** before proceeding. Then run the **Migration pre-flight** from `{baseDir}/references/update.md` (hooks.allowConversationAccess + tool access) — beta moves and rollbacks need the same keys as stable updates; changes take effect through the reload/restart verification below.
@@ -32,6 +32,9 @@ beta builds exist, run the version-landscape checks in
 Before the first mutation in this entry, give rule 5's warning once because
 OpenClaw may reload while applying policy or plugin changes. Do not repeat the
 warning for each command.
+
+Follow recovery-routing.md's **Interrupted upgrade, retry and compatible
+recovery** checks before changing either component and after a failed attempt.
 
 **Move to a newer beta:**
 
@@ -49,11 +52,24 @@ Re-run `update ocuclaw@beta` later to jump to a newer beta when one drops.
 
 **Roll back to stable (if a beta misbehaves):**
 
-```
-openclaw plugins install clawhub:ocuclaw --force
-```
+First read recovery-routing.md and verify an obtainable compatible client/bundle
+pair. Stable 1.3.7 cannot serve a client requiring bundle >=2.0.2. If Even Hub
+does not offer a compatible older phone app, do not run the downgrade below;
+retain the current installation and identify an obtainable forward-recovery
+candidate. The complete 1.3.7 migration/rollback proof is pending separate work.
+Only after compatibility, source and explicit rollback approval are established,
+select the exact target version on the existing source where available and follow
+recovery-routing.md's **Installation consent and recorded source** procedure.
+Do not silently switch an npm installation to ClawHub or use a moving `latest`
+tag as the rollback identity. If the recorded source cannot supply that version,
+establish an approved obtainable source before proceeding.
 
-Why `--force`: rolling back is usually a downgrade; plain `install` aborts as "already installed," and `update ocuclaw` stays on the tracked `@beta` spec — `--force` is the documented overwrite path. The `clawhub:` prefix on its own is not what makes this stable: the bare spec resolves to ClawHub's `latest` tag, and `latest` is the stable lane. ClawHub has carried a `beta` tag as well since 2.0.4. Expect the community-channel advisory line — a notice, not an error. Plugin config (relayToken etc.) survives the swap. If the host rejects the `clawhub:` prefix (older builds): `openclaw plugins install npm:ocuclaw@latest --force`.
+Rollback is an explicit installation replacement: `update ocuclaw` can remain
+on the tracked beta spec. On the current host replacement needs both source and
+capability consent, not `--force` alone. Preserve and compare relayToken, port,
+enablement and phone connection settings. A technical rollback with retained or
+rebuilt client bytes does not establish an obtainable phone downgrade. If that
+client cannot be installed, use the compatible forward-recovery branch above.
 
 **After either action** — allow OpenClaw's reload planner to act, then run
 VERIFY. If the gateway is live but still serves the old runtime, request one

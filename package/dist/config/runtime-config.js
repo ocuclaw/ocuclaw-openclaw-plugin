@@ -8,6 +8,7 @@ import {
   buildModelAliasIndex,
   resolveConfiguredDefaultModelRef,
 } from "../runtime/upstream-runtime.js";
+import { gatewayRestartAdvice } from "../setup/cloudways-host.js";
 export {
   DEFAULT_STAGE_GRACE_MS,
   MIN_STAGE_GRACE_MS,
@@ -91,43 +92,70 @@ function pickValue(...values) {
   return undefined;
 }
 
-function resolveGatewayUrlFromOpenClawConfig(openclawConfig) {
-  if (!isObject(openclawConfig) || !isObject(openclawConfig.gateway)) {
+function gatewayEnvSources(openclawConfig, env) {
+  return {
+    configEnv: isObject(openclawConfig) && isObject(openclawConfig.env) ? openclawConfig.env : {},
+    processEnv: isObject(env) ? env : {},
+  };
+}
+
+function resolveGatewayPortSource(openclawConfig, env) {
+  const gateway = isObject(openclawConfig) && isObject(openclawConfig.gateway)
+    ? openclawConfig.gateway
+    : null;
+  const { configEnv, processEnv } = gatewayEnvSources(openclawConfig, env);
+  return pickValue(
+    gateway ? gateway.port : undefined,
+    configEnv.OPENCLAW_GATEWAY_PORT,
+    processEnv.OPENCLAW_GATEWAY_PORT,
+  );
+}
+
+function resolveGatewayUrlFromOpenClawConfig(openclawConfig, env) {
+  if (!isObject(openclawConfig)) {
     return "";
   }
-  const gateway = openclawConfig.gateway;
-  const remoteMode = gateway.mode === "remote";
-  if (remoteMode && isObject(gateway.remote)) {
+  const gateway = isObject(openclawConfig.gateway) ? openclawConfig.gateway : null;
+  if (gateway && gateway.mode === "remote" && isObject(gateway.remote)) {
     const remoteUrl = pickString(gateway.remote.url);
     if (remoteUrl) {
       return remoteUrl;
     }
   }
-  const scheme = gateway.tls && gateway.tls.enabled === true ? "wss" : "ws";
-  const port = parseIntOrDefault(gateway.port, 18789);
+  const portSource = resolveGatewayPortSource(openclawConfig, env);
+
+  if (!gateway && portSource === undefined) {
+    return "";
+  }
+  const scheme = gateway && gateway.tls && gateway.tls.enabled === true ? "wss" : "ws";
+  const port = parseIntOrDefault(portSource, 18789);
   return `${scheme}://127.0.0.1:${port}`;
 }
 
-function resolveGatewayTokenFromOpenClawConfig(openclawConfig) {
-  if (!isObject(openclawConfig) || !isObject(openclawConfig.gateway)) {
+function resolveGatewayTokenFromOpenClawConfig(openclawConfig, env) {
+  if (!isObject(openclawConfig)) {
     return "";
   }
-  const gateway = openclawConfig.gateway;
-  const remoteMode = gateway.mode === "remote";
-  if (remoteMode && isObject(gateway.remote)) {
+  const gateway = isObject(openclawConfig.gateway) ? openclawConfig.gateway : null;
+  if (gateway && gateway.mode === "remote" && isObject(gateway.remote)) {
     return pickString(gateway.remote.token);
   }
+  const { configEnv, processEnv } = gatewayEnvSources(openclawConfig, env);
   return pickString(
-    isObject(gateway.auth) ? gateway.auth.token : undefined,
+    gateway && isObject(gateway.auth) ? gateway.auth.token : undefined,
+    configEnv.OPENCLAW_GATEWAY_TOKEN,
+    processEnv.OPENCLAW_GATEWAY_TOKEN,
   );
 }
 
 export function createRuntimeConfigOverview(opts = {}) {
   const pluginConfig = isObject(opts.pluginConfig) ? opts.pluginConfig : {};
   const openclawConfig = isObject(opts.openclawConfig) ? opts.openclawConfig : {};
+
+  const env = isObject(opts.env) ? opts.env : {};
   return {
     relayToken: pickString(pluginConfig.relayToken),
-    gatewayToken: pickString(resolveGatewayTokenFromOpenClawConfig(openclawConfig)),
+    gatewayToken: pickString(resolveGatewayTokenFromOpenClawConfig(openclawConfig, env)),
     sonioxApiKey: pickString(pluginConfig.sonioxApiKey),
     cartesiaApiKey: pickString(pluginConfig.cartesiaApiKey),
     evenAiToken: pickString(pluginConfig.evenAiToken),
@@ -256,12 +284,34 @@ export function resolveGlassesUiLive(value, openclawConfig, logger) {
   };
 }
 
+const MIN_SILENT_INPUT_JEV_BUDGET_MS = 200;
+const MAX_SILENT_INPUT_JEV_BUDGET_MS = 5000;
+const DEFAULT_SILENT_INPUT_JEV_BUDGET_MS = 2500;
+
+export function resolveSilentInputJev(value, openclawConfig, env) {
+  const raw = isObject(value) ? value : {};
+  const { configEnv, processEnv } = gatewayEnvSources(openclawConfig, env);
+  return {
+
+    enabled: raw.enabled === true || raw.enabled === "true",
+    apiKey: pickString(raw.apiKey, configEnv.TYPESAFE_API_KEY, processEnv.TYPESAFE_API_KEY),
+
+    budgetMs: clampInt(
+      raw.budgetMs == null ? undefined : raw.budgetMs,
+      MIN_SILENT_INPUT_JEV_BUDGET_MS,
+      MAX_SILENT_INPUT_JEV_BUDGET_MS,
+      DEFAULT_SILENT_INPUT_JEV_BUDGET_MS,
+    ),
+  };
+}
+
 export function createRuntimeConfig(opts = {}) {
   const pluginConfig = isObject(opts.pluginConfig) ? opts.pluginConfig : {};
   const openclawConfig = isObject(opts.openclawConfig) ? opts.openclawConfig : {};
+  const env = isObject(opts.env) ? opts.env : {};
   const relayToken = pickString(pluginConfig.relayToken);
-  const gatewayUrl = pickString(resolveGatewayUrlFromOpenClawConfig(openclawConfig));
-  const gatewayToken = pickString(resolveGatewayTokenFromOpenClawConfig(openclawConfig));
+  const gatewayUrl = pickString(resolveGatewayUrlFromOpenClawConfig(openclawConfig, env));
+  const gatewayToken = pickString(resolveGatewayTokenFromOpenClawConfig(openclawConfig, env));
 
   if (!relayToken) {
     throw new Error(
@@ -271,7 +321,9 @@ export function createRuntimeConfig(opts = {}) {
         '  openclaw config set plugins.entries.ocuclaw.config.relayToken "your-token"',
         "The same token must be entered in the OcuClaw app's relay server token field within Even Hub.",
         "Allow OpenClaw to reload, then verify: openclaw plugins inspect ocuclaw --runtime",
-        "If the gateway is live but the runtime remains stale, run once: openclaw gateway restart --safe",
+        gatewayRestartAdvice(
+          "If the gateway is live but the runtime remains stale, run once: openclaw gateway restart --safe",
+        ),
       ].join("\n"),
     );
   }
@@ -292,13 +344,13 @@ export function createRuntimeConfig(opts = {}) {
     throw new Error(
       [
         "OcuClaw evenAiToken is required when evenAiEnabled is true.",
-        "Set the plugin config with:",
-        '  openclaw config set plugins.entries.ocuclaw.config.evenAiToken "your-token"',
-        "The same token must be entered as the password in the Even AI Agent Configure section of the Even Realities app.",
-        "To disable Even AI instead, run:",
+        "Never put this token in chat or a command argument.",
+        "To restore plugin loading while you repair only Even AI, disable its setting:",
         "  openclaw config set plugins.entries.ocuclaw.config.evenAiEnabled false --strict-json",
         "Allow OpenClaw to reload, then verify: openclaw plugins inspect ocuclaw --runtime",
-        "If the gateway is live but the runtime remains stale, run once: openclaw gateway restart --safe",
+        "When the plugin is loaded, use private terminal entry: openclaw ocuclaw credential even-ai",
+        "Then run openclaw ocuclaw even-ai enable and follow its activation result. Do not restart Cloudways.",
+        "Enter the same private token in the Even app's Even AI Agent Configuration, then test a real glasses request.",
       ].join("\n"),
     );
   }
@@ -359,6 +411,7 @@ export function createRuntimeConfig(opts = {}) {
       openclawConfig,
       Reflect.get(opts, "logger"),
     ),
+    silentInputJev: resolveSilentInputJev(pluginConfig.silentInputJev, openclawConfig, env),
     freshnessWindowMs: parseIntOrDefault(pluginConfig.freshnessWindowMs, 5000),
   };
 }

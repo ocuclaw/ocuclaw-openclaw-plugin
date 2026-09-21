@@ -1,27 +1,17 @@
 # OcuClaw fresh install — Steps 1–13
 
-**Guide version:** 2026-09-14 (1.0.43)
+**Guide version:** 2026-09-19 (1.0.56)
 
 Return to the skill's SKILL.md for the guardrails, lane card, checklist, and
 router at any time.
 
-**FINISH CONTRACT — this binds your final messages.** A successful Step-10
-test is NOT the finish, and neither is Step 10b's push. Step 10b — the Live
-UI push, the reverse-direction show-them moment — runs IMMEDIATELY after
-Step 10's reply is confirmed: it is a required step, never an offer and
-never deferred to another conversation. Then, in the same message as its
-verify, OFFER each optional step with a one-line what-it-does and
-"optional — you can also ask me to add it any time later": Step 11 voice
-input via Soniox (talk to the agent from the glasses), Step 12 Even AI
-integration (the glasses' wake word answered by this OpenClaw), Step 12b
-easy bug reports (two diagnostic permissions so a future problem is a
-two-tap report). Merely listing them as
-"things you can add later" is not an offer — ask for a yes/skip on each.
-Then, whatever they choose, run Step 13: load
-`{baseDir}/references/wrap-feedback.md` and deliver its ordered finish
-(summary → two addresses → checklist self-audit → security-audit offer →
-WRAP closing note → FEEDBACK bundle). A closing message without the offers
-and the wrap is an incomplete setup, not a finish.
+**CORE FINISH CONTRACT.** Step 10 completes core setup only after the controller
+records the fresh phone-origin reply, its supported reply evidence, and the
+welcome dismissal. SDK acceptance and explicit wearer confirmation are distinct
+reply evidence; neither substitutes for recorded welcome completion. Use the
+controller's success message. The user can stop
+successfully there. Step 10b's demonstration, Steps 11/12/12b integrations and
+Step 13's extended wrap are optional follow-ups; none gates core completion.
 
 ## Setup steps
 
@@ -39,7 +29,21 @@ case (and only then) confirm the Even Realities app and Even Hub open on the
 phone. "Does Even Hub open?" is the not-installed fallback, never the Step-1
 question itself.
 
-Set expectations: setup takes about 15 minutes; they'll need their phone, a terminal on this machine, and will create 1–2 passwords.
+Set expectations: keep the phone and a private terminal nearby. Supported terminal pairing delivers the existing or host-provisioned credential privately; older bundles may require user-owned manual credential entry.
+
+For the new public candidate, recommend OpenClaw **2026.9.4** and Node
+**24.16+ within 24.x or 26.1+**. Read `node --version` as well as the host
+version before an authorized host transition. Published bundle metadata permits
+OpenClaw >=2026.6.9, and the guided journey (terminal pairing, first use,
+welcome) is available on any host in that window that exposes the runtime APIs
+`journey` checks; OpenClaw 2026.7.1 (managed hosts such as Cloudways, shown as
+`v2026.7.1-2`) is verified. Read `capabilities.pairing` from `journey`, never the
+version number, to decide. Preserve a working older installation. Do not upgrade
+the host merely to recover an unrelated connection fault. Hosts without
+`--accept-capabilities` (pre-2026.9.x) need the `allowConversationAccess` config
+key set after install (see Step 4 and recovery-routing.md). Read
+recovery-routing.md for public package availability before choosing Step 2's
+channel.
 
 Controller-lane shortcut (SKILL.md controller exclusivity): if the state
 assessment already returned a successful `overview` whose `compatibility`
@@ -84,7 +88,12 @@ see and let the user decide.
 
 Ask first (routing) — on the installing path only, never when the skip proof above passed: "Are you installing the **beta** build from the OcuClaw Discord?" Route to beta only if they confirm they're a beta-testing Discord member; otherwise install stable.
 
-**Stable (default):**
+Before running an installation command, follow recovery-routing.md's
+**Installation consent and recorded source** section. The specs below select the
+source/channel; on OpenClaw 2026.9.4 use the complete consent command there after
+reviewing the selected target. Older hosts use their documented command contract.
+
+**Stable (default source selection):**
 ```bash
 openclaw plugins install clawhub:ocuclaw
 ```
@@ -92,7 +101,8 @@ openclaw plugins install clawhub:ocuclaw
 The install prints a notice like `ClawHub package "ocuclaw" is community; review
 source and verification before enabling.` — that is a standard advisory for
 community-channel packages (the release is security-scanned and source-linked),
-**not an error**; say so and continue.
+**not an error** by itself. A source or capability consent refusal is a failed
+installation; do not continue until the consent procedure succeeds.
 
 **Beta (only if the user confirmed they are a beta-Discord tester):**
 ```bash
@@ -117,32 +127,78 @@ Pass only when the top-level `install` object is non-null and records the
 ClawHub/npm source selected above. `plugins list` visibility or extracted files
 without managed install metadata do not pass.
 
-If an earlier failed attempt left discovered files with `install: null`, rerun
-the selected install command once with `--force`, then inspect again. If managed
+If an earlier failed attempt left discovered files with `install: null`, follow
+the consent and failed-retry procedure in recovery-routing.md for the selected
+target, then inspect again. Do not treat `--force` alone as consent. If managed
 provenance is still absent → `ESCALATE`.   ·   If the install fails because the
 host is too old → `HOST-OLD`; for any other failure → `ESCALATE`.
 
 ---
 
-### Step 3 · Relay token   [REQUIRED · the user runs this, never you]
+### Step 3 · Relay Credential   [OBSERVE ONLY — never set one]
 
-GOAL: the user creates a relay password and sets it themselves so it never passes through you. Installation is safe without it: the plugin remains unconfigured and does not open a relay listener. The token is required before Step 5 can verify a running relay.
+GOAL: confirm the installation has a Relay Credential. The credential is
+host-managed. The OcuClaw plugin creates one itself the first time it loads
+without one (plugin releases after 2.0.6, the same way the Hermes adapter
+already does), the encrypted pairing exchange in Step 9 delivers it to the
+phone, and nobody — not you, not the user — ever invents, types, copies or
+reads the value. Installation is safe without one: until that first load the
+plugin is unconfigured and does not open a relay listener; it exposes setup
+diagnostics only.
 
-Skip if: relayToken probe = 1 **and** the user still knows their token → go to Step 4. If probe = 1 but token forgotten → they set a new one with the same command below.
+Skip if: relayToken probe = 1 → the credential is present; preserve it and go
+to Step 4. Never replace a working credential to tidy setup: replacing it
+disconnects every phone already paired to this machine.
 
-🔑 USER ACTION REQUIRED — you run this, I never see it.
+**Read, do not write.** Read the live controller (typed `journey`, or
+`openclaw ocuclaw journey` on the policy-hidden lane) and record
+`durableFacts.relayCredential`:
 
-Run this in your own terminal, replacing ONLY the quoted `YOUR-RELAY-TOKEN` placeholder — swap out that whole placeholder text, keeping the surrounding quotes — with the password you choose (no `read`, no pipe, no extra flags). The value must be a real, non-empty password — you will re-type it on your phone in Step 9, so make it typeable:
+- `presence: present` → done. `origin` is `host-minted-at-load` (this plugin
+  created it when it loaded) or `pre-existing` (it was already configured);
+  both are fine. Record it and go to Step 4.
+- `presence: absent` and the plugin has not been enabled and loaded yet (a
+  fresh install arriving from Step 2) → expected. Go to Step 4; the first
+  load creates the credential, and Step 4's checkpoint message reports it as
+  present. Do not run any credential command first.
+- `presence: absent` after the plugin has loaded → `mintOnLoad` names why the
+  load could not create one; report the named owner action, never work
+  around it by writing a value:
+  - `code: read_only_host` → the OpenClaw configuration is externally managed
+    and not writable by the gateway; the deployment owner makes it writable
+    (or provisions the field in the managed source). Nothing was written.
+  - `code: ambiguous_existing_credential` → `plugins.entries.ocuclaw.config`
+    holds a malformed branch; `detail` names the node by type only. The owner
+    repairs it through an operator-owned OpenClaw surface; an existing
+    credential in that branch must survive the repair.
+  - `code: no-minter` or `unsupported_host`, or no `mintOnLoad` block at all
+    → an older bundle or host without the load-time mint. Route on
+    `disposition`: `host-provisionable` → SKILL.md's **Typed Relay Credential
+    provisioning** (call `ocuclaw_setup` with only
+    `operation: provision_relay_credential`; accept `provisioned` or
+    `preserved`). `operator-entry-required` → this host cannot mint or
+    provision and pairing cannot deliver; report it as a blocker with the
+    named reason. There is no manual-entry lane: never ask the user to choose
+    or type a credential.
 
-```
-openclaw config set plugins.entries.ocuclaw.config.relayToken "YOUR-RELAY-TOKEN"
-```
+**Older bundle without terminal pairing: credential present but the user cannot
+enter it on the phone** (they have forgotten it, or never knew it) → **this is
+an all-device reset, not a fresh install step.** Nobody can read the existing
+credential back: `openclaw config get` redacts it, and a host-created one was
+never disclosed to anyone. The supported way forward is the update lane: install
+a bundle with terminal pairing (`openclaw ocuclaw pair` delivers the credential
+privately, no retyping). Replacing the credential disconnects EVERY phone
+already paired to this machine — each one has to be set up again. Never do
+that silently, never as tidying, never to "retry" a step, and only through the
+explicit reset procedure with the user's stated OK.
 
-Then tell me "done." I will not continue until the relayToken probe returns 1.
+**Keeping the relay off on purpose:** an emptied or removed credential is not a
+switch — the next plugin load creates a fresh one. The way to keep the relay
+down is `openclaw plugins disable ocuclaw`.
 
-⚠️ If the command rejects the value as empty or shorter than the minimum, no usable token was saved — STOP and have the user re-run it with a visible, non-empty value. Never set it empty, never proceed.
-
-VERIFY: relayToken probe = 1.   ·   Still failing → `TERM-HELP`.
+VERIFY: relayToken probe = 1, or the plugin is not yet loaded and Step 4 will
+load it.   ·   Absent after a load → the `mintOnLoad` owner action above, then
+re-read `journey`; still failing → `TERM-HELP`.
 
 ---
 
@@ -154,10 +210,11 @@ Skip if: `openclaw plugins list` shows `ocuclaw` already enabled **and** the too
 
 CHECKPOINT (rule 4) — **your pause message IS this checkpoint.** It must
 contain, in itself, in this order: an OPENING sentence with the just-finished
-phase's outcome — arriving here from Step 3 that sentence confirms the token
-landed (it now reads present; you checked presence only and never saw the
-value), because the user just ran that command and this message is where they
-learn it worked — then one plain-words sentence of what Step 4 changes, a
+phase's outcome — arriving here from Step 3 that sentence reports the
+credential's state (present, or expected to be created by this plugin at its
+first load; you check presence only and never see the value) — and after the
+enable and load, the re-read `journey` is where the user learns it landed
+(`origin: host-minted-at-load`); then one plain-words sentence of what Step 4 changes, a
 fenced command with a one-line why for EACH Step-4 command that still needs
 to run, and rule 5's reload warning; then get an OK. No Step-4 probe
 evidence before that opening sentence: a pause message whose first words
@@ -216,9 +273,10 @@ Takes effect through the reload/restart verification in Step 5.
 PRE-LOAD VERIFY: `openclaw plugins list` shows `ocuclaw` enabled. The root
 policy either has no restrictive entry (default exposure applies) or admits
 `"ocuclaw"`/`"group:plugins"`; this is not yet proof of effective
-current-session callability. A configuration rejection usually means the token
-didn't save → back to Step 3. Step 5 performs the authoritative inventory
-check after load.
+current-session callability. After the load, re-read `journey`: the Relay
+Credential now reads present (`origin: host-minted-at-load` on a fresh
+install); still absent → Step 3's `mintOnLoad` owner action. Step 5 performs
+the authoritative inventory check after load.
 
 ---
 
@@ -332,6 +390,10 @@ restart and repeat the VERIFY block:
 ```bash
 openclaw gateway restart --safe
 ```
+On a Cloudways host (`openclaw ocuclaw cloudways detect` says `cloudways`)
+that command is a no-op: follow `{baseDir}/references/cloudways.md` "Restart
+and reload on this host" instead.
+
 If the gateway is down → `GW-DOWN`. If the safe restart fails because OpenClaw
 cannot cross the service/supervisor boundary → `GW-RESTART-NOSVC`. Never retry
 the same restart without a new finding.
@@ -381,6 +443,11 @@ If the startup log shows a bind/port error (`EADDRINUSE`, `WSAEACCES`, "address 
 
 ### Step 6 · Tailscale on this machine
 
+Run `openclaw ocuclaw cloudways detect --json` first. If it reports
+`cloudways` (or the user confirms a `likely`), load
+`{baseDir}/references/cloudways.md` and follow it in place of Steps 6 and 7,
+then rejoin here at Step 8. Otherwise continue below.
+
 GOAL: install Tailscale — only devices on the user's tailnet can reach the relay; the phone can reach this machine from anywhere.
 
 **Tailscale location follows the lane card.** For a confirmed bridge +
@@ -401,9 +468,12 @@ compact signed-in check use `tailscale ip -4` instead.
 > **Why root:** Tailscale's daemon manages network interfaces, so install, `tailscale up`, and `tailscale serve` need elevation on Linux — standard Tailscale practice, scoped to exactly those commands. If the lane card says "user runs elevated," every `sudo` command in Steps 6–7 goes to the user.
 
 Linux (needs root — if your lane card says "user runs elevated," hand this to the user):
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-```
+follow Tailscale's own Linux instructions at
+[tailscale.com/download/linux](https://tailscale.com/download/linux). The page
+asks for the distribution and then prints the package steps for it: add the
+Tailscale package repository, then install the `tailscale` package with the
+system package manager. Read those steps with the user and let the user run
+them. Do not pipe a downloaded script into a shell.
 
 macOS: install the **standalone package** from `tailscale.com/download` — it puts `tailscale` on PATH. If the user has the Mac **App Store** build instead, its CLI lives at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`. **Write that full path into the lane card's `Tailscale CLI` row if the App Store build is used** — you'll need it in Step 7.
 
@@ -421,9 +491,11 @@ VERIFY: `tailscale ip -4` prints a `100.x.y.z` address.   ·   If not → `TS-AU
 
 ---
 
-### Step 7 · Serve routes (two doors into the relay)
+### Step 7 · Private phone route
 
-GOAL: expose the relay on the tailnet. Two routes, one purpose each:
+GOAL: connect the phone privately through `:8444`. Configure only this route
+during core setup. Step 12 owns the optional `:8443` route and runs only on
+explicit Even AI intent. Preserve any existing optional route.
 
 | Port | Type | Used by |
 |---|---|---|
@@ -432,45 +504,96 @@ GOAL: expose the relay on the tailnet. Two routes, one purpose each:
 
 **Resolve `<port>`** from your lane card (`Relay wsPort`). If it is blank, re-read it now: `openclaw config get plugins.entries.ocuclaw.config.wsPort`. On plugin builds carrying this guide a completed fresh install reads `47800` (the plugin wrote it at first relay start); `9000` on a pre-existing install is its preserved working baseline — the routes below then target it. If the value still looks undecided, re-run Step 5a's read and Step 5c's VERIFY first, then return here.
 
-Skip if: `tailscale serve status` already shows both routes each proxying to `localhost:<port>` → go to Step 8. (If they proxy to a different port, re-run the commands below with the current `<port>`; if the old `tcp://…:8443` scheme appears **and the app doesn't currently connect** → `MIGRATE-8443` — if that old shape still works end-to-end, leave it: working baseline wins.)
+**Controller lane for the `:8444` door.** When `journey` is callable and its
+`currentHealth.privateRoute` has `schemaVersion: 1` and a `proposal` block, that
+block decides the `:8444` route and replaces the `tailscale serve status`
+read for it — do not re-derive the verdict from the raw status output:
+
+- `status: healthy` → the `:8444` door is verified, owned and reachable; skip
+  its command and go to Step 8.
+- `status: missing` or `stale` with `proposal.status: presented` → the
+  phase's ONLY `:8444` command is `proposal.applyCommand`, verbatim (prefix
+  `sudo` / use an Administrator shell exactly as the lane card says; on the
+  macOS App Store build swap the `tailscale` word for the lane card's CLI
+  path). Never build it from the template below, never run it yourself, and
+  after the user runs it re-read `journey`: only a fresh `healthy`
+  observation of the applied route completes the checkpoint.
+- `status: missing` or `stale` with `proposal.status: withheld` → read
+  `proposal.reason`. `node_dns_identity_unknown` routes to Step 6 (Tailscale
+  is up but has no MagicDNS name yet). `route_receipt_not_written_route_not_
+  fully_identified` or `route_receipt_unavailable` means the controller could
+  not record ownership on this host (no installation identity, or
+  `~/.evenclaw/state` is not writable). Explain the ownership failure and
+  have the installation owner resolve it, then re-read `journey`. For a
+  receipt-lock failure, inspect the lock and its owner; never remove it while
+  that owner is active. Keep
+  this checkpoint blocked until ownership and reachability are verified;
+  do not substitute the standalone template for a withheld command.
+  Any `route_receipt_owned_by_…` reason is a `conflicting` port: see the next
+  bullet.
+- `status: foreign` / `conflicting` / `exposed` / `unreachable` / `offline` /
+  `unknown` → read `nextCheckpoint.action` and `privateRoute.evidence`, tell
+  the user what occupies or blocks the port, and do NOT propose the template
+  command over it: `foreign`/`conflicting` means another service, gateway or
+  Runtime Bundle holds `:8444` (or a web handler does), `exposed` means
+  Funnel publishes it, `unreachable` means the route is configured but the
+  relay or the tailnet front door did not answer (check HTTPS certificates
+  below), `offline`/`unknown` route to Step 6 or `TS-SERVE-UNSUPPORTED`.
+  A withheld command is never an invitation to improvise one.
+- `teardown.command` (only ever `tailscale serve --tls-terminated-tcp=8444
+  off`) is shown by the controller only while its receipt and the live route
+  agree; it belongs to the uninstall/move journey, never to setup.
+
+After a route is applied for the first time, allow up to a minute for
+Tailscale to issue its TLS certificate before treating a timeout as a fault.
+Measured live on a Cloudways host: the first handshake took 31 seconds, with
+`unreachable`/`front_door_timeout` until the certificate existed; handshakes
+after that were 36 to 66 ms. Re-read the route after that wait; only a repeat
+timeout past it is a real problem.
+
+The remaining commands apply only to older bundles without the route-reader
+contract. A withheld controller proposal never falls through to this lane.
+
+Skip if: the existing phone route is verified as this installation's working
+baseline → Step 8. Read `tailscale serve status`; a matching target alone does
+not prove ownership. If absent, propose the single command below. If occupied,
+stale, foreign, public through Funnel or ambiguously owned, preserve it and ask
+the owner to resolve the specific route. Never overwrite it or reset Serve.
+An older working `tcp://…:8443` phone route is preserved; if broken, route to
+`MIGRATE-8443` with ownership evidence.
 
 CHECKPOINT (rule 4) — reading `tailscale serve status` needs no OK, but the
 route change does: before running anything mutating below, tell the user in
-plain words what Step 7 changes and why, **naming both commands with the real
-`<port>` substituted** — e.g. "these two commands publish the relay on your
-private tailnet: `sudo tailscale serve --bg --tls-terminated-tcp=8444
-tcp://localhost:47800` (the phone app's door) and `sudo tailscale serve --bg
---https=8443 http://localhost:47800` (the optional Even AI door); nothing
-becomes public — tailnet devices only." State whether routes already exist and
-what each currently points at. If the lane card says the user runs elevated,
+plain words what Step 7 changes and why, naming the single phone-route command
+with the real `<port>` substituted. State that it permits private tailnet phone
+connections and does not enable Even AI or Funnel. State the ownership evidence.
+If the lane card says the user runs elevated,
 say these go to their terminal. Then get an OK. **Your pause message IS this
 checkpoint** — if it pauses for an OK and shows no command blocks, it is
 malformed: do not send it; send this checkpoint's content instead (rule 4's
 output gate).
 
-**Run both commands for your OS** (substitute `<port>` from the lane card in both; on the macOS App Store build, use the lane card's `Tailscale CLI` path in place of `tailscale`):
+**Run the phone command for your OS** (substitute `<port>` from the lane card; on the macOS App Store build, use the lane card's `Tailscale CLI` path in place of `tailscale`):
 
 Linux / macOS:
 ```bash
 sudo tailscale serve --bg --tls-terminated-tcp=8444 tcp://localhost:<port>
-sudo tailscale serve --bg --https=8443 http://localhost:<port>
 ```
 
 Windows (Administrator PowerShell):
 ```powershell
 tailscale serve --bg --tls-terminated-tcp=8444 tcp://localhost:<port>
-tailscale serve --bg --https=8443 http://localhost:<port>
 ```
 
-VERIFY: `tailscale serve status` shows both blocks each proxying to `localhost:<port>`:
+VERIFY: `tailscale serve status` shows the private phone route to `localhost:<port>`:
 ```
 |-- tcp://<node>.<tailnet>.ts.net:8444 (TLS terminated, tailnet only)
 |--> tcp://localhost:<port>
 
-https://<node>.<tailnet>.ts.net:8443 (tailnet only)
-|-- / proxy http://localhost:<port>
 ```
-If exactly one expected route is missing or still points at the wrong local backend, re-run just that route's command once more, then check `tailscale serve status` again — a route can need a second application after a port change. Still wrong after that single retry → `TS-PORT-CLAIMED` or `TS-SERVE-UNSUPPORTED` (or ESCALATE), never further blind re-runs.
+If the phone route is still absent, recheck ownership before one retry. A wrong
+backend is an owner-recovery case, not permission to overwrite. Still missing
+after that retry → `TS-PORT-CLAIMED` or `TS-SERVE-UNSUPPORTED`; no blind reruns.
 
 `--tls-terminated-tcp` requires **HTTPS Certificates** enabled for this tailnet at `login.tailscale.com/admin/dns`, alongside MagicDNS. Without them Tailscale accepts the route and every connection through it then fails; on the Hermes side the symptom is `probe_failed` plus `relay_verifier_protocol_error` on a route classified `ready`, and `tailscale cert --cert-file /dev/null --key-file /dev/null <node>.<tailnet>.ts.net` answers `your Tailscale account does not support getting TLS certs`. Fix is two clicks in the admin console under DNS, then re-verify.
 
@@ -492,6 +615,35 @@ VERIFY: `tailscale status` on this machine shows the phone, **and** the phone's 
 
 GOAL: the user installs and connects the OcuClaw phone app to the relay on this machine.
 
+**Production terminal lane (recommended candidate: OpenClaw 2026.9.4, Node
+24.16+ within 24.x or 26.1+):** read `journey` first. When
+`capabilities.pairing` is `available`, hand off once to the user's own interactive
+terminal: `openclaw ocuclaw pair`. The command rechecks this installation,
+credential and owned reachable private route. In the phone pairing screen, scan
+its QR or choose Manual and use the short-lived address/code shown there. Both
+start the same encrypted exchange. The user compares all four words in order on
+both devices and types `approve` (any letter case; `yes` also works) only when they match; `refuse` or `no` refuses,
+`cancel` or Ctrl-C stops, a typo or a bare Enter is asked again, and expiry requires a fresh attempt.
+
+Never run or capture this command through an agent terminal, a pipe, screenshots,
+or ordinary logs. Never ask the user to paste the QR, code, safety words, or
+credential into chat. Browser and conversation surfaces hand off to this same
+terminal ceremony; they cannot approve it. `--light-terminal` adjusts QR contrast.
+
+VERIFY: approval alone is not connection. The terminal separately reports
+encrypted credential delivery and this phone's observed authenticated connection.
+If delivery is uncertain, check the phone before retrying. An existing connected
+phone does not prove the new attempt succeeded. Refusal, expiry, an active competing
+attempt or an unavailable route requires the named recovery and a fresh attempt;
+preserve the credential and other phones throughout. Re-read `journey` on the same
+host after the handoff and continue at Step 10. Pairing does not record first use
+or establish a G2 reply.
+
+**Older bundle without terminal capability:** use the existing manual connection
+instructions below only when the user already holds their credential. A
+host-provisioned credential cannot be copied; install the supported pairing
+candidate through the approved update lane instead of resetting it.
+
 Ask the user to: open the Even Realities app → Even Hub App Store → install and open OcuClaw → go to **Relay Server** and enter:
 
 - **Address:** `wss://<node>.<tailnet>.ts.net:8444` (use the exact machine name from Step 7)
@@ -503,7 +655,7 @@ Ask the user to: open the Even Realities app → Even Hub App Store → install 
   > Even AI agent URL: `https://<node>.<tailnet>.ts.net:8443/v1/chat/completions`
   > Local relay backend: `localhost:<wsPort>`
 
-- **Token:** the relay password the user created in Step 3
+- **Token:** the Relay Credential. The host created it (Step 3) and nobody can read it back, so it reaches the phone only through the pairing exchange, never by retyping. Fill this field by hand only when the user already holds a credential they chose on an older install; otherwise a bundle without terminal pairing is a blocker to report (install the supported pairing candidate through the approved update lane), not something to work around by resetting the credential.
 
 Tap **Connect**.
 
@@ -515,14 +667,137 @@ VERIFY: the app shows "Connected" and OpenClaw Status fills in (session, model).
 
 GOAL: confirm the full chain works — message sent, reply received, glasses display it.
 
-Ask the user to: put on their glasses, then send "hello" from the app's Send Message box and read the reply on the glasses. In the SAME ask, give the Step-10b heads-up: right after they confirm the reply, you will push a test screen to the glasses — when it appears, they should double-tap it, and you'll confirm the moment you feel it. (This primes the required Step 10b so the double-tap instruction reaches them even when your next turn opens with the render call.)
+Read `journey` from the host setup conversation. If `coreComplete` is already
+true, preserve it and report any current outage separately. No new attempt,
+pairing or wearer confirmation is needed.
 
-The test must originate from the phone app — never substitute your own
-glasses-display tools for the user's app send; only the app-originated
-message proves the full phone → OpenClaw → glasses chain. (Step 10b's push
-runs right after this test passes, never instead of it.)
+**Tool-driven lane:** use only when `capabilities.toolFirstUse: available` and
+`ocuclaw_setup` is callable. Keep setup in this host conversation.
 
-VERIFY: reply is visible on the glasses. Core setup is DONE — say so, warmly — **and keep going: setup is not finished at Step 10.** The FINISH CONTRACT at the top of this file binds your next messages: run Step 10b now, then offer Steps 11/12/12b, then Step 13's wrap. The finish lives at Step 13's handoff, never here.
+1. Ask the user to open the intended OpenClaw conversation on the phone. Call
+   `ocuclaw_setup` with `{"operation":"first_use_begin"}` **before** inviting
+   a fresh message. The owning runtime selects the authenticated phone session;
+   an ambiguous/disconnected phone or changed saved session needs recovery,
+   never a guessed session or a silent retry.
+2. For `awaiting-reply`, say "Send hello from the phone's Send Message box."
+   Immediately call `{"operation":"first_use_wait","timeoutMs":60000}` in
+   the **same turn**. If it times out, continue the same saved attempt with up
+   to two more bounded waits in this active turn. The completed reply ends the
+   wait automatically. Never require "I sent it" or end the turn between the
+   invitation and the wait. After the third timeout, state that observation
+   has stopped and offer to resume it. Cancellation or unavailable state ends
+   observation and routes to the returned recovery action. Do not promise a
+   later notification, a later re-check, or any other future action without a
+   supported wake: "I'll check again once the window passes" is the same
+   broken promise as "I'll let you know", because nothing wakes you after the
+   turn ends. Do the wait inside this turn or ask the user to prompt you. Do
+   not send the test message from the host conversation or through remote
+   control.
+3. For `awaiting-confirmation`, retain the opaque `binding` and ask once in
+   this host setup conversation: **“Did that reply appear on your glasses?”**
+   Offer no recommended answer. An explicit yes permits
+   `{"operation":"first_use_confirm","binding":"<returned binding>","answer":"yes"}`.
+   An explicit no may be recorded with `answer: "no"` and leaves setup unfinished.
+   Missing, ambiguous or unrelated answers do not permit confirmation. A tool
+   result, socket health or a render call cannot supply the wearer's answer.
+   When `first_use_wait` already returns `replyEvidence: client_sdk_receipt` and
+   `awaiting-welcome`, the phone itself reported that exact reply reaching the
+   display: skip the question, follow `nextOperations` to the welcome, and never
+   present that receipt as the wearer's own answer.
+4. For `awaiting-welcome`, use `capabilities.welcome: available`. Explain the
+   double-tap **before** rendering: "A welcome image is coming. Double-tap it
+   to return to your conversation." The confirm result's `action` line repeats
+   this brief; the card's title lane also reads "Double-tap to continue". The
+   welcome call blocks for its whole wait window, so a brief
+   given after it returns is too late. Immediately call
+   `{"operation":"first_use_welcome","binding":"<returned binding>","timeoutMs":60000}`
+   in the same turn. This operation supplies the fixed OpenClaw × OcuClaw lockup
+   picture (with Cloudways added on a Cloudways managed host) and
+   observes its bound dismissal. Never assemble a separate render command or
+   require "I double-tapped." A generic close, render acknowledgment, timeout,
+   cancellation or failure does not establish dismissal. If the returned
+   actions allow `first_use_welcome_retry`, explain the failure and offer one
+   explicit retry with the same binding. Preserve the confirmed phone reply.
+   An exhausted retry stays incomplete; never loop welcome renders. If the
+   phone binding changed, follow the required fresh-attempt recovery instead.
+5. Re-read `journey`; only `coreComplete: true` finishes core setup. Report
+   `confirmationSource: host-setup-conversation` honestly as a wearer report
+   relayed by the agent. Test-input records never establish wearer acceptance.
+   Keep reply confirmation and welcome dismissal distinct. The bounded native
+   acceptance check must also confirm return to the intended conversation
+   page; a dismissal event alone does not prove its exact destination.
+
+Give the user only their next action and the observed outcome. Opaque bindings,
+session identifiers, capability disagreements and private operation names stay
+inside the tool flow. A current host whose renderer is unavailable keeps its
+welcome milestone pending. An older controller without the welcome capability
+can retain its older completion policy, but never call that welcome proof.
+
+If the reply never appeared, repair the path and explain the fresh attempt
+before calling `{"operation":"first_use_retry"}`. Retry binds the currently
+selected unambiguous phone session and invalidates unfinished reply bindings;
+completed wearer records are preserved. On interruption, restart or a new host
+conversation, read journey and resume its first incomplete milestone. When
+reply confirmation is saved, resume welcome without another phone message.
+Restart never replays a saved welcome surface or accepts an old gesture.
+After a previously unanswered question, use wait to recover its binding and
+ask for the outstanding observation; never invent an earlier answer.
+
+The capable-host happy path needs neither first-use terminal command. Secure
+terminal pairing in Step 9 remains unchanged. An unavailable result routes to
+owner/runtime/session recovery; do not erase the record or claim completion.
+
+**Compatibility / policy-hidden lane:** with `capabilities.firstUse:
+direct-terminal`, hand off once: the user opens the intended OpenClaw conversation
+on the phone and runs `openclaw ocuclaw first-use` in their own terminal. The
+command binds that session and reports `awaiting-reply`. An explicit `--session
+<key>` can bind a known phone session; normal resume never replaces the saved
+session. Keep setup in the host conversation, not the phone test chat.
+
+Ask them to send "hello" from the app's Send Message box and read its reply on G2.
+Only an authenticated app send followed by that run's completed reply can advance
+to `awaiting-confirmation`; old replies, another backend/installation/session,
+host-generated traffic, connection health and render dispatch do not qualify.
+
+They run `openclaw ocuclaw first-use` again. The command names the saved session
+and reply time and asks for `SEEN ON G2` only if that reply appeared on their glasses.
+Enter, cancellation and interruption leave confirmation pending. The assistant
+must not run the ceremony, type the answer, or call its private gateway operation.
+Automated exercises use `--test-input`; their receipts cannot establish wearer proof.
+If the phone already reported that exact reply reaching the display, the command
+says so, asks nothing, and hands straight over to the welcome card, which the
+wearer still dismisses themselves.
+
+The local manual guide uses this same terminal path. On a capable installed host,
+`first-use` runs the welcome and prints recorded completion after its dismissal.
+If it reports that the host cannot show the welcome, preserve working text chat
+and report **welcome pending**; a zero process exit is not welcome proof. Resume
+the saved journey in the Setup Assistant for the supported capability/recovery
+handoff. Check the installed command/capability surface before recommending it;
+source in a candidate does not establish availability in a published bundle.
+
+If the recorded reply never appeared, fix the connection and run
+`openclaw ocuclaw first-use --retry` before a fresh phone send. This rearms only
+unfinished setup and invalidates the old reply/confirmation attempt. Add `--session
+<key>` to explicitly select a different intended phone session during retry.
+Completed wearer-confirmed setup is never reset by retry.
+
+Re-read `journey` after the handoff. `coreComplete: true` is the completion criterion.
+Say: "OcuClaw setup is complete. Optional: on your phone, choose what to add
+from the Optional setup card above your agents. You can also reopen it through
+Settings > Optional setup. Choose what you want, or leave it for later."
+The Home card and dedicated pages require a matching installed bundle; verify
+the advertised interface before offering this path. Dismissing the card hides
+only that runtime installation's Home invitation. Voice and Even AI skips stay
+separate, and Settings always provides re-entry. An older bundle keeps its
+supported private-entry flow; candidate source is not a public availability claim.
+Keep the recorded reply evidence label: SDK acceptance and wearer confirmation
+are distinct. The user can stop here. If they return after a
+restart, reconnect or new host conversation, resume the saved checkpoint. A later
+outage is current health; use `recoveryCheckpoint` without erasing completion or
+repeating pairing. An unreadable/foreign record needs installation-owner recovery,
+never deletion or guessed success. Older controllers without this capability cannot
+record durable core completion; report that limitation.
 
 If not:
 - App reported a send failure → `APP-CONNECT-FAIL`
@@ -531,22 +806,16 @@ If not:
 
 ---
 
-### Step 10b · Live UI push — show them the reverse direction   [REQUIRED]
+### Step 10b · Live UI demonstration   [OPTIONAL — deferred from core setup]
 
-GOAL: the landable moment — right after their phone-originated reply lands
-on the glasses, you push a Live UI test screen back the other way. It runs
-at this exact point in every fresh install. It is ADDITIVE: it never
-replaces or stands in for Step 10's app-originated test, which must already
-have passed.
+Run this demonstration only if the user requests it after core completion. It
+does not record first-use success and its dismissal is never a completion gate.
 
-Announce and run in the same turn — one sentence, then the call. This phase
-changes no configuration, so no OK is needed (rule 4 read-only shape); if
-the user asks to skip it, honor that as `[skipped]`.
+Announce the requested demonstration and run in the same turn. If the user skips,
+stop successfully; their core setup stays complete.
 
 The double-tap instruction must reach the user BEFORE the render call runs.
-Preferred carrier: the Step-10 heads-up (delivered with the hello ask — check
-it actually went out). If it was not delivered there, say now, before the
-call: "Now the reverse direction — I'm pushing a test screen to your glasses.
+Say before the call: "I'm pushing the requested test screen to your glasses.
 When you see it, double-tap to dismiss it and I'll confirm the moment I feel
 it." A render call made when the user was never told to double-tap is
 malformed — the tactile moment only lands if they know to tap. Then:
@@ -598,28 +867,58 @@ GOAL: let the user talk to the agent from the glasses instead of typing.
 
 **Offer this step; let them skip to Step 12 if they prefer.**
 
-Ask: "Would you like to set up voice input? You'll speak to me from the glasses and I'll transcribe it. It takes about 5 minutes and needs a Soniox account (free sign-up, requires a little credit for transcription). Say yes to continue or skip to move on."
+Ask: "Would you like to set up voice input? Soniox shows words as you speak.
+It needs a separate Soniox account, project and API key. You can skip it and
+return through OcuClaw > Settings > Optional setup."
 
 If they want it:
 
-1. Sign up at **soniox.com**, add a payment method, load a small credit balance.
-2. In the Soniox dashboard, create an API key.
+1. Open **https://console.soniox.com**, sign in and choose the project.
+2. Open **API Keys** and create a key with real-time speech-to-text, temporary
+   API keys and model listing enabled. Follow the console's current account
+   and billing requirements. Model-provider sign-in does not provide Soniox access.
 
-🔑 USER ACTION REQUIRED — you run this, I never see it.
-Run this in your own terminal, replacing ONLY the quoted `YOUR-SONIOX-API-KEY` placeholder — the whole placeholder text, quotes kept — with your Soniox API key (no `read`, no pipe, no extra flags):
+**Primary phone path, when advertised:** open **Optional setup > Voice**,
+choose Soniox, then enter the key in the masked private field on the Save step.
+An existing key requires explicit replacement confirmation before new entry.
+On supported hot-reload OpenClaw hosts, **Save and apply** discloses that it
+saves the key and requests a reload. Reconnect and refresh active state; a save
+does not prove that reload completed or that speech works. Unsupported host
+activation remains pending with its supported host handoff. Never restart
+Cloudways to finish optional setup. Cancellation preserves existing settings.
+
+<details><summary>Advanced: private terminal entry or an older bundle</summary>
+
+🔑 USER ACTION REQUIRED — use your own terminal on the selected Primary Runtime.
+Check that this installed bundle advertises the command before directing the
+user to it. The command opens hidden private entry; no secret belongs in an
+argument, shell history, chat, screenshot or log:
 
 ```
-openclaw config set plugins.entries.ocuclaw.config.sonioxApiKey "YOUR-SONIOX-API-KEY"
+openclaw ocuclaw credential soniox
 ```
 
-Then tell me "done." I will not continue until the sonioxApiKey probe returns 1.
+An existing credential is preserved. Only a deliberate replacement uses
+`--replace`. Blank input or cancellation keeps the current setting. A failed
+save stays failed or unknown; preserve text chat and retry only this capability.
+If the command is unavailable, explain the installed-bundle limit and use its
+supported private setup entry; never fall back to putting a secret in a command.
 
-Once the probe returns 1, follow rule 5: allow config reload and verify the
-runtime; only if the live runtime remains stale request one
-`openclaw gateway restart --safe`. If the user has already said yes to Even AI
-(Step 12), let its config write cover both keys before verifying.
+Follow the command's activation result. A supported hot/hybrid host may apply
+the saved change through a safe plugin reload. Off/restart/unknown reload policy
+leaves it pending for explicit host action; do not guess from a version number,
+restart Cloudways, or report a saved key as active. The candidate supports this
+reload path only on inspected OpenClaw 2026.5.3-1, 2026.7.1, 2026.7.1-2 and
+2026.9.4 with observed hot/hybrid policy.
 
-VERIFY (after reload or the one safe restart — never test voice against stale config): the user taps the microphone / listen button on their glasses and speaks a short phrase — it transcribes and appears as their message.   ·   If voice never activates or transcription fails → `ESCALATE` (note that voice input was the failing step).
+</details>
+
+VERIFY: after activation, return to **Settings > Optional setup > Voice** and
+start the spoken test for the selected session/provider. The user speaks a short
+phrase; a matching final transcription from that capture is the speech proof.
+Key presence, auth success, old transcripts and typed chat are not speech proof.
+A reconnect or changed configuration requires a fresh test. An unavailable
+provider or failed test leaves text chat and other optional choices intact.
 
 ---
 
@@ -646,53 +945,63 @@ fully force-close and reopen the app.
 enabling Even AI without its token already set. Create a strong private value
 to use as the Even AI token; it will also be entered in the app in Checkpoint 5.
 
-🔑 USER ACTION REQUIRED — you run this, I never see it. Run this in your own
-terminal, replacing ONLY the quoted `YOUR-EVEN-AI-TOKEN` placeholder — the
-whole placeholder text, quotes kept — with the Even AI password (no `read`, no
-pipe, no extra flags):
+**Primary phone path, when advertised:** use **Optional setup > Even AI >
+Connect** and its masked private secret field. Keep the same user-chosen secret
+for the Even app. Confirm an existing-secret replacement separately. On supported
+OpenClaw hot-reload hosts, **Save and apply** requests reload; refresh the host
+readback after reconnecting. Continue to the route review and real request check.
+
+<details><summary>Advanced: private terminal entry or an older bundle</summary>
+
+🔑 USER ACTION REQUIRED — use your own terminal's hidden prompt:
 
 ```
-openclaw config set plugins.entries.ocuclaw.config.evenAiToken "YOUR-EVEN-AI-TOKEN"
+openclaw ocuclaw credential even-ai
 ```
 
-Then tell me "done." I will not continue until the presence-only evenAiToken
-probe returns 1. Never ask the user to paste or read the value into chat.
+Check command availability first. Existing values are kept unless the user
+deliberately adds `--replace`; blank/cancel preserves them. Never ask the user
+to paste or read the token into chat. Keep the same private token for the Even
+app later. The saved `evenAiToken` is not activation or a real request receipt.
 
 #### Checkpoint 3 · Enable Even AI on OpenClaw
 
-Once the probe returns 1, run:
+Once the private save is confirmed, run the supported capability command:
 
 ```
-openclaw config set plugins.entries.ocuclaw.config.evenAiEnabled true --strict-json
+openclaw ocuclaw even-ai enable
+openclaw ocuclaw even-ai status
 ```
 
-Follow rule 5: allow config reload and verify the runtime; only if the live
-runtime remains stale request one `openclaw gateway restart --safe`.
+`enable` changes only the Even AI enabled setting after token presence. Follow
+its observed host-policy result: safe hot reload on supported hot/hybrid hosts,
+or saved/pending with explicit host action. Preserve an unsupported, stale or
+offline observation; do not restart Cloudways or label it active from config alone.
+
+</details>
 
 #### Checkpoint 4 · Create and verify the private Even-AI route
 
-Read the selected OpenClaw Runtime Bundle's settled relay port, tailnet DNS
-name, and current Serve state:
+Read the selected Primary Runtime's live route proposal:
+
+The phone's **Review private route** is a review handoff only. It does not apply
+a Serve change. Keep the separate explicit approval below; private input or a
+successful save is not approval to expose a route.
 
 ```bash
-openclaw config get plugins.entries.ocuclaw.config.wsPort
-tailscale status --json
-tailscale serve status
+openclaw ocuclaw even-ai route
 ```
 
 The **Even AI agent URL** is
 `https://<node>.<tailnet>.ts.net:8443/v1/chat/completions`. It is separate from
 the **OcuClaw app relay address** at `wss://<node>.<tailnet>.ts.net:8444`.
 
-If `:8443` is absent, show and explain one exact command with `<port>` replaced
-by the readback, then wait for explicit approval before running it:
-
-```bash
-tailscale serve --bg --https=8443 http://localhost:<port>
-```
-
-Read `tailscale serve status` again after an approved apply. An already-correct
-mapping is a no-op. If `:8443` belongs to another Primary Runtime, a foreign or
+If `:8443` is absent, show the exact returned `--https=8443` command, including
+the observed Tailscale binary/socket and bound relay target. Explain that it
+permits tailnet access, then wait for explicit approval before applying it.
+Never construct the command from a remembered port. Run `even-ai route` again
+after an approved apply, then `openclaw ocuclaw even-ai verify` for fresh readback.
+An already-correct mapping is a no-op. If `:8443` belongs to another Primary Runtime, a foreign or
 ambiguous service, a non-proxy web handler, or Funnel, stop rather than replace
 it. Never use Funnel, widen the loopback bind, publish a public address, or run
 a host-wide Serve reset.
@@ -713,7 +1022,9 @@ Even Realities app → Settings → Even AI settings → Agent Configuration (at
 
 #### Checkpoint 6 · Exercise a real glasses request
 
-VERIFY: the user makes a real Even AI request from the glasses (wake word or
+VERIFY: `even-ai verify` only establishes that the current route and activation
+are available to test. Then the user selects the configured agent in the Even
+app and makes a real Even AI request from the glasses (wake word or
 button) and the reply comes from their OpenClaw session. Host configuration,
 route shape, endpoint health, the enabled flag, or WebUI state alone is not
 end-to-end success.
@@ -727,44 +1038,53 @@ If not:
 
 ### Step 12b · Easy bug reports   [OPTIONAL]
 
-GOAL: pre-enable the two explicit diagnostic permissions so a future problem is a two-tap bug report with real diagnostics, instead of a fresh troubleshooting session.
+GOAL: let the user choose diagnostic access and phone handoff independently,
+without changing working text chat or other integrations.
 
-**Version gate first:** this lane needs plugin ≥ 1.3 — check `Version:` from `openclaw plugins inspect ocuclaw`. Below 1.3, skip this step silently (bug reports go via the Discord paste route in troubleshooting).
+**Primary phone path, when advertised:** open **Optional setup > Diagnostics**.
+Choose Allow or Decline for one permission, review the named change, then confirm
+**Apply this permission**. Cancellation changes nothing. Saved choice and Active
+readback remain separate; reconnect and refresh after a supported reload. Report
+review and its explicit Send action remain separate from both permissions.
 
-Ask: "One last optional thing — want me to enable easy bug reports? External
-debug access permits bounded diagnostic capture, preview, cache, and local save
-on this OpenClaw host. Separate upload consent permits full-bundle handoff to
-your phone, but nothing uploads until you review the report and tap **Send**.
-You can ask me to turn either permission off (or on) anytime later."
+**Advanced capability gate:** inspect `openclaw ocuclaw diagnostics status` only
+when this installed bundle advertises the command. Unknown/offline is not
+enabled. If unsupported, leave the controls unavailable and preserve the
+ordinary support path; do not silently infer support from a version floor.
 
-If they want the complete phone-upload flow, both keys are non-secret and you
-run them. `externalDebugToolsEnabled` permits capture, preview, cache, and local
-save. `allowDebugUpload` permits full-bundle handoff to the phone for the
-user-initiated upload and requires external debug access too:
+Explain the two choices separately in **Settings > Optional setup > Diagnostics**:
+diagnostic access (`externalDebugToolsEnabled`) permits capture/control, preview,
+cache and local save on this host; phone handoff (`allowDebugUpload`) permits the
+full bundle to reach the phone for review.
+Handoff is not upload consent. The user still reviews the report and taps
+**Send** for each upload. Each permission can be changed or revoked later.
+
+<details><summary>Advanced: diagnostics commands</summary>
+
+Run only the capability the user chose. These non-secret commands each change
+one permission; `deny` revokes that permission:
 
 ```
-openclaw config set plugins.entries.ocuclaw.config.externalDebugToolsEnabled true --strict-json
-openclaw config set plugins.entries.ocuclaw.config.allowDebugUpload true --strict-json
+openclaw ocuclaw diagnostics access allow
+openclaw ocuclaw diagnostics handoff allow
+openclaw ocuclaw diagnostics status
 ```
 
-Run them one at a time (rule 5): a parallel batch fails the second write with
-`ConfigMutationConflictError`.
+Follow the activation result and read status again. Both permissions are needed
+for full-bundle phone fetch; one does not imply the other. Saved config alone
+does not establish active access or a successful report upload. Host status is
+configured readback with activation unknown; reconnect the phone and use the
+fresh **Active: Allowed/Denied** rows for live relay permission evidence. On unknown host
+policy, preserve pending state and the explicit host action. If they skip, record
+the choice and stop; they can return to the same entry later without rerunning core setup.
 
-Reload handling: let one reload cover any pending Step 11/12 keys too. Follow
-rule 5 and request one `openclaw gateway restart --safe` only if the live
-runtime remains stale after verification.
-
-VERIFY: both keys read back `true` via `config get`. Nothing to test in the app now — the Send flow only matters when a problem exists.
-
-If they decline: fine — the troubleshooting ESCALATE path enables the same thing on demand later. Note the decline and move on.
+</details>
 
 ---
 
-### Step 13 · Handoff
+### Step 13 · Extended handoff [OPTIONAL]
 
-Return to the skill's SKILL.md, then load
-`{baseDir}/references/wrap-feedback.md` once every required box except the
-wrap box is ticked and each optional step (Soniox, Even AI, easy bug reports)
-was offered — accepted, declined, or version-gated. Delivering that file's
-ordered finish is what ticks the final required wrap box; the session does not
-end before it.
+Only if the user requests an extended wrap or feedback after core completion,
+return to SKILL.md and load `{baseDir}/references/wrap-feedback.md`. Record
+optional choices as accepted, declined or deferred. This handoff is not a required
+box and does not delay the successful Step 10 finish.

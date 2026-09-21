@@ -198,6 +198,26 @@
       "label": "Even AI dedup window (ms) (deprecated)",
       "advanced": true
     },
+    "inputPredictionTimeoutMs": {
+      "label": "Silent input prediction deadline (ms)",
+      "advanced": true
+    },
+    "silentInputJev.enabled": {
+      "label": "Enable silent input Jev ranker",
+      "help": "Off by default: arming this sends the wearer's draft, and the message they are answering, to a third-party API (api.typesafe.ai), which ranks words the host builds instead of a reasoning model writing them. Strictly opt-in per gateway. Only a literal true arms it. Changing this or the key takes a gateway restart.",
+      "advanced": true
+    },
+    "silentInputJev.apiKey": {
+      "label": "TypeSafe API key (silent input)",
+      "help": "API key for the silent input Jev ranker's TypeSafe calls. Falls back to TYPESAFE_API_KEY in the gateway's env block, then the process environment. Read once at start; rotating it takes a gateway restart.",
+      "sensitive": true,
+      "advanced": true
+    },
+    "silentInputJev.budgetMs": {
+      "label": "Silent input Jev budget (ms)",
+      "help": "Wall-clock budget for the ranking request. Past it the word keeps the keyboard's own local ranking, with no error shown. Default 2500, measured: a real 8-question request took 1.6 s cold and 1.35 s warm. Clamped 200-5000.",
+      "advanced": true
+    },
     "evenAiDedicatedSessionKey": {
       "label": "Even AI dedicated session key (deprecated)",
       "help": "Deprecated — scheduled for removal in a future release. Internal session key prefix for background routing. Must start with 'ocuclaw:'.",
@@ -335,6 +355,36 @@
         "default": 500,
         "deprecated": true,
         "description": "Deprecated — scheduled for removal in a future release. The built-in default is used when this key is absent. Dedup window (ms) for collapsing repeated Even AI requests."
+      },
+      "inputPredictionTimeoutMs": {
+        "type": "integer",
+        "minimum": 200,
+        "maximum": 10000,
+        "description": "Silent input (#2829): host-side deadline (ms) for one direct next-word prediction call. Absent = the provisional 1500 ms. Operator/bench knob; phones cannot set it."
+      },
+      "silentInputJev": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Silent input Jev ranker (#3124): the host builds the candidate words from its own tables and asks TypeSafe (api.typesafe.ai) to rank them, instead of asking a reasoning model to write them. Off by default because arming it sends the wearer's draft and the message being answered to that third-party API; strictly opt-in per gateway.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master switch. Off by default: this sends the wearer's draft, and the message they are answering, to a third-party API (api.typesafe.ai). An operator must opt in explicitly per gateway."
+          },
+          "apiKey": {
+            "type": "string",
+            "default": "",
+            "description": "TypeSafe API key for the silent input Jev ranker. Falls back to the TYPESAFE_API_KEY environment variable when unset, so a pet/dev box can supply the key without writing a secret into openclaw.json."
+          },
+          "budgetMs": {
+            "type": "integer",
+            "minimum": 200,
+            "maximum": 5000,
+            "default": 2500,
+            "description": "Wall-clock budget for one ranking request. Past it the word falls back to the keyboard's own local ranking with no error shown."
+          }
+        }
       },
       "evenAiRoutingMode": {
         "type": "string",

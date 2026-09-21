@@ -1,6 +1,6 @@
 # OcuClaw wrap-up & feedback
 
-**Guide version:** 2026-09-14 (1.0.43)
+**Guide version:** 2026-09-19 (1.0.56)
 
 Load this only at a genuine finish — fresh install, update, rollback, or a
 standalone fix completed. Never after an unresolved failure or an ESCALATE. If
@@ -29,7 +29,11 @@ The relay address in particular — they will need it to reconnect the app on a 
 
 **Self-audit — re-show the setup checklist in its final state:**
 
-Display the setup checklist from SKILL.md in its final state — the exact boxes, same wording, with tick states filled in (ticked, skipped, or blocked); never substitute a different list. This is its first and only user-visible appearance. Confirm every required box is ticked before continuing — except the wrap box itself: render it UNCHECKED here, with the one-line note "(ticks when this finish completes)" beside it. This message IS the delivery, so a pre-ticked wrap box would report a finish that has not happened yet; the unticked box is the honest render, not an open item. If any other required box is unchecked, return to that step — do not proceed to the closing note while a required box is open.
+Display the setup checklist from SKILL.md in its final state, with completed,
+declined, deferred or blocked states. The extended wrap is optional; tick it when
+delivered, never turn it into a core requirement. For an older bundle, label the
+manual phone/G2 check and unavailable durable receipt truthfully. A later outage
+is a recovery item, not a reason to erase or repeat completed setup.
 
 **Optional security check:** offer to run `openclaw security audit` (read-only) — setup changed network surfaces (serve routes; on container installs, the relay bind). Read any findings to the user in plain words; fixes are their call.
 
@@ -60,7 +64,7 @@ Run this at **every genuine finish** — fresh install, update, rollback, or a r
 
 **Copy-paste block for the feedback form at `https://ocuclaw.com/setup`:**
 ```
-OcuClaw setup assistant feedback — guide 2026-09-14 (1.0.43)
+OcuClaw setup assistant feedback — guide 2026-09-19 (1.0.56)
 Platform: <OS only, e.g. macOS / Windows 11 / Ubuntu>
 OpenClaw version: <e.g. 2026.7.1>
 OcuClaw plugin version: <e.g. 1.3.4>

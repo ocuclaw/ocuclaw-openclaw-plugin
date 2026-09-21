@@ -323,6 +323,18 @@ What to do, in order:
    empty stack, so re-declare everything the old surface carried: `refresh`, `staleAfterMs`,
    `queueMode`, `title`.
 
+A close cousin is `session_not_viewed`: the client is connected, but the wearer has moved
+to another chat since they asked. A new surface for this chat would paint nothing, so the
+render is refused before it takes a slot. **Answer in text.** The reply waits in this chat
+for when the wearer comes back. Do not retry the render in the same turn. A surface that
+is already up is never refused this way, so `patch` and `push` collects keep working.
+
+The same words can also arrive *after* a render went out, as the terminal outcome
+`preempted` with `reason: "session_not_viewed"`. That is the phone reporting that it threw
+the frame away because it is showing another chat — the refusal above could not see it
+coming, because the host's view of which chat the phone is on was a moment behind. Read it
+exactly like the refusal: nothing painted, nothing can be dismissed, **answer in text**.
+
 Taps that were parked when the client dropped are not destroyed — they return once as a
 voicemail line on a later turn, flagged with the fact that the surface is no longer live.
 Treat one of those as a parked answer to a surface that is gone: re-confirm before acting.

@@ -16,6 +16,7 @@ import {
   isLoopbackBindAddress,
 } from "./container-env.js";
 import { createRelay as createPluginOwnedRelay } from "./relay-core.js";
+import { createCloudwaysSupervisor } from "../setup/cloudways-supervisor.js";
 import { normalizeLogger } from "../domain/logger-adapter.js";
 
 function resolveCreateRelay(createRelayOverride) {
@@ -52,11 +53,57 @@ function clearSharedRelay(relay) {
   }
 }
 
+function readInputPredictionTimeoutMs(pluginConfig) {
+  const raw = pluginConfig && pluginConfig.inputPredictionTimeoutMs;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
 export function createOcuClawRelayService(opts = {}) {
   const baseLogger = normalizeLogger(opts.logger);
   let relay = null;
+
+  let cloudwaysSupervisor = null;
   let runtimeConfig = null;
   let setupConfig = null;
+
+  let adoptedRelayToken = null;
+
+  let relayCredentialLoad = {
+    origin: null,
+    mintOnLoad: { status: "not-attempted", code: null, detail: null },
+  };
+  let relayCredentialAdoptionAnnounced = false;
+  const optsAny0 = opts;
+  function effectivePluginConfig() {
+    if (adoptedRelayToken === null) return optsAny0.pluginConfig;
+    const base = optsAny0.pluginConfig && typeof optsAny0.pluginConfig === "object"
+      ? optsAny0.pluginConfig
+      : {};
+    return { ...base, relayToken: adoptedRelayToken };
+  }
+  function recordRelayCredentialLoad(origin, mint) {
+    relayCredentialLoad = {
+      origin,
+      mintOnLoad: {
+        status: mint && typeof mint.status === "string" ? mint.status : "not-attempted",
+        code: mint && typeof mint.code === "string" ? mint.code : null,
+        detail: mint && typeof mint.detail === "string" ? mint.detail : null,
+      },
+    };
+  }
+  function announceRelayCredentialAdopted() {
+    if (relayCredentialAdoptionAnnounced) return;
+    relayCredentialAdoptionAnnounced = true;
+    if (typeof optsAny0.onRelayCredentialAdopted !== "function") return;
+    try {
+      optsAny0.onRelayCredentialAdopted(relayCredentialLoad);
+    } catch (err) {
+      baseLogger.warn(
+        `[ocuclaw] relay credential adoption hook failed: ${err && err.message ? err.message : String(err)}`,
+      );
+    }
+  }
 
   const facadeSubscriptionChannels = {
     onGlassesUiResult: { registry: new Set(), liveUnsubs: new Map() },
@@ -69,6 +116,7 @@ export function createOcuClawRelayService(opts = {}) {
     onGlassesPresenceChanged: { registry: new Set(), liveUnsubs: new Map() },
     onLocationResponse: { registry: new Set(), liveUnsubs: new Map() },
     onAppClientDisconnect: { registry: new Set(), liveUnsubs: new Map() },
+    onAppClientSessionLeft: { registry: new Set(), liveUnsubs: new Map() },
     onLogicalSessionReset: { registry: new Set(), liveUnsubs: new Map() },
     onAgentTurnChanged: { registry: new Set(), liveUnsubs: new Map() },
   };
@@ -110,7 +158,7 @@ export function createOcuClawRelayService(opts = {}) {
         opts.runtimeConfig ||
         createRuntimeConfig({
           env: opts.env || process.env,
-          pluginConfig: opts.pluginConfig,
+          pluginConfig: effectivePluginConfig(),
           openclawConfig: opts.openclawConfig,
         });
     }
@@ -126,11 +174,58 @@ export function createOcuClawRelayService(opts = {}) {
     }
     if (!setupConfig) {
       setupConfig = createRuntimeConfigOverview({
-        pluginConfig: opts.pluginConfig,
+        env: opts.env || process.env,
+        pluginConfig: effectivePluginConfig(),
         openclawConfig: opts.openclawConfig,
       });
     }
     return setupConfig;
+  }
+
+  async function resolveRelayCredentialAtStart(logger) {
+    const boot = getSetupConfig();
+    if (boot.relayToken) {
+      if (relayCredentialLoad.origin === null) {
+        recordRelayCredentialLoad("pre-existing", { status: "not-needed", code: "credential-loaded-at-boot" });
+      }
+      return true;
+    }
+    if (typeof optsAny0.mintRelayCredentialAtLoad !== "function") {
+      recordRelayCredentialLoad(null, { status: "not-attempted", code: "no-minter" });
+      return false;
+    }
+    let outcome;
+    try {
+      outcome = await optsAny0.mintRelayCredentialAtLoad();
+    } catch (err) {
+      outcome = {
+        status: "failed",
+        code: typeof err?.code === "string" ? err.code : "mint_failed",
+        detail: typeof err?.message === "string" ? err.message : String(err),
+      };
+    }
+    const credential = outcome && typeof outcome.credential === "string" && outcome.credential.length > 0
+      ? outcome.credential
+      : null;
+
+    recordRelayCredentialLoad(credential ? outcome.origin : null, outcome);
+    if (!credential) {
+      logger.warn(
+        `[ocuclaw] relay credential not minted at load (${
+          (outcome && outcome.code) || "unknown"
+        }): ${(outcome && outcome.detail) || "no detail"}`,
+      );
+      return false;
+    }
+    adoptedRelayToken = credential;
+    runtimeConfig = null;
+    setupConfig = null;
+    logger.info(
+      outcome.status === "minted"
+        ? "[ocuclaw] relay credential minted by this host at plugin load and adopted in-process; pair a phone with `openclaw ocuclaw pair`"
+        : `[ocuclaw] relay credential adopted in-process at start (${outcome.code})`,
+    );
+    return true;
   }
 
   async function start(startOpts = {}) {
@@ -139,6 +234,7 @@ export function createOcuClawRelayService(opts = {}) {
     }
 
     const logger = normalizeLogger(startOpts.logger || baseLogger);
+    await resolveRelayCredentialAtStart(logger);
     const readiness = getSetupConfig();
     const missingRequiredSecrets = [];
     if (!readiness.relayToken) missingRequiredSecrets.push("relayToken");
@@ -235,9 +331,20 @@ export function createOcuClawRelayService(opts = {}) {
     if (typeof openclawClient.setLogger === "function") {
       openclawClient.setLogger(logger);
     }
+    const optsAny = opts;
     const nextRelay = createRelay({
+      optionalSetupCommandsVersion: 1,
+      optionalSetupEvenAiCommands: true,
+      optionalSetup: optsAny.optionalSetup,
+      setupStateDir: optsAny.setupStateDir,
       gatewayUrl: config.gatewayUrl,
       gatewayToken: config.gatewayToken,
+
+      inputPrediction: optsAny.inputPrediction,
+
+      inputPredictionTimeoutMs: readInputPredictionTimeoutMs(optsAny.pluginConfig),
+
+      silentInputJev: config.silentInputJev,
       httpServer: startOpts.httpServer || opts.httpServer,
       port: effectiveWsPort,
       host: config.wsBind,
@@ -322,6 +429,9 @@ export function createOcuClawRelayService(opts = {}) {
       if (isLoopbackBindAddress(config.wsBind) && containerEnvProbe()) {
         logger.info(composeContainerLoopbackNotice(config.wsBind, effectiveWsPort));
       }
+      startCloudwaysSupervisor(logger, startOpts);
+
+      if (adoptedRelayToken !== null) announceRelayCredentialAdopted();
       return nextRelay;
     } catch (err) {
       clearSharedRelay(nextRelay);
@@ -330,8 +440,42 @@ export function createOcuClawRelayService(opts = {}) {
     }
   }
 
+  function getRelayCredentialLoadState() {
+    return {
+      origin: relayCredentialLoad.origin,
+      adoptedInProcess: adoptedRelayToken !== null,
+      mintOnLoad: { ...relayCredentialLoad.mintOnLoad },
+    };
+  }
+
+  function startCloudwaysSupervisor(logger, startOpts) {
+    if (cloudwaysSupervisor) return;
+    if (opts.cloudwaysSupervisor === false || startOpts.cloudwaysSupervisor === false) return;
+    try {
+      const create = typeof opts.createCloudwaysSupervisor === "function"
+        ? opts.createCloudwaysSupervisor
+        : createCloudwaysSupervisor;
+      cloudwaysSupervisor = create({ logger });
+      Promise.resolve(cloudwaysSupervisor.start()).catch((error) => {
+        logger.warn(`[ocuclaw] cloudways supervisor start failed: ${String((error && error.message) || error)}`);
+      });
+    } catch (error) {
+      cloudwaysSupervisor = null;
+      logger.warn(`[ocuclaw] cloudways supervisor unavailable: ${String((error && error.message) || error)}`);
+    }
+  }
+
+  function stopCloudwaysSupervisor() {
+    if (!cloudwaysSupervisor) return;
+    const supervisor = cloudwaysSupervisor;
+    cloudwaysSupervisor = null;
+
+    try { supervisor.stop(); } catch (_) {  }
+  }
+
   async function stop(stopOpts = {}) {
     if (!relay) {
+      stopCloudwaysSupervisor();
       return;
     }
 
@@ -339,6 +483,7 @@ export function createOcuClawRelayService(opts = {}) {
     const activeRelay = relay;
     relay = null;
     clearSharedRelay(activeRelay);
+    stopCloudwaysSupervisor();
     await Promise.resolve(activeRelay.stop());
     logger.info("[ocuclaw] relay service stopped");
   }
@@ -350,6 +495,7 @@ export function createOcuClawRelayService(opts = {}) {
   return {
     getRuntimeConfig,
     getSetupConfig,
+    getRelayCredentialLoadState,
     getRelay() {
       return resolveLiveRelay();
     },
@@ -396,6 +542,9 @@ export function createOcuClawRelayService(opts = {}) {
     },
     onAppClientDisconnect(handler) {
       return subscribeFacadeChannel("onAppClientDisconnect", handler);
+    },
+    onAppClientSessionLeft(handler) {
+      return subscribeFacadeChannel("onAppClientSessionLeft", handler);
     },
     onLogicalSessionReset(handler) {
       return subscribeFacadeChannel("onLogicalSessionReset", handler);
@@ -594,6 +743,14 @@ export function createOcuClawRelayService(opts = {}) {
         return liveRelay.hasConnectedAppClient();
       }
       return false;
+    },
+
+    getAppViewedSessionKeys() {
+      const liveRelay = resolveLiveRelay();
+      if (liveRelay && typeof liveRelay.getAppViewedSessionKeys === "function") {
+        return liveRelay.getAppViewedSessionKeys();
+      }
+      return null;
     },
     getConnectedAppClientVersion() {
       const liveRelay = resolveLiveRelay();
