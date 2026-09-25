@@ -106,6 +106,11 @@
       "help": "Optional. Enables Soniox speech-to-text for voice input.",
       "sensitive": true
     },
+    "typesafeApiKey": {
+      "label": "TypeSafe API key",
+      "help": "Optional. Saved from the phone's Silent input settings; arms smart word order (TypeSafe ranking) for the glasses keyboard.",
+      "sensitive": true
+    },
     "cartesiaApiKey": {
       "label": "Cartesia API key",
       "help": "Optional. Enables Cartesia Ink-2 speech-to-text for voice input.",
@@ -316,6 +321,10 @@
       "sonioxApiKey": {
         "type": "string",
         "description": "Optional Soniox API key. Enables Soniox speech-to-text for voice input."
+      },
+      "typesafeApiKey": {
+        "type": "string",
+        "description": "Optional TypeSafe API key saved from the phone (#3359). A present key arms silentInputJev unless silentInputJev.apiKey/enabled are set explicitly."
       },
       "cartesiaApiKey": {
         "type": "string",

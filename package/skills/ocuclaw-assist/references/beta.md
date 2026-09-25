@@ -1,6 +1,6 @@
 # OcuClaw beta channel & rollback
 
-**Guide version:** 2026-09-19 (1.0.56)
+**Guide version:** 2026-09-25 (1.0.58)
 
 **Beta-Discord testers only.** Beta builds are pre-release and can be unstable.
 If the user is **not** a confirmed beta-testing Discord member, this is the wrong
@@ -36,16 +36,24 @@ warning for each command.
 Follow recovery-routing.md's **Interrupted upgrade, retry and compatible
 recovery** checks before changing either component and after a failed attempt.
 
+OpenClaw 2026.9.x can ask for consent when a beta adds tools or skills, and on
+the first update after the host moved from 2026.7.x. Follow recovery-routing.md's
+**Installation consent and recorded source**: ask once inside this checkpoint,
+as ONE final message that ends with the question, then probe `--help` for the
+flag. Never consent for the person; declined → the plain command, no
+`--accept-capabilities`.
+
 **Move to a newer beta:**
 
 ```
-openclaw plugins update ocuclaw@beta
+u=(); openclaw plugins update --help 2>&1 | grep -q -- '--accept-capabilities' && u+=(--accept-capabilities)
+openclaw plugins update ocuclaw@beta "${u[@]}"
 ```
 
 To move to a specific pinned build from the Discord (e.g. `1.3.0-beta.2`):
 
 ```
-openclaw plugins update ocuclaw@1.3.0-beta.2
+openclaw plugins update ocuclaw@1.3.0-beta.2 "${u[@]}"
 ```
 
 Re-run `update ocuclaw@beta` later to jump to a newer beta when one drops.

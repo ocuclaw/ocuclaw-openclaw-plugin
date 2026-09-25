@@ -24,7 +24,7 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
         .command("ocuclaw")
         .description("Inspect OcuClaw setup and runtime state");
       ocuclaw.command("credential <capability>")
-        .description("Privately save soniox or even-ai credentials in this host terminal")
+        .description("Privately save soniox, even-ai or typesafe credentials in this host terminal")
         .option("--replace", "Deliberately replace this capability's existing credential")
         .action(async (capability, options) => {
           const result = await createOptionalCredentialCommand(api)(capability, options);
@@ -49,9 +49,15 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
         .description("Resume this installation's first phone reply and confirm it appeared on G2")
         .option("--session <key>", "Bind the initial checkpoint to this phone conversation")
         .option("--retry", "Rearm unfinished first-use for a fresh phone reply; preserve completed setup")
+
+        .option("--first-use-wait <seconds>", "Seconds to wait for the first phone reply (default 600)")
         .option("--test-input", "Label an automated terminal exercise; never record real wearer acceptance")
         .action(async (options) => {
-          const result = await createFirstUseCommand(api)(options);
+          const seconds = Number.parseInt(String(options?.firstUseWait ?? ""), 10);
+          const result = await createFirstUseCommand(api)({
+            ...options,
+            ...(Number.isInteger(seconds) && seconds >= 0 ? { waitMs: seconds * 1000 } : {}),
+          });
           process.exitCode = result.exitCode;
         });
       for (const operation of OCUCLAW_SETUP_OPERATIONS) {

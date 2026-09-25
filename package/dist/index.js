@@ -1,5 +1,6 @@
 import { createOcuClawRelayService } from "./runtime/relay-service.js";
-import { configuredOpenReplyRoute, probeLlmCompleteOptions } from "./gateway/input-prediction-openclaw.js";
+import { configuredOpenReplyRoute, configuredReplyModels, createReplyModelPriceLookup, probeLlmCompleteOptions, runtimeOnlyModelMatcher } from "./gateway/input-prediction-openclaw.js";
+import { saveInputPredictionModelAllow } from "./setup/optional-credential-store.js";
 import { createEvenAiModelHook } from "./even-ai/even-ai-model-hook.js";
 import { createChannelTwoHook } from "./runtime/channel-two-hook.js";
 import {
@@ -16,6 +17,7 @@ import {
   resolveSetupStateDir,
 } from "./setup/setup-controller.js";
 import { registerOcuClawSetupTool } from "./setup/overview-tool.js";
+import { firstUseSetupSessionFromContext } from "./setup/first-use-relay-run.js";
 import { registerOcuClawSetupCli } from "./setup/overview-cli.js";
 import { createTerminalPairingCommand, terminalPairingCapability } from "./setup/pairing-command.js";
 import { readLiveSetupJourney, readPrivateRoute, readTailnetDaemon, registerSetupJourneyReader } from "./setup/setup-live.js";
@@ -34,7 +36,7 @@ import {
   mintOnLoadSupported,
 } from "./setup/relay-credential-mint-on-load.js";
 import { createSetupApprovalHook } from "./setup/setup-approval.js";
-import { registerSetupFirstUseControl, registerSetupWelcomeControl, createFirstUseTool } from "./setup/first-use-command.js";
+import { registerSetupFirstUseControl, registerSetupWelcomeControl, createFirstUseTool, createFirstUseWakeGuardHook } from "./setup/first-use-command.js";
 import { warnTaskIndexPromptInjectionDisabledOnce } from "./runtime/task-index-prompt-injection.js";
 import { projectLiveuiTaskIndexRows } from "./tools/glasses-ui-task-index.js";
 
@@ -109,6 +111,26 @@ export default function register(api) {
 
     inputPrediction: {
       completionRoute: (identity) => configuredOpenReplyRoute(api.config, identity),
+
+      configuredModels: (identity) => configuredReplyModels(api.config, identity),
+
+      allowModel: (ref) => saveInputPredictionModelAllow(api, ref),
+
+      providerAuth: async (provider) => {
+        const modelAuth = api && api.runtime && api.runtime.modelAuth;
+        if (!modelAuth || typeof modelAuth.resolveApiKeyForProvider !== "function") return null;
+        try {
+          const auth = await modelAuth.resolveApiKeyForProvider({ provider, cfg: api.config });
+          return Boolean(auth && ((typeof auth.apiKey === "string" && auth.apiKey) || auth.mode === "aws-sdk"));
+        } catch {
+          return false;
+        }
+      },
+
+      authExemptModel: (ref, identity) => runtimeOnlyModelMatcher(api.config, identity)(ref),
+
+      modelPrice: createReplyModelPriceLookup({ getConfig: () => api.config }),
+      logger: api.logger,
       llmComplete: (() => {
         const llm = api && api.runtime && api.runtime.llm;
         if (!llm || typeof llm.complete !== "function") return undefined;
@@ -161,7 +183,7 @@ export default function register(api) {
   });
 
   if (typeof api.on === "function") {
-    api.on("before_tool_call", createSetupApprovalHook());
+    api.on("before_tool_call", createSetupApprovalHook([createFirstUseWakeGuardHook(service)]));
   }
 
   let glassesUiDispose = null;
@@ -234,6 +256,11 @@ export default function register(api) {
         relayCredentialLoadedAtBoot: () => relayCredentialAdopted,
       }),
       createFirstUseTool(api, undefined, service),
+
+      (ctx) => {
+        const session = firstUseSetupSessionFromContext(ctx);
+        if (session) service.getRelay?.()?.noteSetupSession?.(session);
+      },
     );
     setupToolRegistered = true;
   }

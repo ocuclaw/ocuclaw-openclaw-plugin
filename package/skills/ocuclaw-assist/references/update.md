@@ -1,6 +1,6 @@
 # Updating OcuClaw
 
-**Guide version:** 2026-09-19 (1.0.56)
+**Guide version:** 2026-09-25 (1.0.58)
 
 This is the **stable update** path — for any already-installed OcuClaw user. You
 do **not** need to be a beta tester to be here. For the **beta channel** (newer
@@ -74,13 +74,17 @@ warning for each command.
    openclaw config set plugins.entries.ocuclaw.hooks.allowConversationAccess true --strict-json
    ```
    (Non-secret but privacy-relevant — OpenClaw only runs a plugin's conversation-lifecycle hooks with this set. For OcuClaw those hooks do end-of-turn housekeeping: settle any glasses-display, device-info, or location call still pending when a turn ends so nothing hangs; apply the Even-AI model preference; and name sessions with a short title distilled from the conversation — that last part reads conversation content, which is why the host gates it behind the user's explicit OK; tell the user that's what it's for.)
-2. `openclaw config get tools` — this is the root pre-flight clue. Plugin
-   builds carrying this guide expose OcuClaw's tools by default, so most
-   installs need no change here (a leftover `alsoAllow: ["ocuclaw"]` from an
-   older setup is harmless — leave it). Act only on a restrictive policy: a
-   non-empty `allow` lacking `"ocuclaw"`/`"group:plugins"` → merge `"ocuclaw"`
-   into it (never set `allow` and `alsoAllow` in the same scope); a blocking
-   `deny` → STOP and ask the user. Apply SKILL.md's **Capability-first
+2. `openclaw config get tools` — this is the root pre-flight clue, and it is
+   load-bearing: OcuClaw's tools are exposed by default only while the policy
+   leaves plugin tools exposed. Act on the first case that matches: a blocking
+   `deny` → STOP and ask the user; a non-empty `allow` lacking
+   `"ocuclaw"`/`"group:plugins"` → merge `"ocuclaw"` into it (never set `allow`
+   and `alsoAllow` in the same scope); a `profile` other than unset/`full`
+   (OpenClaw's quickstart writes `coding`) → that profile hides plugin tools,
+   so merge `"ocuclaw"` into `tools.alsoAllow` after the usual checkpoint
+   (`openclaw config set tools.alsoAllow '["ocuclaw"]' --strict-json`). A
+   leftover `alsoAllow: ["ocuclaw"]` from an older setup is harmless — leave
+   it. Apply SKILL.md's **Capability-first
    controller routing** table after restart; this root check is not the
    effective-session verdict.
 
@@ -90,11 +94,43 @@ Before updating, follow recovery-routing.md's **Interrupted upgrade, retry and
 compatible recovery** checks. An interrupted or failed attempt resumes there;
 it does not restart fresh installation.
 
+**Pick the update command by the recorded source.** Read `install.source` in
+`openclaw plugins inspect ocuclaw --json`:
+
+- **npm** (`openclaw plugins install ocuclaw`, `npm:ocuclaw`, `npm:ocuclaw@beta`):
+  use `openclaw plugins update ocuclaw@latest`. Bare `update ocuclaw` follows
+  the recorded spec, so a record pinned to `ocuclaw@1.3.7` says "already at
+  1.3.7" and a `beta` record says "up to date" while a newer stable exists.
+  `@latest` moves both to the newest stable. A beta tester who wants to stay on
+  beta goes to beta.md instead.
+- **ClawHub** (`clawhub:ocuclaw`): use bare `openclaw plugins update ocuclaw`.
+  It follows ClawHub's stable line. Never add `@latest` here: OpenClaw only
+  matches `ocuclaw@latest` against npm records, so 2026.7.x skips it with "No
+  install record" and exit 0, and 9.x fails with "No tracked plugin".
+
 **DO:**
 
 ```
-openclaw plugins update ocuclaw
+u=(); openclaw plugins update --help 2>&1 | grep -q -- '--accept-capabilities' && u+=(--accept-capabilities)
+openclaw plugins update ocuclaw@latest "${u[@]}"    # npm record
+openclaw plugins update ocuclaw "${u[@]}"           # ClawHub record
 ```
+
+Run only the line for the recorded source.
+
+On OpenClaw 2026.9.x the update can need the person's consent: when the new
+version adds tools or skills, and on the first update after the host moved from
+2026.7.x. Ask once inside this phase's checkpoint, listing OcuClaw's tools and
+skills from recovery-routing.md's **Installation consent and recorded source**
+as ONE final message that ends with the question (never an interim or
+commentary message), and run the command with the probed flag only after a
+clear yes. Never answer for the person; if they decline, hand them the plain
+`openclaw plugins update ocuclaw@latest` (npm record) or
+`openclaw plugins update ocuclaw` (ClawHub record), with no probe and no
+`--accept-capabilities`, to run in their own terminal, where OpenClaw asks its
+own `y/N` and they answer it. Hosts without the flag
+(2026.7.x) run the plain update. A `requires capability consent … was not
+updated` reply is a failed update, not a success.
 
 `update` follows the install's **recorded source**: installs tracked against npm
 keep updating from npm — that is fine and fully supported; do NOT migrate a

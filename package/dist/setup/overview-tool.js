@@ -48,6 +48,7 @@ export function registerOcuClawSetupTool(
   setRelayPort,
   provisionRelayCredential,
   firstUse = null,
+  onContext = null,
 ) {
   if (!api || typeof api.registerTool !== "function") {
     throw new Error("registerOcuClawSetupTool requires api.registerTool");
@@ -57,15 +58,18 @@ export function registerOcuClawSetupTool(
   }
 
   api.registerTool(
-    {
+    (ctx) => ({
       name: "ocuclaw_setup",
       description:
-        "Inspect OcuClaw setup; request approved host configuration or tool-driven first use. first_use_confirm records only the wearer's explicit answer about the bound reply; never infer it from machine health.",
+        "Inspect OcuClaw setup; request approved host configuration or tool-driven first use. first_use_begin arms a relay-run test and returns lines to say: say them as your final message and end your turn; the relay wakes this chat with the result. first_use_confirm records only the wearer's explicit answer about the bound reply; never infer it from machine health or a setup notification.",
       parameters: ocuClawSetupParametersSchema,
       async execute(_toolCallId, params, signal = null) {
+        if (typeof onContext === "function") {
+          try { onContext(ctx ?? null); } catch (_) {  }
+        }
         if (FIRST_USE_TOOL_OPERATIONS.includes(params?.operation)) {
           validateFirstUseParams(params);
-          const result = typeof firstUse === "function" ? await firstUse(params, signal)
+          const result = typeof firstUse === "function" ? await firstUse(params, signal, ctx ?? null)
             : { status: "unavailable", reason: "unsupported-host" };
           return { content: [{ type: "text", text: JSON.stringify(result) }] };
         }
@@ -117,7 +121,8 @@ export function registerOcuClawSetupTool(
           ],
         };
       },
-    },
+    }),
 
+    { name: "ocuclaw_setup" },
   );
 }

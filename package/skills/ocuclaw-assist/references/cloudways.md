@@ -1,6 +1,6 @@
 # Cloudways managed OpenClaw: userspace Tailscale kept alive by the plugin itself
 
-**Guide version:** 2026-09-19 (1.0.56)
+**Guide version:** 2026-09-25 (1.0.58)
 
 Use this branch in place of fresh-install Steps 6 and 7 when the host is a
 Cloudways **Managed AI Agents** container running OpenClaw 2026.7.1-2 (hostname
@@ -64,8 +64,8 @@ gateway, waits for the double-tap, and prints `OcuClaw Setup Completion is
 recorded: OcuClaw on OpenClaw is set up.` Nobody is sent to `openclaw tui` for
 it any more. Ctrl-C cancels the wait and takes the card off the display. If the
 phone is not connected the command says so and the same command run again picks
-up at the card. You still own `first_use_welcome` for the agent-led path; only
-the terminal path no longer needs you.
+up at the card. On the agent-led path the relay shows the card by itself too
+(fresh-install Step 10); you arm the test, end your turn and wait for the wake.
 
 **A model error is not a first reply.** When the run that should have produced
 the first reply ends on an error, step 8 names that instead of asking whether
@@ -141,7 +141,9 @@ always did.
 
 Scan instructions, Address and Pairing code precede the QR. The whole scan
 state, including the waiting line, must fit the terminal. A small terminal
-offers Enter manually instead of a clipped code. The four-word comparison
+prints the typed **Enter the pairing code instead** lane rather than a clipped
+code. On the phone the controls are **Pair with your computer**, then
+**Take a photo of the QR code** or **Enter the pairing code instead**. Use these exact control names. The four-word comparison
 appears only after the phone joins: type `approve`, `refuse`, or `cancel`.
 Case does not matter; a typo never approves. Approval waits for the phone's
 authenticated connection before reporting that it is paired.
@@ -203,6 +205,12 @@ Two host-configuration facts specific to OpenClaw 2026.7.1 on this box:
   ```
   Fresh-install Step 4 covers this grant; if this branch is reached from
   outside a fresh install, check it here.
+- Any scripted or SSH install here (`install <tgz>`, `install --force <tgz>`,
+  `update`) still runs the `--help` probe from recovery-routing.md's
+  **Installation consent and recorded source**. On 2026.7.1-2 the probe is
+  empty, so the command is unchanged. If the box ever runs
+  OpenClaw 2026.9.x, the probe adds `--accept-capabilities`, an archive needs
+  `--force` too, and both need the person's yes first.
 
 Plugin install on this host needs no gateway restart. Verified on 2026.7.1-2:
 `openclaw plugins install <tgz>` added `"ocuclaw"` to `plugins.allow`, wrote
@@ -223,7 +231,9 @@ openclaw ocuclaw cloudways detect --json
 
 - `cloudways`: continue with C2.
 - `likely`: ask the user one yes/no question, "Is this OpenClaw running on
-  Cloudways Managed AI Agents?" Continue only on yes.
+  Cloudways Managed AI Agents?" Continue only on yes. `likely` is not
+  decisive: mark neither answer "(Recommended)" and do not order the options
+  to favour yes.
 - `no`: leave this branch; use fresh-install Steps 6 and 7 with the system
   Tailscale.
 
@@ -304,7 +314,7 @@ apply command the controller prints for the `:8444` route already carries the
 full binary path and socket flag for this host:
 
 ```bash
-/home/<user>/bin/tailscale --socket=/home/<user>/.tailscale/run/tailscaled.sock serve --bg --tls-terminated-tcp=8444 tcp://localhost:<port>
+/home/<user>/bin/tailscale --socket=/home/<user>/.tailscale/run/tailscaled.sock serve --bg --tls-terminated-tcp=8444 tcp://127.0.0.1:<port>
 ```
 
 Run that exact line only after Step 7's checkpoint OK, exactly as printed:

@@ -262,7 +262,11 @@ export async function runPairingTerminal(connection                           , 
         const words = state.prompt.safetyPhrase;
         if (state.prompt.exchangeId !== exchangeId || !Array.isArray(words) || words.length !== 4 || !words.every((word         ) => typeof word === "string" && /^[a-z]+$/.test(word))) throw new Error("Invalid comparison");
 
-        output.write(`\nCheck these words match your phone, in this order:\n${pairingWordsBox(words.join("   "), unicode)}\nIf they differ, refuse.\n`);
+        const phoneLabel = typeof state.prompt.phoneLabel === "string" && state.prompt.phoneLabel.trim()
+          ? state.prompt.phoneLabel.trim()
+          : "Unknown device";
+
+        output.write(`\nPhone: ${phoneLabel}\nCheck these words match your phone, in this order:\n${pairingWordsBox(words.join("   "), unicode)}\nIf they differ, refuse.\n`);
         output.write(terminalText(PAIRING_ANSWER_PROMPT, "action", output));
 
         await new Promise      ((resolve) => setTimeout(resolve, 0));

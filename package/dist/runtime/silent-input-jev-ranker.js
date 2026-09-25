@@ -1,8 +1,22 @@
-import { letterGroup, normalizeWays, patternCompatible } from "./input-prediction-shared.js";
+import {
+  INPUT_PREDICTION_CANDIDATE_SCHEMA_APOSTROPHE,
+  candidateMatchKey,
+  letterGroup,
+  normalizeWays,
+  patternCompatible,
+} from "./input-prediction-shared.js";
+import { silentInputContractionEntries } from "./silent-input-contractions.js";
 
 export const SILENT_INPUT_JEV_MAX_OPTIONS = 255;
 
-export const SILENT_INPUT_JEV_QUESTIONS_PER_GROUP = 4;
+export const SILENT_INPUT_JEV_QUESTIONS_PER_GROUP = 1;
+
+export const SILENT_INPUT_JEV_NONE_KEY = "none_of_these";
+export const SILENT_INPUT_JEV_NONE_TEXT = "The very next word is not any of the other options.";
+
+export const SILENT_INPUT_JEV_WORD_OPTIONS = SILENT_INPUT_JEV_MAX_OPTIONS - 1;
+
+export const SILENT_INPUT_JEV_LOCAL_FLOOR = 0.05;
 
 export const SILENT_INPUT_JEV_BLEND = 1;
 
@@ -83,6 +97,17 @@ export function rankSilentInputCandidates(tables, request) {
     seen.add(key);
     out.push({ word, key, score });
   }
+
+  if (req.candidateSchema === INPUT_PREDICTION_CANDIDATE_SCHEMA_APOSTROPHE) {
+    for (const entry of silentInputContractionEntries()) {
+      const key = entry.word.toLowerCase();
+      if (seen.has(key)) continue;
+      if (pattern && !patternCompatible(candidateMatchKey(entry.word), pattern, ways)) continue;
+      seen.add(key);
+      const score = (row >= 0 ? (1 - LAMBDA) * entry.score : entry.score) + SUPPLIED_FLOOR;
+      out.push({ word: entry.word, key, score });
+    }
+  }
   for (const supplied of suppliedWords(req)) {
     const key = supplied.toLowerCase();
     if (seen.has(key)) continue;
@@ -113,7 +138,7 @@ export function buildSilentInputJevGroups(ranked, pattern, ways, perGroup) {
   for (let i = 0; i < count; i += 1) byGroup.push([]);
   for (const entry of ranked) {
     const group = pattern ? 0 : letterGroup(entry.key[0], normalizeWays(ways));
-    if (group >= 0 && group < count && byGroup[group].length < SILENT_INPUT_JEV_MAX_OPTIONS * per) {
+    if (group >= 0 && group < count && byGroup[group].length < SILENT_INPUT_JEV_WORD_OPTIONS * per) {
       byGroup[group].push(entry);
     }
   }
@@ -127,11 +152,28 @@ export function buildSilentInputJevGroups(ranked, pattern, ways, perGroup) {
   return questions;
 }
 
+function shuffledOptions(entries) {
+  let h = 2166136261;
+  for (const entry of entries) {
+    for (let i = 0; i < entry.key.length; i += 1) h = Math.imul(h ^ entry.key.charCodeAt(i), 16777619);
+  }
+  const out = entries.slice();
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
+    const j = h % (i + 1);
+    const swap = out[i];
+    out[i] = out[j];
+    out[j] = swap;
+  }
+  return out;
+}
+
 export function buildSilentInputJevQuestions(groups) {
   const questions = {};
   groups.forEach((group, i) => {
     const criteria = {};
-    for (const entry of group) criteria[entry.key] = null;
+    for (const entry of shuffledOptions(group)) criteria[entry.key] = null;
+    criteria[SILENT_INPUT_JEV_NONE_KEY] = SILENT_INPUT_JEV_NONE_TEXT;
     questions[`g${i}`] = { type: "choice", instructions: SILENT_INPUT_JEV_INSTRUCTIONS, criteria };
   });
   return questions;
@@ -155,9 +197,6 @@ export function combineSilentInputJevAnswers(ranked, groups, answers, blend) {
   let allMass = 0;
   for (const entry of ranked) allMass += entry.score;
   if (!(allMass > 0)) allMass = 1;
-  let askedMass = 0;
-  for (const group of groups) for (const entry of group) askedMass += entry.score;
-  if (!(askedMass > 0)) askedMass = 1;
 
   const jevShare = new Map();
   groups.forEach((group, i) => {
@@ -165,19 +204,26 @@ export function combineSilentInputJevAnswers(ranked, groups, answers, blend) {
     let groupMass = 0;
     for (const entry of group) groupMass += entry.score;
     if (!(groupMass > 0)) groupMass = 1;
+    const noneRaw = Number(probabilities[SILENT_INPUT_JEV_NONE_KEY]);
+    const none = Number.isFinite(noneRaw) ? noneRaw : 0;
     for (const entry of group) {
+      const local = entry.score / groupMass;
       const p = Number(probabilities[entry.key]);
-      jevShare.set(entry.key, (Number.isFinite(p) ? p : 0) * (groupMass / askedMass));
+      const jev = (Number.isFinite(p) ? p : 0) + none * local;
+      const q = (1 - SILENT_INPUT_JEV_LOCAL_FLOOR) * jev + SILENT_INPUT_JEV_LOCAL_FLOOR * local;
+      jevShare.set(entry.key, q * (groupMass / allMass));
     }
   });
 
-  const scored = ranked.map((entry) => ({
-    word: entry.word,
-    key: entry.key,
-    final:
-      Math.pow(Math.max(jevShare.get(entry.key) || 0, 1e-9), weight) *
-      Math.pow(Math.max(entry.score / allMass, 1e-9), 1 - weight),
-  }));
+  const scored = ranked.map((entry) => {
+    const local = entry.score / allMass;
+    const share = jevShare.has(entry.key) ? jevShare.get(entry.key) : local;
+    return {
+      word: entry.word,
+      key: entry.key,
+      final: Math.pow(Math.max(share, 1e-9), weight) * Math.pow(Math.max(local, 1e-9), 1 - weight),
+    };
+  });
   scored.sort((x, y) => y.final - x.final);
   return { ok: true, ranked: scored };
 }

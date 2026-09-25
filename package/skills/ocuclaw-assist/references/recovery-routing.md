@@ -1,6 +1,6 @@
 # Availability and focused recovery
 
-**Guide version:** 2026-09-19 (1.0.56)
+**Guide version:** 2026-09-25 (1.0.58)
 
 Read on fresh installation, missing/failed controller, version mismatch or recovery.
 Use SKILL.md's capability-first controller routing and existing step procedures.
@@ -32,9 +32,10 @@ the folder holding the `filePath` the listing reported. Check
 `openclaw skills --help` before naming one. The journey read's `assistantSkill`
 block reports the same condition with its own `nextAction`.
 
-The recommended candidate host is OpenClaw **2026.9.4**, whose npm metadata
-requires Node **>=24.16.0 <25 || >=26.1.0**. The published bundle host floor
-remains **>=2026.6.9**, with package Node metadata **>=20**; the host's stricter
+The recommended candidate host is OpenClaw **2026.9.x** (2026.9.4 parity-tested;
+2026.9.6 install and update lab-tested), whose npm metadata requires Node
+**>=24.16.0 <25 || >=26.1.0**. The bundle host floor
+is **>=2026.7.1-2** (the release Cloudways ships), with package Node metadata **>=20**; the host's stricter
 Node requirement still applies. These are separate facts. This guide does not
 raise manifests or authorize a live host upgrade.
 
@@ -55,33 +56,114 @@ rollback/forward-recovery proof are separate release work, not established here.
 
 ## Installation consent and recorded source
 
-Read this section before any fresh install, source change, archive replacement or
-rollback. Keep the owning profile and inspect the recorded install source first.
-Choose an approved obtainable target; for a local archive, record its SHA-256.
-Review that target's source and requested capabilities with the user. Consent
-applies to that target only, not future packages or changed capabilities.
+Read this section before any install, update, source change, archive replacement
+or rollback. Keep the owning profile and inspect the recorded install source
+first. Choose an approved obtainable target; for a local archive, record its
+SHA-256.
 
-Check the selected host's command contract:
+**Ask once, then install with consent.** OpenClaw 2026.9.x asks for consent
+before it installs or updates a plugin. With no terminal to answer, the command
+stops with `requires capability consent. The plugin was not installed`. So show
+the person what OcuClaw will be allowed to do and ask once. Fold it into the
+phase's rule 4 checkpoint (the install or update OK); it is not a second
+question.
+
+**The consent is ONE final message.** The whole disclosure and the question go
+in the same reply, and that reply is your final message for the turn. It
+contains, in this order: what installs (or updates) and from which source; the
+8 tools; the 2 skills; that OpenClaw asks its own capability approval, which
+this yes answers; the exact fenced command; and last, the question. Never put
+any of it in an interim, progress or commentary message before the question,
+and never follow it with a second, shorter message that restates the question.
+OpenClaw 9.x's TUI shows only the turn's final message: anything before it is
+lost, and the person would approve access they never saw. A drafted consent
+message without the tool list, the skill list and a command block is malformed:
+discard it and send this one:
+
+> Step 2 installs OcuClaw from <source>. It adds 8 tools (`render_glasses_ui`,
+> `manage_liveui_templates`, `manage_liveui_tasks`, `get_glasses_ui_state`,
+> `set_session_title`, `get_evenrealities_device_info`,
+> `get_current_location`, `ocuclaw_setup`) and 2 skills (`glasses-ui`,
+> `ocuclaw-assist`). OpenClaw asks its own approval for these capabilities.
+> Your yes here answers it: I add `--accept-capabilities` only when this
+> host's `--help` lists it. If you'd rather answer OpenClaw's prompt
+> yourself, say so and I'll give you the command for your own terminal.
+>
+> ```bash
+> f=(); openclaw plugins install --help 2>&1 | grep -q -- '--accept-capabilities' && f+=(--accept-capabilities)
+> openclaw plugins install clawhub:ocuclaw "${f[@]}"
+> ```
+>
+> OK to install OcuClaw from <source> with that access?
+
+For an update or the beta lane, name that phase and use its command below.
+
+Only a clear yes is consent. Consent applies to that target only, not future
+packages or changed capabilities. You never consent on the person's behalf: no
+yes, no flag.
+
+**Declined, or they want to approve it themselves:** hand them the plain
+command, with no probe line, no `f`/`u` array and no `--accept-capabilities`,
+to run in their own terminal:
 
 ```bash
-openclaw plugins install --help
+openclaw plugins install clawhub:ocuclaw             # stable
+openclaw plugins update ocuclaw@latest               # update in place (npm record)
+openclaw plugins update ocuclaw                      # update in place (ClawHub record)
+openclaw plugins install npm:ocuclaw@beta --force    # confirmed beta tester only
 ```
 
-On OpenClaw 2026.9.4, after source and capability consent, use this form; replace
-`<approved-source>` with the selected `clawhub:ocuclaw@<version>`,
-`npm:ocuclaw@<version>` or approved local archive path:
+Tell them OpenClaw asks its own capability approval there (`y/N`; ClawHub may
+ask twice: proceed, then capabilities), and that the answer is theirs. Never
+tell them to accept it, and never hand over the probed command on this path:
+the flag pre-accepts, so no prompt appears and the command would consent for
+them. Answering `y` installs it. Then run the step's VERIFY as usual.
+
+Probe the host's command contract before every install or update. Branch on
+`--help`, never on the version number: OpenClaw 2026.7.x rejects
+`--accept-capabilities` as an unknown option.
 
 ```bash
-openclaw plugins install <approved-source> --force --accept-capabilities
+f=(); openclaw plugins install --help 2>&1 | grep -q -- '--accept-capabilities' && f+=(--accept-capabilities)
+u=(); openclaw plugins update --help 2>&1 | grep -q -- '--accept-capabilities' && u+=(--accept-capabilities)
 ```
 
-`--force` alone does not grant capability consent; `--allow-unsafe` is not a
-consent substitute. A source advisory can be informational, but a consent refusal
-is a failed install: do not continue to enable or claim installation succeeded.
-Older hosts without `--accept-capabilities` use their documented installation
-contract; do not add an unsupported flag or treat that fallback as proof of the
-declared host floor. Do not add installation flags to `plugins update`: inspect
-`openclaw plugins update --help` if its recorded-source update is refused.
+After the yes, run the selected command with the probed flag. Each array is
+empty on hosts without the flag, so these are the plain 2026.7.x commands there:
+
+```bash
+openclaw plugins install clawhub:ocuclaw "${f[@]}"             # stable
+openclaw plugins update ocuclaw@latest "${u[@]}"               # update in place (npm record)
+openclaw plugins update ocuclaw "${u[@]}"                      # update in place (ClawHub record)
+openclaw plugins install npm:ocuclaw@beta --force "${f[@]}"    # confirmed beta tester only
+```
+
+Pick the update line by `install.source` in `openclaw plugins inspect ocuclaw
+--json`; update.md explains why.
+
+On a shell without bash arrays, run the `--help` check yourself and add
+`--accept-capabilities` only when the help lists it.
+
+- **ClawHub needs no `--force`.** It is the trusted source. Never add `--force`
+  to an install from ClawHub. On OpenClaw 9.x `--force` confirms a non-ClawHub source
+  (npm, archive, local path). It also switches the install into replace mode,
+  which can put an older package over a newer one. Use it only for the beta npm
+  lane, an approved archive, or a replacement the person asked for.
+- `--force` alone does not grant capability consent; `--allow-unsafe` is not a
+  consent substitute.
+- **Updates can ask too.** `plugins update` needs consent when the new version
+  adds tools or skills. It also needs it on the first update after the host
+  moved from 2026.7.x to 9.x, because the old install record holds no approval.
+  Use the same ask-once checkpoint and the probed `u` flag.
+- A source advisory can be informational, but a consent refusal is a failed
+  install or update: do not continue to enable or claim it succeeded. Ask the
+  question above, or hand the command to the person's terminal.
+- Consent does not grant conversation access. Keep fresh-install Step 4's
+  `allowConversationAccess` config on every host version.
+- After a host upgrade from 2026.7.x, OpenClaw may refuse every command until
+  its own state migration runs (`state database schema migration required …
+  run openclaw doctor --fix`). That is the host's upgrade step, not OcuClaw's.
+  The person runs it before the update above.
 
 A prepublication archive replacement is a local test equivalent, not a published
 channel update. Keep its exact hash and recorded `archive` source in the receipt;
@@ -127,7 +209,7 @@ the checkpoint. A version string or successful installer exit alone is not enoug
 | Completed setup, currently disconnected | Follow `recoveryCheckpoint` / current health; Step 8 phone VPN, Step 9 reconnect, or the named host/route failure | Keep durable completion. Reconnection does not require credential replacement or repeating installation. |
 | Private route unhealthy | Step 7 route-reader proposal and ownership verdict | Withheld/foreign/ambiguous/exposed routes require owner action; never substitute a command, Funnel or Serve reset. |
 | Pairing interrupted / refused / expired | Check whether the phone already connected; if not, user reruns `openclaw ocuclaw pair` | No `pair --retry` flag. Busy means let the other exchange's owner finish/cancel. Preserve credential and other phones. |
-| First use interrupted | Read journey; when `toolFirstUse: available` and the tool is callable, use `first_use_begin` / `first_use_wait`; otherwise the advertised terminal fallback | Resume the saved installation/session checkpoint. Tool confirmation needs the returned binding and an explicit wearer answer in the host conversation. Only explicit retry rearms unfinished proof after repair; terminal fallback is `openclaw ocuclaw first-use`, with `--retry` and optional `--session <key>` for an explicit new attempt. |
+| First use interrupted | Read journey; when `toolFirstUse: available` and the tool is callable, use `first_use_begin` (it re-arms the relay run; `first_use_wait` is a quick read); otherwise the advertised terminal fallback | Resume the saved installation/session checkpoint. Tool confirmation needs the returned binding and an explicit wearer answer in the host conversation. Only explicit retry rearms unfinished proof after repair; terminal fallback is `openclaw ocuclaw first-use`, with `--retry` and optional `--session <key>` for an explicit new attempt. |
 | Older bundle lacks pairing/first-use | Steps 9–10 manual address/credential entry and phone-origin reply check | User enters a known credential privately. Report observed manual success without claiming a durable controller receipt. Never demand new-user proof for an already working existing connection. |
 | Version mismatch | Read actual installed/runtime versions and both floors; enter update.md or approved beta lane for the deficient component | Latest stable can still be incompatible with a new client. Do not lower gates, switch backends or promise a phone rollback that is unavailable. |
 | Reply confirmed, welcome incomplete | Follow the returned welcome operation or bounded retry | Preserve the phone reply. A changed phone binding needs an explicit fresh attempt; never replay a stale surface. |
@@ -149,6 +231,13 @@ QR, code, safety words or credential values in agent tools, transcripts or logs.
 First-use confirmation is the user's exact `SEEN ON G2` in their terminal after
 seeing that reply on the glasses. Never issue it for them. `--test-input` is
 automation-only and cannot establish a wearer verdict or real core completion.
+
+`openclaw ocuclaw first-use` is one run: it arms the checkpoint, asks for the
+phone message and waits for it in that same terminal. `--first-use-wait <seconds>`
+sets how long it waits (default 600). The tool lane does not wait in a tool
+call: the relay runs the test and wakes the setup chat. A reply that arrives carrying the
+model's own error proves the chain and fails setup: report that the model is
+unreachable and offer a retry; never ask whether the reply appeared.
 
 An additional phone normally receives the existing credential through pairing.
 For an older manual-only bundle whose credential the user cannot enter, first

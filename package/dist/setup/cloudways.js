@@ -41,6 +41,9 @@ export const STATE_NEEDS_AUTH = "needs-authorization";
 export const STATE_RUNNING = "running";
 export const STATE_UNKNOWN = "unknown";
 
+export const STALE_ENROLLMENT_MESSAGE =
+  "The last approval link stopped working when the container restarted. Starting a fresh one.";
+
 const AUTH_URL_RE = /https:\/\/login\.tailscale\.com\/\S+/;
 const CMD_TIMEOUT_MS = 20000;
 const DOWNLOAD_TIMEOUT_MS = 120000;
@@ -227,12 +230,50 @@ function fileExists(target     ) {
 }
 
 export function clearNeedsAuthorizationMarker(layout     ) {
+
+  clearEnrollmentDaemon(layout);
   try {
     fs.unlinkSync(layout.needsAuthMarker);
     return true;
   } catch (_) {
     return false;
   }
+}
+
+export function enrollmentDaemonRecordPath(layout     ) {
+  if (layout && typeof layout.enrollmentDaemonRecord === "string") return layout.enrollmentDaemonRecord;
+  return path.join(path.dirname(layout.needsAuthMarker), "enrollment-daemon");
+}
+
+export function daemonIdentity(layout     , deps      = {}) {
+  if (deps && typeof deps.daemonIdentity === "function") return deps.daemonIdentity(layout);
+  try {
+    const stat      = fs.statSync(layout.socketPath, { bigint: true });
+    return `${stat.ino} ${stat.mtimeNs}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readEnrollmentDaemon(layout     ) {
+  try {
+    const text = fs.readFileSync(enrollmentDaemonRecordPath(layout), "utf8").trim();
+    return text || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeEnrollmentDaemon(layout     , deps     ) {
+  const identity = daemonIdentity(layout, deps);
+  if (identity === null) { clearEnrollmentDaemon(layout); return; }
+  try {
+    fs.writeFileSync(enrollmentDaemonRecordPath(layout), `${identity}\n`, { mode: 0o600 });
+  } catch (_) {  }
+}
+
+function clearEnrollmentDaemon(layout     ) {
+  try { fs.unlinkSync(enrollmentDaemonRecordPath(layout)); } catch (_) {  }
 }
 
 export async function daemonProcesses(layout     , deps      = {}) {
@@ -256,6 +297,31 @@ export async function daemonProcesses(layout     , deps      = {}) {
     else foreign.push({ pid, cmdline: cmdline.slice(0, 200) });
   }
   return { ours, foreign };
+}
+
+export async function tailscaleUpRunning(deps      = {}, layout      = null) {
+  const socketToken = layout && layout.socketPath ? `--socket=${layout.socketPath}` : null;
+  let result     ;
+  try {
+    result = await runnerOf(deps)(["pgrep", "-a", "-f", "tailscale"], { timeoutMs: 5000 });
+  } catch (_) {
+    return null;
+  }
+  if (!result || result.spawnFailed) return null;
+  if (result.code === 1) return false;
+  if (result.code !== 0) return null;
+  for (const line of String(result.stdout || "").split("\n")) {
+    const trimmed = line.trim();
+    const space = trimmed.indexOf(" ");
+    if (space <= 0) continue;
+    const pid = Number(trimmed.slice(0, space));
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    const tokens = trimmed.slice(space + 1).split(/\s+/);
+    if (path.basename(tokens[0]) !== "tailscale") continue;
+    if (socketToken && !tokens.includes(socketToken)) continue;
+    if (tokens.slice(1).some((token) => token === "up")) return true;
+  }
+  return false;
 }
 
 export async function legacyInventory(layout     , deps      = {}) {
@@ -615,10 +681,25 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
   try {
     enrollmentStarted = fs.readFileSync(layout.needsAuthMarker, "utf8") === "enrollment-started\n";
   } catch (_) { enrollmentStarted = false; }
+
+  let staleMarkerCleared = false;
+  if (enrollmentStarted && !before.authUrl && before.backend === "NeedsLogin") {
+    const recorded = readEnrollmentDaemon(layout);
+    const current = daemonIdentity(layout, deps);
+    const sameDaemon = recorded !== null && current !== null && recorded === current;
+    if (!sameDaemon && (await tailscaleUpRunning(deps, layout)) === false) {
+      try { fs.unlinkSync(layout.needsAuthMarker); } catch (_) {  }
+      clearEnrollmentDaemon(layout);
+      enrollmentStarted = false;
+      staleMarkerCleared = true;
+    }
+  }
   if (!before.authUrl && !enrollmentStarted) {
 
     mkdirHardened(path.dirname(layout.needsAuthMarker));
     fs.writeFileSync(layout.needsAuthMarker, "enrollment-started\n", { mode: 0o600 });
+
+    writeEnrollmentDaemon(layout, deps);
     if (typeof deps.progress === "function") {
       deps.progress("Starting Tailscale registration; waiting up to 90 seconds for its authorization link.");
     }
@@ -627,8 +708,10 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
     err = String((result && result.stderr) || "");
     if (result && result.spawnFailed) {
       try { fs.unlinkSync(layout.needsAuthMarker); } catch (_) {  }
+      clearEnrollmentDaemon(layout);
       return {
         ok: false, state: before.state, pending: false, commandFailed: true,
+        ...(staleMarkerCleared ? { staleMarkerCleared: true } : {}),
         error: "Tailscale registration command could not start; check cloudways status, then retry.",
       };
     }
@@ -657,11 +740,13 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
     nodeName: after.nodeName || null,
     dnsName: after.dnsName || null,
   };
+  if (staleMarkerCleared) result.staleMarkerCleared = true;
   if (!result.ok) {
     result.pending = after.state === STATE_NEEDS_AUTH && !commandFailed;
     if (commandFailed) {
 
       try { fs.unlinkSync(layout.needsAuthMarker); } catch (_) {  }
+      clearEnrollmentDaemon(layout);
       result.commandFailed = true;
     }
     result.error = commandFailed
@@ -786,6 +871,7 @@ export async function rollback(layout     , deps      = {}, options      = {}) {
   }
   if (!keepBinaries) remove(layout.installReceipt);
   remove(layout.needsAuthMarker);
+  remove(enrollmentDaemonRecordPath(layout));
 
   if (keepReceipt) {
     report.receiptKept = provisioner || "unknown";

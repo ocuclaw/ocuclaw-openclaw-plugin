@@ -1,26 +1,45 @@
 import { runCloudwaysVerb } from "./cloudways-command.js";
 import { terminalText } from "./terminal-text.js";
+
+import { spawn } from "node:child_process";
 import {
   cliArgv,
   defaultRunCommand,
   DETECT_CLOUDWAYS,
   resolveLayout,
+  STALE_ENROLLMENT_MESSAGE,
   STATE_NEEDS_AUTH,
   STATE_RUNNING,
 } from "./cloudways.js";
+import { localeAllowsUnicode } from "./pairing-terminal.js";
+import { renderQrTextToTerminal } from "../domain/pairing/qr-terminal.js";
+import { PLUGIN_VERSION } from "../version.js";
 import {
   applyCommand,
   defaultRunTailscale,
   LOOPBACK,
+  readNodeState,
   readPhonePresence,
   ROUTE_STATUS_HEALTHY,
   servePort,
 } from "./private-route.js";
+import {
+  ISSUANCE_AVAILABLE,
+  ISSUANCE_UNAVAILABLE,
+  ISSUANCE_UNKNOWN,
+  startCertificateIssuance,
+} from "./certificate-issuance.js";
 import { readPrivateRoute } from "./setup-live.js";
 import { setupInstallation } from "./setup-journey.js";
 import { resolveSetupStateDir } from "./setup-controller.js";
 import { createRelayCredentialProvision, PROVISION_RELAY_CREDENTIAL_OPERATION } from "./relay-credential-provision.js";
 import { createFirstUseCommand, runSetupWelcome, setupFirstUseRequest } from "./first-use-command.js";
+import {
+  awaitFirstUseReply,
+  FIRST_USE_SEND_TEXT as FIRST_USE_SEND_TEXT_VALUE,
+  FIRST_USE_ALREADY_COMPLETE_MESSAGE as FIRST_USE_ALREADY_COMPLETE_VALUE,
+  FIRST_USE_REPLY_MESSAGE as FIRST_USE_REPLY_VALUE,
+} from "./first-use-wait.js";
 import { createRuntimeConfigOverview } from "../config/runtime-config.js";
 
 import process from "node:process";
@@ -55,24 +74,114 @@ export const RESUME_MESSAGE =
   "Stopped. Earlier changes are kept. Run the same setup command to resume.";
 
 export const COLD_CERTIFICATE_MESSAGE =
-  "Waiting for the certificate. This usually takes about a minute.";
+  "Waiting for the certificate. This usually takes a minute or two.";
+
+export function certificateProgressMessage(elapsedS) {
+  return `Still waiting for the certificate (${waitedFor(elapsedS)} so far).`;
+}
+
+export function waitedFor(elapsedS) {
+  const total = Math.max(0, Math.floor(Number(elapsedS) || 0));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  const parts = [];
+  if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+  if (seconds > 0 || minutes === 0) parts.push(`${seconds} seconds`);
+  return parts.join(" ");
+}
+
+export const CERTIFICATE_TIMEOUT_MESSAGE =
+  "The certificate is not ready yet. Run the same command again; setup picks up here.";
+
+export const PAIR_RETRY_NO_ANSWER_MESSAGE =
+  "No answer, so setup stopped here. Run the same command again to get a new code.";
+
+export const STUCK_HELP_MESSAGE = "Stuck? Ask us on Discord: https://discord.ocuclaw.com";
 
 export const NO_GATEWAY_RESTART_MESSAGE =
   "No gateway restart is needed on Cloudways.";
+
+export const IGNORE_HOST_RESTART_HINT_MESSAGE =
+  "OpenClaw's install printed its own restart hint; ignore it here.";
 
 export const OCUCLAW_LOADED_MESSAGE = "OcuClaw is loaded and ready.";
 
 export const OCUCLAW_NOT_LOADED_MESSAGE =
   "OcuClaw is installed but your agent has not loaded it yet.";
 
+export function ocuclawOldVersionMessage(loaded, installed) {
+  return `Your agent is still running OcuClaw ${loaded}. OcuClaw ${installed} is installed.`;
+}
+
+export const CLOUDWAYS_RESTART_COMMAND = "pkill -f openclaw-gateway";
+export const CLOUDWAYS_RESTART_WARNING_LINES = [
+  "This restarts the whole container. SSH will disconnect; reconnect in about a minute.",
+  "Your phone reconnects in 1–5 minutes. Active replies are stopped, not finished.",
+];
+export const SETUP_COMMAND = "openclaw ocuclaw cloudways setup";
+
 export const OCUCLAW_NOT_LOADED_HELP_LINES = [
   "  This host normally loads the plugin without a restart.",
   "  If OcuClaw stays unloaded, run openclaw ocuclaw doctor.",
 ];
+export const OCUCLAW_RESTART_LINES = [
+  "  One restart loads OcuClaw. Type:",
+  `    ${CLOUDWAYS_RESTART_COMMAND}`,
+  ...CLOUDWAYS_RESTART_WARNING_LINES.map((line) => `  ${line}`),
+  "  After you reconnect, type this again:",
+  `    ${SETUP_COMMAND}`,
+  "  Or restart the agent from your Cloudways dashboard.",
+];
+
+const LOADED_CHECK_ATTEMPTS = 3;
+const LOADED_CHECK_RETRY_MS = 2000;
+
+export const MODEL_SIGN_IN_CODEX_ARGV = Object.freeze([
+  "openclaw", "models", "auth", "login", "--provider", "openai", "--device-code", "--set-default",
+]);
+export const MODEL_SIGN_IN_API_KEY_ARGV = Object.freeze([
+  "openclaw", "models", "auth", "login", "--set-default",
+]);
+export const MODEL_STATUS_ARGV = Object.freeze(["openclaw", "models", "status", "--json"]);
+export const MODEL_NOT_SIGNED_IN_MESSAGE = "No model is signed in yet. Which account will this agent use?";
+export const MODEL_SIGN_IN_CHOICES = [
+  "    1  ChatGPT subscription",
+  "    2  An API key",
+  "    3  I'll set it up myself",
+];
+export const MODEL_SIGN_IN_QUESTION = "Choose 1–3:";
+export const MODEL_SIGNED_IN_MESSAGE = "Model signed in.";
+export const MODEL_SIGN_IN_UNFINISHED_MESSAGE = "Sign-in did not finish. No model is signed in yet.";
+
+export const MODEL_NOT_SIGNED_IN_NOTICE = "No model is signed in yet. Sign in before the first message.";
+export const MODEL_SIGN_IN_SELF_LINES = [
+  "  For a ChatGPT subscription, type:",
+  `    ${MODEL_SIGN_IN_CODEX_ARGV.join(" ")}`,
+  "  For an API key, type:",
+  `    ${MODEL_SIGN_IN_API_KEY_ARGV.join(" ")}`,
+];
+export const MODEL_SIGN_IN_RESUME_LINES = [
+  "  Then type this again:",
+  `    ${SETUP_COMMAND}`,
+];
+
+export function modelSignedIn(document) {
+  if (!isRecord(document)) return null;
+  const model = [document.resolvedDefault, document.defaultModel]
+    .find((value) => typeof value === "string" && value.trim() !== "");
+  if (!model) return false;
+  const auth = isRecord(document.auth) ? document.auth : null;
+  if (!auth || !Array.isArray(auth.missingProvidersInUse)) return null;
+  return auth.missingProvidersInUse.length === 0;
+}
 
 export const ENROLL_ON_PHONE_LINES = [
   "  On your phone, sign in to Tailscale. Open this link to approve this server:",
 ];
+export const ENROLL_INSTALL_TAILSCALE_LINE =
+  "  No Tailscale on your phone? Install it from the App Store or Google Play and sign in first.";
+export const ENROLL_QR_PROMPT = "  Point your phone's camera at this code to approve this server:";
+export const ENROLL_OR_OPEN_PREFIX = "  Or open: ";
 
 export const PHONE_PRESENT_MESSAGE = "Phone found on your Tailscale network.";
 
@@ -98,9 +207,8 @@ export const PHONE_WAIT_TIMEOUT_MESSAGE =
   "No phone found before the check timed out.\nTurn on Tailscale on your phone, then run setup again.";
 
 export const PAIR_READY_LINES = [
-  "Open Even > OcuClaw on your phone.",
+  "Open Even > OcuClaw > Pair with your computer on your phone, then press Enter to show the code.",
   "The next pairing code expires in 2 minutes.",
-  "Press Enter to show the code.",
 ];
 
 export const PAIR_RETRY_PROMPT_MESSAGE =
@@ -110,8 +218,12 @@ export const PAIR_RETRY_STOP_ANSWER = "stop";
 
 export const PAIR_RETRY_LIMIT = 3;
 
-export const PAIR_TIMEOUT_CAUSE_MESSAGE =
-  "Most often this means Tailscale is switched off, or signed in to a different account, on your phone.";
+export const PAIR_TIMEOUT_CAUSE_LINES = Object.freeze([
+  "Most often this means Tailscale is switched off,",
+  "or signed in to a different account, on your phone.",
+]);
+
+export const PAIR_SCREEN_NOT_OPEN_MESSAGE = "If the pair screen wasn't open yet, open it first.";
 
 export const PAIR_NOBODY_ENTERED_MESSAGE = "Code expired before a phone joined.";
 
@@ -122,23 +234,19 @@ export function pairingExpiryMessage(phase) {
   return "Pairing did not finish before the code expired.";
 }
 
-export const FIRST_USE_SEND_TEXT = "hello";
-
-export const FIRST_USE_ALREADY_COMPLETE_MESSAGE =
-  "First-message setup is already complete.";
+export {
+  FIRST_USE_SEND_TEXT,
+  FIRST_USE_ALREADY_COMPLETE_MESSAGE,
+  FIRST_USE_WAITING_MESSAGE,
+  FIRST_USE_REARMED_MESSAGE,
+  FIRST_USE_REPLY_MESSAGE,
+} from "./first-use-wait.js";
 
 export const FIRST_USE_SKIPPED_MESSAGE =
   "First-message check skipped.\nWhen ready, run openclaw ocuclaw first-use.";
 
 export const FIRST_USE_UNAVAILABLE_MESSAGE =
   "Setup cannot start the first-message check on this host.\nRun openclaw ocuclaw first-use in your terminal.";
-
-export const FIRST_USE_WAITING_MESSAGE = "Waiting for the phone reply.";
-
-export const FIRST_USE_REARMED_MESSAGE =
-  "First-message check restarted for the phone you just paired.";
-
-export const FIRST_USE_REPLY_MESSAGE = "Phone reply received.";
 
 export const FIRST_USE_REPLY_ERROR_MESSAGE =
   "The model returned an error. No first reply was confirmed.\nOcuClaw is installed; setup is not complete.\n\nFix the model account or configuration, then resume:\n  openclaw ocuclaw cloudways setup";
@@ -170,7 +278,15 @@ const ENTER_SETTLE_MS = 150;
 const PAIR_READY_WAIT_MS = 600000;
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_NOTICE_MS = 30000;
-const DEFAULT_CERTIFICATE_WAIT_MS = 120000;
+
+const DEFAULT_CERTIFICATE_WAIT_MS = 300000;
+const CERTIFICATE_PROGRESS_MS = 30000;
+
+const CERTIFICATE_RETRY_MS = 30000;
+
+const CERTIFICATE_MAX_CALLS = 3;
+
+const CERTIFICATE_QUICK_FAIL_MS = 2000;
 
 function isRecord(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -261,6 +377,15 @@ function defaultConfirm(io) {
         settle("");
       }
     });
+  };
+}
+
+function defaultStartCertificate(layout) {
+  return async function startCertificate(budgetMs) {
+    const argv = cliArgv(layout);
+    const node = await readNodeState((args) => defaultRunTailscale(args, argv));
+    if (!node || !node.dnsName) return null;
+    return startCertificateIssuance(argv, node.dnsName, budgetMs);
   };
 }
 
@@ -381,13 +506,89 @@ function defaultRelayPort(api, controller) {
   };
 }
 
+function defaultReadLoadedPlugin(controller) {
+  return async function readLoadedPlugin() {
+    if (typeof controller !== "function") return null;
+    const journey = await controller("journey", { surface: "cli" });
+    const runtime = journey && isRecord(journey.runtimePlugin) ? journey.runtimePlugin : null;
+    return runtime && typeof runtime.version === "string" && runtime.version
+      ? { version: runtime.version }
+      : null;
+  };
+}
+
+async function defaultReadModelStatus() {
+  const result = await defaultRunCommand(MODEL_STATUS_ARGV.slice(), { timeoutMs: 60000 });
+  if (!result || result.code !== 0) return null;
+  const text = String(result.stdout || "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    return modelSignedIn(JSON.parse(text.slice(start, end + 1)));
+  } catch (_) {
+    return null;
+  }
+}
+
+function defaultRunSignIn(argv) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(argv[0], argv.slice(1), { stdio: "inherit" });
+    } catch (_) {
+      resolve({ code: null, spawnFailed: true });
+      return;
+    }
+    child.once("error", () => resolve({ code: null, spawnFailed: true }));
+    child.once("exit", (code) => resolve({ code: Number.isInteger(code) ? code : null, spawnFailed: false }));
+  });
+}
+
+function defaultQrTerminal(io) {
+  const output = (io && io.output) || process.stdout;
+  const env = (io && io.env) || process.env;
+  return () => ({
+    tty: output.isTTY === true,
+    unicode: localeAllowsUnicode(env.LC_ALL || env.LC_CTYPE || env.LANG || ""),
+    columns: Number(output.columns) > 0 ? Number(output.columns) : 0,
+    rows: Number(output.rows) > 0 ? Number(output.rows) : 0,
+  });
+}
+
+export function approvalLinkQr(url, terminal, lightTerminal = false, prefix = [], suffix = []) {
+  if (!terminal || terminal.tty !== true || terminal.unicode !== true) return null;
+  if (typeof url !== "string" || !url) return null;
+  let code;
+  try {
+    code = renderQrTextToTerminal(url, { invert: lightTerminal !== true });
+  } catch (_) {
+    return null;
+  }
+  const rows = code.split("\n");
+  const width = rows[0].length;
+  const columns = Number(terminal.columns) > 0 ? Number(terminal.columns) : 0;
+  if (columns > 0 && width > columns) return null;
+  const height = Number(terminal.rows) > 0 ? Number(terminal.rows) : 0;
+  if (height > 0) {
+    const wrap = columns > 0 ? columns : 80;
+    const textRows = [...prefix, ...suffix]
+      .reduce((total, line) => total + Math.max(1, Math.ceil(String(line).length / wrap)), 0);
+    if (textRows + rows.length + 1 > height) return null;
+  }
+  return code;
+}
+
 export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const output = io.output || process.stdout;
   const lines = [];
   const steps = [];
   const say = (line, role = "body") => {
     lines.push(line);
-    output.write(`${terminalText(line, role, output, io.env)}\n`);
+
+    const indent = (String(line).match(/^ */) || [""])[0];
+    const shown = indent ? String(line).replace(/\n(?=.)/g, `\n${indent}`) : line;
+    output.write(`${terminalText(shown, role, output, io.env)}\n`);
   };
   const step = (index, text) => {
     if (index > 1) say("");
@@ -396,7 +597,11 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const record = (id, status, detail = null) => {
     steps.push({ id, status, detail });
   };
-  const finish = (exitCode) => ({ exitCode, lines, steps });
+
+  const finish = (exitCode, help = exitCode === SETUP_EXIT_PROBLEM) => {
+    if (help) say(`  ${STUCK_HELP_MESSAGE}`);
+    return { exitCode, lines, steps };
+  };
 
   const api = deps.api || null;
   const layout = deps.layout || resolveLayout(options);
@@ -423,6 +628,10 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const runServeApply = typeof deps.runServeApply === "function"
     ? deps.runServeApply
     : (argv) => defaultRunCommand(argv, { timeoutMs: 30000 });
+
+  const startCertificate = typeof deps.startCertificate === "function"
+    ? deps.startCertificate
+    : (typeof deps.readRoute === "function" ? null : defaultStartCertificate(layout));
   const pair = typeof deps.pair === "function" ? deps.pair : null;
   const pairingComplete = typeof deps.pairingComplete === "function"
     ? deps.pairingComplete
@@ -446,9 +655,22 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const phonePollMs = Number(deps.phonePollMs) > 0 ? Number(deps.phonePollMs) : DEFAULT_PHONE_POLL_MS;
   const pollMs = Number(deps.pollMs) > 0 ? Number(deps.pollMs) : DEFAULT_POLL_MS;
   const noticeMs = Number(deps.noticeMs) > 0 ? Number(deps.noticeMs) : DEFAULT_NOTICE_MS;
+  const answerWaitMs = Number(deps.answerWaitMs) > 0 ? Number(deps.answerWaitMs) : PAIR_READY_WAIT_MS;
   const certificateWaitMs = Number(deps.certificateWaitMs) > 0
     ? Number(deps.certificateWaitMs)
     : DEFAULT_CERTIFICATE_WAIT_MS;
+
+  const installedVersion = typeof deps.installedVersion === "string"
+    ? deps.installedVersion
+    : (typeof PLUGIN_VERSION === "string" ? PLUGIN_VERSION : "");
+  const readLoadedPlugin = typeof deps.readLoadedPlugin === "function"
+    ? deps.readLoadedPlugin
+    : defaultReadLoadedPlugin(deps.controller);
+
+  const readModelStatus = typeof deps.readModelStatus === "function" ? deps.readModelStatus : defaultReadModelStatus;
+  const runSignIn = typeof deps.runSignIn === "function" ? deps.runSignIn : defaultRunSignIn;
+
+  const qrTerminal = typeof deps.qrTerminal === "function" ? deps.qrTerminal : defaultQrTerminal(io);
 
   const assumeYes = options.yes === true;
 
@@ -469,12 +691,92 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     return (await confirm(consentLines, strict)) === true;
   };
 
+  const awaitTypedLine = (timeoutMs = answerWaitMs) => {
+    const armedAt = now();
+    let cancel = null;
+    let answered = false;
+    let timer = null;
+    const typed = new Promise((resolve) => {
+
+      timer = setTimeout(() => { if (!answered) { answered = true; resolve(null); } }, timeoutMs);
+      if (timer && typeof timer.unref === "function") timer.unref();
+      cancel = watchAnswer((chunk) => {
+        if (answered) return;
+        if (now() - armedAt < ENTER_SETTLE_MS) return;
+        answered = true;
+        resolve(typeof chunk === "string" ? chunk : "");
+      });
+    });
+    return typed.then((chunk) => {
+      if (timer) clearTimeout(timer);
+      if (typeof cancel === "function") cancel();
+      return chunk;
+    });
+  };
+
+  let signInFailed = false;
+  const ensureModelSignIn = async () => {
+    const readSignedIn = async () => {
+      try {
+        const answer = await readModelStatus();
+        return answer === true || answer === false ? answer : null;
+      } catch (_) {
+        return null;
+      }
+    };
+    const signedIn = await readSignedIn();
+    if (signedIn !== false) {
+      record("model-sign-in", "skipped", signedIn === true ? "signed in" : "unreadable");
+      return false;
+    }
+    if (assumeYes || !isTty()) {
+      say(`  ${MODEL_NOT_SIGNED_IN_NOTICE}`);
+      for (const line of MODEL_SIGN_IN_SELF_LINES) say(line);
+      record("model-sign-in", "skipped", assumeYes ? "--yes" : "no terminal");
+      return false;
+    }
+    say(`  ${MODEL_NOT_SIGNED_IN_MESSAGE}`);
+    for (const line of MODEL_SIGN_IN_CHOICES) say(line);
+    let choice = null;
+    for (let asked = 0; asked < 3 && choice === null; asked += 1) {
+      say(`  ${MODEL_SIGN_IN_QUESTION}`, "action");
+      const typed = await awaitTypedLine();
+
+      if (typed === null) { choice = "3"; break; }
+      const answer = String(typed).trim();
+      if (answer === "1" || answer === "2" || answer === "3") choice = answer;
+    }
+    if (choice === null || choice === "3") {
+      for (const line of MODEL_SIGN_IN_SELF_LINES) say(line);
+      for (const line of MODEL_SIGN_IN_RESUME_LINES) say(line);
+      record("model-sign-in", "declined", "set up by the person");
+      return true;
+    }
+    const argv = (choice === "1" ? MODEL_SIGN_IN_CODEX_ARGV : MODEL_SIGN_IN_API_KEY_ARGV).slice();
+    say(`  Running: ${argv.join(" ")}`);
+
+    let ran = null;
+    try { ran = await runSignIn(argv); } catch (_) { ran = null; }
+    const after = await readSignedIn();
+    if (after === true || (after === null && ran && ran.code === 0)) {
+      say(`  ${MODEL_SIGNED_IN_MESSAGE}`);
+      record("model-sign-in", "done", choice === "1" ? "chatgpt" : "api-key");
+      return false;
+    }
+    say(`  ${MODEL_SIGN_IN_UNFINISHED_MESSAGE}`);
+    for (const line of MODEL_SIGN_IN_SELF_LINES) say(line);
+    for (const line of MODEL_SIGN_IN_RESUME_LINES) say(line);
+    record("model-sign-in", "failed", ran && ran.spawnFailed ? "command did not start" : "not signed in");
+    signInFailed = true;
+    return true;
+  };
+
   step(1, "Cloudways host");
   let detected;
   try {
     detected = await runVerb("detect", {}, verbDeps);
   } catch (err) {
-    say(`  could not read this host: ${err && err.message ? err.message : err}`);
+    say(`  Could not read this host: ${err && err.message ? err.message : err}`);
     record("detect", "failed", "detect threw");
     return finish(SETUP_EXIT_PROBLEM);
   }
@@ -485,6 +787,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   }
   say(`  ${detected.report.hostname} is a Cloudways Managed AI Agents container.`);
   say(`  ${NO_GATEWAY_RESTART_MESSAGE}`);
+  say(`  ${IGNORE_HOST_RESTART_HINT_MESSAGE}`);
   record("detect", "done", detected.report.hostname);
 
   if (!assumeYes && !isTty()) {
@@ -492,6 +795,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     record("tty", "refused", "no terminal");
     return finish(SETUP_EXIT_PROBLEM);
   }
+  if (await ensureModelSignIn()) return finish(SETUP_EXIT_STOPPED, signInFailed);
 
   step(2, "Conversation access");
   if (conversationAccessGranted(readConfig())) {
@@ -508,7 +812,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     try {
       await grantConversationAccess();
     } catch (err) {
-      say(`  could not record the grant: ${err && err.message ? err.message : err}`);
+      say(`  Could not record the grant: ${err && err.message ? err.message : err}`);
       record("conversation-access", "failed", "write refused");
       return finish(SETUP_EXIT_PROBLEM);
     }
@@ -526,10 +830,30 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     record("relay-credential", "failed", err && err.code ? err.code : "error");
     return finish(SETUP_EXIT_PROBLEM);
   }
-  say(`  ${OCUCLAW_LOADED_MESSAGE}`);
   record("relay-credential",
     credential && credential.status === "preserved" ? "skipped" : "done",
     credential && credential.status === "preserved" ? "preserved" : "provisioned");
+
+  let loaded = null;
+  for (let attempt = 0; attempt < LOADED_CHECK_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await sleep(LOADED_CHECK_RETRY_MS);
+    try { loaded = await readLoadedPlugin(); } catch (_) { loaded = null; }
+    if (loaded && typeof loaded.version === "string" && loaded.version) break;
+    loaded = null;
+  }
+  const loadedVersion = loaded ? loaded.version : null;
+  if (loadedVersion === null || (installedVersion && loadedVersion !== installedVersion)) {
+    say(loadedVersion === null
+      ? `  ${OCUCLAW_NOT_LOADED_MESSAGE}`
+      : `  ${ocuclawOldVersionMessage(loadedVersion, installedVersion)}`);
+    for (const line of OCUCLAW_RESTART_LINES) {
+      say(line, line.startsWith("    ") ? "action" : "body");
+    }
+    record("plugin-loaded", "failed", loadedVersion === null ? "not loaded" : "version mismatch");
+    return finish(SETUP_EXIT_STOPPED);
+  }
+  say(`  ${OCUCLAW_LOADED_MESSAGE}`);
+  record("plugin-loaded", "done", loadedVersion);
 
   step(4, "Tailscale");
   let state = await runVerb("status", {}, verbDeps);
@@ -582,6 +906,8 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
       verbDeps,
     );
     const enrollReport = enrolled.report || {};
+
+    if (enrollReport.staleMarkerCleared === true) say(`  ${STALE_ENROLLMENT_MESSAGE}`);
     if (enrollReport.state === STATE_RUNNING) {
       say("  This server is already approved.");
       record("enroll", "skipped", STATE_RUNNING);
@@ -590,8 +916,21 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
       record("enroll", "failed", enrollReport.error || "no authorization link");
       return finish(SETUP_EXIT_PROBLEM);
     } else {
-      for (const line of ENROLL_ON_PHONE_LINES) say(line, "action");
-      say(`    ${enrollReport.authUrl}`);
+
+      say(ENROLL_INSTALL_TAILSCALE_LINE);
+      const orOpen = `${ENROLL_OR_OPEN_PREFIX}${enrollReport.authUrl}`;
+      const qr = approvalLinkQr(enrollReport.authUrl, qrTerminal(), options.lightTerminal === true,
+        [`[5/${SETUP_STEP_COUNT}] Connect to Tailscale`, ENROLL_INSTALL_TAILSCALE_LINE, ENROLL_QR_PROMPT],
+        [orOpen, "  Waiting for server approval."]);
+      if (qr) {
+        say(ENROLL_QR_PROMPT, "action");
+
+        for (const row of qr.split("\n")) say(row);
+        say(orOpen);
+      } else {
+        for (const line of ENROLL_ON_PHONE_LINES) say(line, "action");
+        say(`    ${enrollReport.authUrl}`);
+      }
       const deadline = now() + enrollWaitS * 1000;
       let lastNotice = now();
       let running = false;
@@ -638,52 +977,72 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     const applied = await runServeApply(serveApplyArgv(relayPort, port, tailscaleArgv));
     if (!applied || applied.code !== 0) {
       const detail = applied && applied.stderr ? String(applied.stderr).trim() : "no output";
-      say(`  the route could not be published: ${detail}`);
+      say(`  The route could not be published: ${detail}`);
       record("serve", "failed", detail);
       return finish(SETUP_EXIT_PROBLEM);
     }
     say("  Private route configured.");
 
     say(`  ${COLD_CERTIFICATE_MESSAGE}`);
-    const deadline = now() + certificateWaitMs;
+
+    const started = now();
+    const deadline = started + certificateWaitMs;
+    let nextProgress = started + CERTIFICATE_PROGRESS_MS;
     let healthy = false;
-    for (;;) {
-      route = await readRoute(relayPort);
-      if (route && route.status === ROUTE_STATUS_HEALTHY) { healthy = true; break; }
-      if (now() >= deadline) break;
-      await sleep(pollMs);
+    let issuance = null;
+    let certificateAskable = startCertificate !== null;
+    let issued = false;
+    let calls = 0;
+    let lastStart = null;
+    try {
+      for (;;) {
+        if (issuance) {
+          const outcome = issuance.poll();
+          if (outcome !== null) {
+            const ranMs = typeof issuance.ranMs === "function" ? issuance.ranMs() : null;
+            issuance.stop();
+            issuance = null;
+            if (outcome === ISSUANCE_AVAILABLE) issued = true;
+            else if (outcome === ISSUANCE_UNAVAILABLE) certificateAskable = false;
+
+            else if (outcome === ISSUANCE_UNKNOWN && ranMs !== null && ranMs < CERTIFICATE_QUICK_FAIL_MS) certificateAskable = false;
+          }
+        }
+        if (certificateAskable && !issued && !issuance && calls >= CERTIFICATE_MAX_CALLS) certificateAskable = false;
+        if (certificateAskable && !issued && !issuance
+          && (lastStart === null || now() - lastStart >= CERTIFICATE_RETRY_MS)) {
+          lastStart = now();
+          calls += 1;
+          try {
+            issuance = await startCertificate(Math.max(1000, deadline - lastStart));
+          } catch (_) {
+            issuance = null;
+          }
+          if (!issuance) certificateAskable = false;
+        }
+        if (issued || !certificateAskable) {
+          route = await readRoute(relayPort);
+          if (route && route.status === ROUTE_STATUS_HEALTHY) { healthy = true; break; }
+        }
+        if (now() >= deadline) break;
+        if (now() >= nextProgress) {
+          const periods = Math.floor((now() - started) / CERTIFICATE_PROGRESS_MS);
+          say(`  ${certificateProgressMessage((periods * CERTIFICATE_PROGRESS_MS) / 1000)}`);
+          nextProgress = started + (periods + 1) * CERTIFICATE_PROGRESS_MS;
+        }
+        await sleep(Math.max(0, Math.min(pollMs, deadline - now())));
+      }
+    } finally {
+      if (issuance) issuance.stop();
     }
     if (!healthy) {
-      say("  the certificate has not been issued yet. Run the same command again.");
+      say(`  ${CERTIFICATE_TIMEOUT_MESSAGE}`);
       record("serve", "failed", route ? route.status : "unknown");
       return finish(SETUP_EXIT_PROBLEM);
     }
     say("  Certificate ready.");
     record("serve", "done", null);
   }
-
-  const awaitTypedLine = (timeoutMs = PAIR_READY_WAIT_MS) => {
-    const armedAt = now();
-    let cancel = null;
-    let answered = false;
-    let timer = null;
-    const typed = new Promise((resolve) => {
-
-      timer = setTimeout(() => { if (!answered) { answered = true; resolve(null); } }, timeoutMs);
-      if (timer && typeof timer.unref === "function") timer.unref();
-      cancel = watchAnswer((chunk) => {
-        if (answered) return;
-        if (now() - armedAt < ENTER_SETTLE_MS) return;
-        answered = true;
-        resolve(typeof chunk === "string" ? chunk : "");
-      });
-    });
-    return typed.then((chunk) => {
-      if (timer) clearTimeout(timer);
-      if (typeof cancel === "function") cancel();
-      return chunk;
-    });
-  };
 
   const awaitPhoneOnTailnet = async () => {
     const look = async () => {
@@ -762,7 +1121,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     say("  Pairing skipped (--no-pair).\nWhen ready, run openclaw ocuclaw pair.");
     record("pair", "skipped", "--no-pair");
   } else if (typeof pair !== "function") {
-    say("  this host cannot run the terminal pairing ceremony. Run openclaw ocuclaw pair yourself.");
+    say("  This host cannot run the terminal pairing ceremony. Run openclaw ocuclaw pair yourself.");
     record("pair", "failed", "pairing unavailable");
     return finish(SETUP_EXIT_PROBLEM);
   } else {
@@ -791,9 +1150,15 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
 
       if (outcome !== "expired") {
         record("pair", "failed", outcome);
-        return finish(exitCode);
+        const decided = outcome === "refused" || outcome === "cancelled";
+        return finish(exitCode, !decided && exitCode === SETUP_EXIT_PROBLEM);
       }
       say(`  ${pairingExpiryMessage(paired?.phase)}`);
+
+      if (paired?.phase === "waiting-for-phone") {
+        for (const line of PAIR_TIMEOUT_CAUSE_LINES) say(`  ${line}`);
+        say(`  ${PAIR_SCREEN_NOT_OPEN_MESSAGE}`);
+      }
 
       if (!interactive || attempts > PAIR_RETRY_LIMIT) {
         record("pair", "failed", outcome);
@@ -803,13 +1168,15 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
       const typed = await awaitTypedLine();
 
       if (typed === null) {
-        record("pair", "failed", outcome);
+        say(`  ${PAIR_RETRY_NO_ANSWER_MESSAGE}`);
+        record("pair", "failed", "no answer");
         return finish(exitCode);
       }
       const answer = String(typed).trim().toLowerCase();
       if (answer === PAIR_RETRY_STOP_ANSWER) {
         record("pair", "failed", outcome);
-        return finish(exitCode);
+
+        return finish(exitCode, false);
       }
     }
   }
@@ -833,7 +1200,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
 
   const current = await callFirstUse({ operation: "first_use_wait" });
   if (current.ok && current.record && current.record.status === "completed") {
-    say(`  ${FIRST_USE_ALREADY_COMPLETE_MESSAGE}`);
+    say(`  ${FIRST_USE_ALREADY_COMPLETE_VALUE}`);
     record("first-use", "skipped", "already complete");
     return finish(SETUP_EXIT_OK);
   }
@@ -846,58 +1213,42 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   }
 
   if (armed.record.status === "awaiting-reply") {
-    say(`  In the paired conversation on your phone, send ${FIRST_USE_SEND_TEXT}.`, "action");
+    say(`  In the paired conversation on your phone, send ${FIRST_USE_SEND_TEXT_VALUE}.`, "action");
     say("  Waiting for the reply on your glasses...");
   }
 
-  const firstUseDeadline = now() + firstUseWaitS * 1000;
-  let lastReplyNotice = now();
-  let rearmed = false;
-  let replied = false;
-  let lastRecord = null;
-  for (;;) {
-    const polled = await callFirstUse({ operation: "first_use_wait" });
-    if (!polled.ok) {
-
-      if (polled.reason === "setup-session-mismatch" && !rearmed) {
-        rearmed = true;
-        const again = await callFirstUse({ operation: "first_use_retry" });
-        if (again.ok && again.record) {
-          say(`  ${FIRST_USE_REARMED_MESSAGE}`);
-          continue;
-        }
-        say(`  Could not restart the first-message check: ${again.reason || "unavailable"}.`);
-        record("first-use", "failed", again.reason || "unavailable");
-        return finish(SETUP_EXIT_PROBLEM);
-      }
-      say(`  Could not check the first message: ${polled.reason}.`);
-      record("first-use", "failed", polled.reason);
-      return finish(SETUP_EXIT_PROBLEM);
-    }
-    const status = polled.record ? polled.record.status : null;
-    if (status && status !== "awaiting-reply") { lastRecord = polled.record; replied = true; break; }
-    if (now() >= firstUseDeadline) break;
-    if (now() - lastReplyNotice >= noticeMs) {
-      lastReplyNotice = now();
-      say(`  ${FIRST_USE_WAITING_MESSAGE}`);
-    }
-    await sleep(pollMs);
+  const waited = await awaitFirstUseReply({
+    call: callFirstUse,
+    say: (text, kind = null) => say(`  ${text}`, kind),
+    now, sleep,
+    waitMs: firstUseWaitS * 1000,
+    pollMs, noticeMs,
+    strictPhone: true,
+    initialStatus: armed.record.status,
+  });
+  if (waited.outcome === "unavailable") {
+    const reason = waited.reason || "unavailable";
+    say(`  Could not check the first message: ${reason}.`);
+    record("first-use", "failed", reason);
+    return finish(SETUP_EXIT_PROBLEM);
   }
-  if (!replied) {
+  if (waited.outcome === "timeout" || waited.outcome === "cancelled") {
     say(`  ${FIRST_USE_TIMEOUT_MESSAGE}`);
     record("first-use", "failed", "timeout");
     return finish(SETUP_EXIT_PROBLEM);
   }
 
-  const replyReason = (replied && lastRecord && lastRecord.replyEvidenceReason) || null;
-  if (replyReason === "reply_run_errored" || replyReason === "reply_run_rate_limited") {
+  if (waited.outcome === "errored") {
+    const replyReason = waited.reason;
     say(`  ${replyReason === "reply_run_rate_limited" ? FIRST_USE_REPLY_RATE_LIMIT_MESSAGE : FIRST_USE_REPLY_ERROR_MESSAGE}`);
     record("first-use", "failed", replyReason);
     return finish(SETUP_EXIT_PROBLEM);
   }
-  say(`  ${FIRST_USE_REPLY_MESSAGE}`);
+  say(`  ${FIRST_USE_REPLY_VALUE}`);
 
-  const ceremony = await firstUse(options.testInput === true ? { testInput: true } : {});
+  const ceremony = await firstUse(options.testInput === true
+    ? { testInput: true, waitForReply: false }
+    : { waitForReply: false });
   const ceremonyExit = ceremony && Number.isInteger(ceremony.exitCode)
     ? ceremony.exitCode
     : SETUP_EXIT_PROBLEM;
@@ -942,7 +1293,8 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     record("first-use", "done", "welcome-dismissed");
     return finish(SETUP_EXIT_OK);
   }
-  say(SETUP_COMPLETE_MESSAGE);
+
+  if (settledStatus !== "completed") say(SETUP_COMPLETE_MESSAGE);
   record("first-use", "done", settledStatus || "completed");
   return finish(SETUP_EXIT_OK);
 }

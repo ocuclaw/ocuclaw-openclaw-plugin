@@ -30,6 +30,7 @@ import {
 } from "./hermes-setup-hint.js";
 import { createHermesSttLane } from "./hermes-stt-lane.js";
 import { createHermesPairingCompletionPush } from "./hermes-pairing-completion-push.js";
+import { createHermesBoardMoments } from "./hermes-board-moments.js";
 import { createHermesReplyDeliveryLink } from "./hermes-reply-delivery-link.js";
 import { createHermesRuntimeReadiness } from "./hermes-runtime-readiness.js";
 import {
@@ -216,7 +217,12 @@ function bootRelay(ackPayload) {
       options,
     });
   };
+
+  let boardMoments = null;
   relay = createRelay({
+    onBoardMomentAck: (ack) => {
+      if (boardMoments) boardMoments.ack(ack);
+    },
     optionalSetupCommandsVersion: 1,
     optionalSetupEvenAiCommands: true,
       port,
@@ -271,7 +277,7 @@ function bootRelay(ackPayload) {
       evenAiDedupWindowMs: config.evenAiDedupWindowMs,
       inputPredictionTimeoutMs: config.inputPredictionTimeoutMs,
 
-      silentInputJev: resolveSilentInputJev(config.silentInputJev, {}, {}),
+      silentInputJev: resolveSilentInputJev(config.silentInputJev, {}, {}, config),
       evenAiRoutingMode:
         typeof config.evenAiRoutingMode === "string"
           ? config.evenAiRoutingMode
@@ -329,6 +335,9 @@ function bootRelay(ackPayload) {
       Object.assign(linkMethods, presence.methods);
       presence.push();
       createHermesPairingCompletionPush({ relay, link, logger });
+
+      boardMoments = createHermesBoardMoments({ relay, link, logger });
+      Object.assign(linkMethods, boardMoments.methods);
 
       Object.assign(linkMethods, createHermesReplyDeliveryLink({ relay, link, logger }).methods);
       return relay;

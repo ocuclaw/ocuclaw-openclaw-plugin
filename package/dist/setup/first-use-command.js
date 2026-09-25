@@ -5,10 +5,33 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 import process from "node:process";
-import { setupInstallation, FIRST_USE_RETRY, firstUseSuccess, OPTIONAL_SETUP_HANDOFF } from "./setup-journey.js";
+import { setupInstallation, FIRST_USE_RETRY, firstUseSuccessLines, OPTIONAL_SETUP_HANDOFF_LINES } from "./setup-journey.js";
 import { resolveSetupStateDir } from "./setup-controller.js";
 import { createFirstUseStore, firstUseBinding, firstUseResult, FIRST_USE_WAIT_MAX_MS, FIRST_USE_RECEIPT_SETTLE_MAX_MS, FIRST_USE_TOOL_OPERATIONS, validateFirstUseParams } from "./first-use.js";
 import { terminalText } from "./terminal-text.js";
+import {
+  awaitFirstUseReply,
+  firstUseProviderErrorVerdict,
+  firstUseTimeoutMessage,
+  FIRST_USE_SEND_PROMPT,
+  FIRST_USE_WAIT_PROMPT,
+} from "./first-use-wait.js";
+import { firstUseSetupSessionFromContext } from "./first-use-relay-run.js";
+
+export const FIRST_USE_DEFAULT_WAIT_MS = 600000;
+export const FIRST_USE_WAIT_POLL_MS = 3000;
+export const FIRST_USE_WAIT_NOTICE_MS = 30000;
+
+export const FIRST_USE_CANCELLED_BEFORE_REPLY_MESSAGE =
+  "No phone message was received. Run openclaw ocuclaw first-use again when ready.";
+
+function defaultSleep(ms     , signal      = null) {
+  return new Promise      ((resolve) => {
+    const done = () => { clearTimeout(timer); signal?.removeEventListener?.("abort", done); resolve(); };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener?.("abort", done, { once: true });
+  });
+}
 
 const METHOD = "ocuclaw.setup.firstUse";
 
@@ -71,11 +94,42 @@ export function registerSetupWelcomeControl(api     , service     ) {
   }, { scope: "operator.admin" });
 }
 
+const FIRST_USE_UNAVAILABLE_ACTION = "Re-read journey. Check the owning runtime and intended phone session; preserve existing setup state.";
+
+function firstUseUnavailable(error     ) {
+  const reason = error instanceof Error ? /\b(setup-[a-z-]+|installation-mismatch|runtime-unavailable)(?:$|:)/.exec(error.message)?.[1] : null;
+  return { status: "unavailable", reason: reason ?? "setup-first-use-unavailable", action: FIRST_USE_UNAVAILABLE_ACTION };
+}
+
+export const FIRST_USE_CONFIRM_AFTER_WAKE_REASON =
+  "setup-confirm-refused-after-wake: this turn was started by an OcuClaw setup notification, not by the wearer. Ask the wearer, end your turn, and record only their own reply.";
+export function createFirstUseWakeGuardHook(service     ) {
+  return async function refuseConfirmFromWake(event     , ctx      = null) {
+    if (event?.toolName !== "ocuclaw_setup" || event?.params?.operation !== "first_use_confirm") return undefined;
+    const runId = typeof event?.runId === "string" && event.runId ? event.runId
+      : typeof ctx?.runId === "string" && ctx.runId ? ctx.runId : null;
+    if (!runId) return undefined;
+    let woken = false;
+    try { woken = service?.getRelay?.()?.isSetupWakeRun?.(runId) === true; } catch (_) { woken = false; }
+    return woken ? { block: true, blockReason: FIRST_USE_CONFIRM_AFTER_WAKE_REASON } : undefined;
+  };
+}
+
 export function createFirstUseTool(api     , transport      = setupFirstUseRequest, service      = null) {
-  return async (params     , signal      = null) => {
+  return async (params     , signal      = null, ctx      = null) => {
     validateFirstUseParams(params);
     const installation = setupInstallation(resolveSetupStateDir(api));
     if (!installation.id) return { status: "unavailable", reason: "setup-state-unavailable" };
+
+    const setupSession = firstUseSetupSessionFromContext(ctx);
+    const relayNow = service?.getRelay?.();
+    if (setupSession && typeof relayNow?.setupFirstUseRelay === "function" && relayNow.setupFirstUseRelayAvailable?.() === true) {
+      try {
+        return relayNow.setupFirstUseRelay(params.operation, { ...params, installationId: installation.id, setupSession });
+      } catch (error) {
+        return firstUseUnavailable(error);
+      }
+    }
 
     const waitMs = params.timeoutMs === undefined ? FIRST_USE_WAIT_MAX_MS
       : Math.max(0, params.timeoutMs - Math.min(1000, params.timeoutMs / 2));
@@ -125,6 +179,9 @@ export function createFirstUseTool(api     , transport      = setupFirstUseReque
         }
         if (Date.now() >= receiptSettleDeadline) return projectWelcomeCapability(last);
       } else if (last.status !== "awaiting-reply") {
+        return projectWelcomeCapability(last);
+      } else if (last.replyRunErrored) {
+
         return projectWelcomeCapability(last);
       }
       if (Date.now() >= deadline) return { ...last, wait: "timed-out" };
@@ -213,7 +270,7 @@ export async function runSetupWelcome(api     , options      = {}, io      = {})
     }
     if (record.status === "completed") {
       output.write(`${SETUP_WELCOME_DONE_MESSAGE}\n`);
-      output.write(`${OPTIONAL_SETUP_HANDOFF}\n`);
+      for (const line of OPTIONAL_SETUP_HANDOFF_LINES) output.write(`${line}\n`);
       return { ok: true, outcome: "dismissed", reason: null, record };
     }
     const reason = record.welcome?.reason ?? null;
@@ -249,6 +306,9 @@ export async function runSetupWelcome(api     , options      = {}, io      = {})
 
 export const FIRST_USE_RECEIPT_MESSAGE =
   "Your phone reported SDK acceptance of the reply.";
+
+export const FIRST_USE_SEEN_PROMPT =
+  "Only if you saw that reply on G2, type SEEN ON G2 and press Enter: ";
 
 export function createFirstUseCommand(api     ) {
   return async function firstUse(options      = {}, io      = {}) {
@@ -305,21 +365,77 @@ export function createFirstUseCommand(api     ) {
       input.setRawMode(true);
       input.resume();
       const result = await call({ operation: "begin", sessionKey: options.session, retry: options.retry === true });
-      const r = result?.record;
+      let r = result?.record;
       if (result?.installation?.id !== installation.id || !r || r.installationId !== installation.id) throw new Error("context-mismatch");
-      if (r.status === "completed" && r.confirmation?.source !== "test-input") { output.write(`${firstUseSuccess(r)}\n`); return { exitCode: 0 }; }
+      if (r.status === "completed" && r.confirmation?.source !== "test-input") { output.write(`${firstUseSuccessLines(r).join("\n")}\n`); return { exitCode: 0 }; }
       if (r.status === "awaiting-welcome") {
         if (r.replyEvidence === "client_sdk_receipt") output.write(`${FIRST_USE_RECEIPT_MESSAGE}\n`);
         return await showWelcome();
       }
       output.write(terminalText("OpenClaw first reply\n", "heading", output, io.env));
       output.write(terminalText(`Session: ${r.sessionKey}\n`, "detail", output, io.env));
-      if (r.status === "awaiting-reply") { output.write(`${FIRST_USE_RETRY}\n`); return { exitCode: 0 }; }
+      if (r.status === "awaiting-reply") {
+
+        if (options.waitForReply === false) { output.write(`${FIRST_USE_RETRY}\n`); return { exitCode: 0 }; }
+        const waitMs = Number.isInteger(options.waitMs) ? options.waitMs : FIRST_USE_DEFAULT_WAIT_MS;
+
+        let lastWaitRunErrored      = null;
+        output.write(`${terminalText(FIRST_USE_SEND_PROMPT, "action", output, io.env)}\n`);
+        output.write(`${FIRST_USE_WAIT_PROMPT}\n`);
+        const waited      = await awaitFirstUseReply({
+          call: async (params     ) => {
+            try {
+              const res      = await call(params);
+              if (res?.installation?.id !== installation.id) return { ok: false, reason: "setup-context-mismatch" };
+              if (res?.record?.replyRunErrored) lastWaitRunErrored = res.record.replyRunErrored;
+              return { ok: true, record: res?.record ?? null };
+            } catch (error     ) {
+              const message = error?.message ? String(error.message) : String(error ?? "");
+              return { ok: false, reason: /\b(setup-[a-z-]+)\b/.exec(message)?.[1] ?? "setup-first-use-unavailable" };
+            }
+          },
+          say: (text     ) => output.write(`${text}\n`),
+          now: io.now ?? (() => Date.now()),
+          sleep: io.sleep ?? defaultSleep,
+
+          signal: welcomeAbort.signal,
+          waitMs,
+          pollMs: Number.isInteger(io.pollMs) ? io.pollMs : FIRST_USE_WAIT_POLL_MS,
+          noticeMs: Number.isInteger(io.noticeMs) ? io.noticeMs : FIRST_USE_WAIT_NOTICE_MS,
+          strictPhone: false,
+          initialStatus: r.status,
+        });
+        if (waited.outcome === "cancelled") {
+          output.write(`\n${FIRST_USE_CANCELLED_BEFORE_REPLY_MESSAGE}\n`);
+          return { exitCode: 1 };
+        }
+
+        if (waited.outcome === "errored") {
+          output.write(`${firstUseProviderErrorVerdict(waited.record?.replyRunErrored ?? waited.reason)}\n`);
+          return { exitCode: 1 };
+        }
+        if (waited.outcome === "timeout") {
+
+          const errored = waited.record?.replyRunErrored ?? lastWaitRunErrored;
+          output.write(`${errored
+            ? firstUseProviderErrorVerdict(errored)
+            : firstUseTimeoutMessage(waitMs)}\n`);
+          return { exitCode: 1 };
+        }
+        if (waited.outcome !== "replied" || !waited.record) throw new Error("reply-required");
+        r = waited.record;
+        if (r.status === "completed" && r.confirmation?.source !== "test-input") { output.write(`${firstUseSuccessLines(r).join("\n")}\n`); return { exitCode: 0 }; }
+        if (r.status === "awaiting-welcome") {
+          if (r.replyEvidence === "client_sdk_receipt") output.write(`${FIRST_USE_RECEIPT_MESSAGE}\n`);
+          return await showWelcome();
+        }
+      }
       if ((r.status !== "awaiting-confirmation" && r.confirmation?.source !== "test-input") || !r.reply?.runId || !r.attemptId) throw new Error("reply-required");
 
       if (r.status === "awaiting-confirmation") {
 
-        const settleBy = Date.now() + FIRST_USE_RECEIPT_SETTLE_MAX_MS;
+        const settleNow = io.now ?? (() => Date.now());
+        const settleBy = settleNow() + FIRST_USE_RECEIPT_SETTLE_MAX_MS;
         for (;;) {
           const observed      = await call({ operation: "first_use_wait" }).catch(() => null);
           const seen = observed?.record;
@@ -327,10 +443,16 @@ export function createFirstUseCommand(api     ) {
             output.write(`${FIRST_USE_RECEIPT_MESSAGE}\n`);
             return await showWelcome();
           }
+
+          if (seen?.replyWasProviderError === true) {
+            output.write(`${firstUseProviderErrorVerdict(seen.replyRunErrored ?? seen.replyEvidenceReason)}\n`);
+            return { exitCode: 1 };
+          }
           if (cancelled) break;
           if (seen?.status !== "awaiting-confirmation" ||
               seen.replyEvidenceReason !== "observation_pending") break;
-          if (Date.now() >= settleBy) break;
+          if (settleNow() >= settleBy) break;
+          if (io.sleep) { await io.sleep(200); continue; }
           await new Promise      ((resolve) => {
             const done = () => { clearTimeout(timer); input.off("data", onCancelPoll); resolve(); };
             const onCancelPoll = () => { if (cancelled) done(); };
@@ -340,8 +462,10 @@ export function createFirstUseCommand(api     ) {
         }
       }
       output.write(terminalText(`The phone reply completed at ${new Date(r.reply.completedAt).toISOString()}.\n`, "detail", output, io.env));
-      output.write("If it never appeared, cancel and run openclaw ocuclaw first-use --retry before sending a fresh phone message.\n\n");
-      output.write(terminalText("Only if you saw that reply on G2, type SEEN ON G2 and press Enter. Enter alone or Ctrl-C leaves setup unfinished: ", "action", output, io.env));
+
+      output.write("If it never appeared, cancel and run openclaw ocuclaw first-use --retry\nbefore sending a fresh phone message.\n\n");
+      output.write(terminalText("Enter alone or Ctrl-C leaves setup unfinished.\n", "detail", output, io.env));
+      output.write(terminalText(FIRST_USE_SEEN_PROMPT, "action", output, io.env));
 
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (!cancelled) armed = true;
@@ -363,10 +487,10 @@ export function createFirstUseCommand(api     ) {
         return await showWelcome();
       }
       if (confirmed?.status !== "completed" || confirmed.attemptId !== r.attemptId) throw new Error("completion-unverified");
-      output.write(`\n${firstUseSuccess(confirmed)}\n`);
+      output.write(`\n${firstUseSuccessLines(confirmed).join("\n")}\n`);
       return { exitCode: 0 };
     } catch (_) {
-      output.write("\nFirst-use state could not be verified. Run openclaw ocuclaw journey for this installation and retry; preserve existing credentials and checkpoint files.\n");
+      output.write("\nFirst-use state could not be verified.\nRun openclaw ocuclaw journey for this installation and retry.\nPreserve existing credentials and checkpoint files.\n");
       return { exitCode: 2 };
     } finally {
       clearTimeout(timer);

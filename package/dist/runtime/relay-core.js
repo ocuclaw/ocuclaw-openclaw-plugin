@@ -2,9 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import * as os from "node:os";
-import { createFirstUseStore, createFirstUseObserver, runFirstUseOperation, firstUseBinding, classifyFirstUseReplyEvidence } from "../setup/first-use.js";
-import { setupInstallation } from "../setup/setup-journey.js";
+import { createFirstUseStore, createFirstUseObserver, runFirstUseOperation, firstUseBinding, classifyFirstUseReplyEvidence, firstUseResult, observeReplyEvidenceInto } from "../setup/first-use.js";
+import { setupInstallation, firstUseRunErrored, firstUseWithRunErrored, firstUseProviderErrorClass, FIRST_USE_ERRORED_RUN_REASONS } from "../setup/setup-journey.js";
 import { createSetupWelcome } from "../setup/welcome.js";
+import { createFirstUseRelayRun, FIRST_USE_RELAY_ARM_LINES, FIRST_USE_RELAY_ARM_ACTION, FIRST_USE_RELAY_WELCOME_LINES } from "../setup/first-use-relay-run.js";
 import { EventEmitter } from "node:events";
 import { createPluginVersionService } from "./plugin-version-service.js";
 import * as conversationStateModule from "../domain/conversation-state.js";
@@ -90,6 +91,7 @@ import { createUpstreamRuntime, classifyRunOutcomeFrame } from "./upstream-runti
 import { createDemandRouter } from "./demand-router.js";
 import { buildDemandFrame } from "./demand-surface.js";
 import { createHermesSlashConfirmRouter } from "./hermes-slash-confirm-router.js";
+import { formatBoardMoment } from "./hermes-board-moments.js";
 import { createHermesClarifyRouter } from "./hermes-clarify-router.js";
 import { createReplyDeliveryCoordinator } from "./reply-delivery-coordinator.js";
 import { createOpenClawQuestionRouter } from "./openclaw-question-router.js";
@@ -427,6 +429,28 @@ function createRelay(opts) {
     () => typeof opts.getSetupWelcomeRenderer === "function" ? opts.getSetupWelcomeRenderer() : getRegisteredGlassesUiHandler(),
     undefined, (runId     , signal     ) => awaitRunSettled(runId, signal)) : null;
 
+  const firstUseRelayRun      = firstUseStore && setupWelcome ? createFirstUseRelayRun({
+    store: firstUseStore,
+    readPhone: () => readSetupPhone(),
+    observe: (record     ) => observeReplyEvidenceInto(firstUseStore, record, observeFirstUseReplyEvidence),
+    erroredRunSince: (startedAt     ) => erroredRunSince(startedAt),
+    settledRunErrored: (record     ) => settledRunErrored(record),
+    welcome: setupWelcome,
+    wake: (params     ) => dispatchAgentWake(params),
+
+    showLines: (params     ) => {
+      if (getActiveBackendKind() === "hermes") return Promise.reject(new Error("show-lines-openclaw-only"));
+      const gatewaySession = openclawGatewayKeyFor(params.sessionKey);
+      return gatewayBridge.request("chat.inject", {
+        sessionKey: gatewaySession.key,
+        ...(gatewaySession.agentId ? { agentId: gatewaySession.agentId } : {}),
+        message: params.message,
+      });
+    },
+    onChange: () => publishSetupHintIfChanged(),
+    log: (event     , fields     ) => emitDebug("relay.protocol", event, "info", {}, () => fields),
+  }) : null;
+
   function readSetupPhone() {
     const snapshot = server?.getReadinessSnapshot();
     if (snapshot?.connectedClientCount !== 1 || snapshot?.clients?.length !== 1) throw new Error("setup-phone-session-ambiguous-or-disconnected");
@@ -459,6 +483,39 @@ function createRelay(opts) {
   }
   function runErrored(runId     ) {
     return runOutcomes.get(runId)?.errored === true;
+  }
+
+  let lastErroredRun      = null;
+  function noteErroredRun(runId     , errored     , code     ) {
+    if (errored !== true || typeof runId !== "string" || !runId) return;
+    lastErroredRun = { runId, code: typeof code === "string" && code ? code : null, at: Date.now() };
+  }
+
+  function noteRunOutcomeFrame(activity     , phase      = null, origin      = null) {
+    const runId = activity && typeof activity.runId === "string" && activity.runId ? activity.runId : null;
+    if (!runId) return;
+    const outcome = classifyRunOutcomeFrame(activity, phase ?? activity.phase ?? null, origin ?? activity.origin ?? null);
+    noteRunActivity(runId, outcome.terminal, outcome.errored, outcome.code);
+    noteErroredRun(runId, outcome.errored, outcome.code);
+    noteSetupTurnRun(activity, runId);
+  }
+  function erroredRunSince(startedAt     ) {
+    if (!lastErroredRun) return null;
+
+    const since = typeof startedAt === "number" ? startedAt : Date.parse(startedAt);
+    if (Number.isFinite(since) && lastErroredRun.at < since) return null;
+
+    return firstUseRunErrored(lastErroredRun.code);
+  }
+
+  function settledRunErrored(record     ) {
+    if (!record || !FIRST_USE_ERRORED_RUN_REASONS.includes(record.replyEvidenceReason)) return null;
+    const runId = typeof record.reply?.runId === "string" ? record.reply.runId : null;
+    const code = runId
+      ? runOutcomes.get(runId)?.code ?? (lastErroredRun?.runId === runId ? lastErroredRun.code : null)
+      : null;
+    return code ? firstUseRunErrored(code)
+      : { code: null, class: firstUseRunErrored(record.replyEvidenceReason).class };
   }
 
   function awaitRunSettled(runId     , signal      = null) {
@@ -525,17 +582,87 @@ function createRelay(opts) {
     try { return firstUseStore.read()?.status === "awaiting-reply" ? "awaiting-first-reply" : null; }
     catch (_) { return null; }
   }
+
+  const SETUP_TURN_CLOSE_GRACE_MS = 120000;
+  let setupHintError      = null;
+  let setupTurnWatch      = null;
+  let setupTurnError      = null;
+  let hermesSetupAttempt = 0;
+  function readSetupAttempt(nextPhase     ) {
+    if (typeof opts.getSetupHintPhase === "function") {
+
+      if (nextPhase === "awaiting-first-reply" && setupHintPhase !== "awaiting-first-reply") hermesSetupAttempt += 1;
+      return hermesSetupAttempt > 0 ? { id: `hermes:${hermesSetupAttempt}`, sessionKey: null } : null;
+    }
+    if (!firstUseStore) return null;
+    try {
+      const record = firstUseStore.read();
+      return record && record.status !== "completed" && record.attemptId
+        ? { id: record.attemptId, sessionKey: record.sessionKey || null }
+        : null;
+    } catch (_) { return null; }
+  }
   function refreshSetupHint() {
     const next = readSetupHintPhase();
-    if (next === setupHintPhase) return false;
+    const attempt = readSetupAttempt(next);
+    const attemptId = attempt ? attempt.id : null;
+    if (next === "awaiting-first-reply" && attemptId) {
+      if (!setupTurnWatch || setupTurnWatch.attempt !== attemptId) {
+        setupTurnWatch = { attempt: attemptId, sessionKey: attempt?.sessionKey ?? null, closedAt: null, runIds: new Set() };
+      } else {
+        setupTurnWatch.closedAt = null;
+      }
+    } else if (setupTurnWatch && setupTurnWatch.closedAt === null) {
+      setupTurnWatch.closedAt = Date.now();
+    }
+    if (setupTurnError && setupTurnError.attempt !== attemptId) setupTurnError = null;
+    const nextError = setupTurnError ? { code: setupTurnError.code } : null;
+    const errorChanged = (nextError?.code ?? undefined) !== (setupHintError?.code ?? undefined)
+      || !!nextError !== !!setupHintError;
+    if (next === setupHintPhase && !errorChanged) return false;
     setupHintPhase = next;
+    setupHintError = nextError;
     return true;
   }
 
   function publishSetupHintIfChanged() {
     try { if (refreshSetupHint()) broadcastStatus(); } catch (_) {  }
   }
-  setupHintPhase = readSetupHintPhase();
+  function setupTurnSessionMatches(activity     ) {
+
+    if (typeof opts.getSetupHintPhase === "function") return true;
+    const frameKey = normalizeAppSessionKeyForCompare(activity && activity.sessionKey);
+    const expected = normalizeAppSessionKeyForCompare(setupTurnWatch?.sessionKey);
+
+    return !frameKey || !expected || expected === frameKey;
+  }
+
+  function noteSetupTurnRun(activity     , runId     ) {
+    try {
+      const watch = setupTurnWatch;
+      if (!watch || !runId || !setupTurnSessionMatches(activity)) return;
+      const outcome = runOutcomes.get(runId);
+      if (!watch.runIds.has(runId)) {
+        const open = watch.closedAt === null || Date.now() - watch.closedAt <= SETUP_TURN_CLOSE_GRACE_MS;
+        if (open) {
+          watch.runIds.add(runId);
+          while (watch.runIds.size > RUN_OUTCOME_MAX) watch.runIds.delete(watch.runIds.values().next().value);
+        }
+      }
+      let next = setupTurnError;
+      if (watch.runIds.has(runId) && outcome?.errored === true) {
+        next = { attempt: watch.attempt, code: firstUseProviderErrorClass(outcome.code) };
+      } else if (setupTurnError && outcome?.terminal === true && outcome.errored !== true) {
+
+        next = null;
+      }
+      if (next === setupTurnError) return;
+      if (next && setupTurnError && next.attempt === setupTurnError.attempt && next.code === setupTurnError.code) return;
+      setupTurnError = next;
+      publishSetupHintIfChanged();
+    } catch (_) {  }
+  }
+  refreshSetupHint();
 
   const observeFirstUse = (method     , ...args       ) => {
     try { firstUseObserver?.[method](...args); } catch (_) {  }
@@ -584,6 +711,9 @@ function createRelay(opts) {
     timeoutMs: opts.inputPredictionTimeoutMs,
 
     jevRanker: createSilentInputJevAnswerer({ config: opts.silentInputJev }),
+
+    typesafeKeyPresent: typeof opts.silentInputJev?.apiKey === "string"
+      && opts.silentInputJev.apiKey.trim() !== "",
     emitDebug: (category     , event     , data     ) => {
       try {
         emitDebug(category, event, "debug", {}, () => data);
@@ -951,6 +1081,18 @@ function createRelay(opts) {
 
   function simulateStreamRunKey(sessionKey, runId) {
     return JSON.stringify([sessionKey, runId]);
+  }
+
+  let simulatedCommitSeq = 0;
+  function simulatedCommitMetadata(requestId         , runId               , kind        ) {
+    simulatedCommitSeq += 1;
+    const base = typeof requestId === "string" && requestId.trim()
+      ? requestId.trim()
+      : `${Date.now()}-${simulatedCommitSeq}`;
+    return {
+      id: `sim:${kind}:${base}`,
+      ...(runId ? { runId } : {}),
+    };
   }
 
   function cancelSimulateStreamRun(entry) {
@@ -1350,7 +1492,10 @@ function createRelay(opts) {
       }
 
       if (!configuredSonioxApiKey) {
-        throw new Error("Soniox API key is not configured");
+
+        throw new Error(
+          "Soniox API key is not configured. If you just saved it, activate it from your phone.",
+        );
       }
 
       const fetchImpl = resolveFetchImpl();
@@ -2053,6 +2198,43 @@ function createRelay(opts) {
     };
   }
 
+  function dispatchAgentWake(params     ) {
+    const sessionKey =
+      params && typeof params.sessionKey === "string" && params.sessionKey
+        ? params.sessionKey
+        : sessionService.ensureSessionKey();
+    const message = params && typeof params.message === "string" ? params.message : "";
+    if (!message) {
+      return Promise.reject(new Error("dispatchGlassesWake requires a message"));
+    }
+    const idempotencyKey =
+      params && typeof params.idempotencyKey === "string" && params.idempotencyKey
+        ? params.idempotencyKey
+        : null;
+    agentTurnTracker.markBusy(sessionKey);
+    emitDebug(
+      "relay.protocol",
+      "glasses_wake_dispatch",
+      "info",
+      { sessionKey },
+      () => ({
+        idempotencyKey,
+        messageChars: message.length,
+        deliver: params?.deliver === true,
+      }),
+    );
+    const gatewaySession = openclawGatewayKeyFor(sessionKey);
+    const requestParams = {
+      message,
+      sessionKey: gatewaySession.key,
+      ...(gatewaySession.agentId ? { agentId: gatewaySession.agentId } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(params?.deliver === true ? { deliver: true } : {}),
+      ...(params?.bestEffortDeliver === true ? { bestEffortDeliver: true } : {}),
+    };
+    return gatewayBridge.request("agent", requestParams, { expectFinal: false });
+  }
+
   function buildOcuClawSendDiagnostic(params = {}) {
     const attachment = params.attachment || null;
     const messageId =
@@ -2496,10 +2678,7 @@ function createRelay(opts) {
       );
     }
 
-    if (runId) {
-      const outcome = classifyRunOutcomeFrame(activity, phase, origin);
-      noteRunActivity(runId, outcome.terminal, outcome.errored, outcome.code);
-    }
+    if (runId) noteRunOutcomeFrame(activity, phase, origin);
 
     emitDebug(
       "app.timeline",
@@ -3099,6 +3278,9 @@ function createRelay(opts) {
     return () => pairingCompletedHandlers.delete(handler);
   }
   function dispatchPairingCompleted(completionId     ) {
+
+    try { if (getActiveBackendKind() === "openclaw") firstUseRelayRun?.pairingCompleted(); }
+    catch (err     ) { logger.warn(`[relay] setup pairing wake failed: ${err && err.message ? err.message : err}`); }
     for (const handler of pairingCompletedHandlers) {
       try { handler(completionId); } catch (err     ) {
         logger.warn(`[relay] pairing_completed handler threw: ${err && err.message ? err.message : err}`);
@@ -4655,6 +4837,10 @@ function createRelay(opts) {
       return gatewayBridge.request("profiles.create", input);
     },
     onHermesManagement: hermesManagementRequest,
+
+    onBoardMomentAck(ack     ) {
+      if (typeof opts.onBoardMomentAck === "function") opts.onBoardMomentAck(ack);
+    },
     onOptionalSetup(clientId     , request     , workerEpoch     ) {
       if (!Number.isInteger(workerEpoch) || workerEpoch < 1) return { status: "rejected", code: "not_connected" };
       const connectionId = optionalSetupConnection(clientId, workerEpoch);
@@ -5084,7 +5270,7 @@ function createRelay(opts) {
     },
     operationRegistry: relayOperationRegistry,
 
-    onSimulate(sender, text) {
+    onSimulate(sender, text, requestId = "") {
       emitDebug(
         "relay.protocol",
         "simulate",
@@ -5096,7 +5282,12 @@ function createRelay(opts) {
         }),
       );
 
-      conversationState.addMessage("assistant", [{ type: "text", text }], sender || "Simulator");
+      conversationState.addMessage(
+        "assistant",
+        [{ type: "text", text }],
+        sender || "Simulator",
+        simulatedCommitMetadata(requestId, null, "simulate"),
+      );
 
       const pages = conversationState.getPages();
       cachePages(pages);
@@ -5280,6 +5471,7 @@ function createRelay(opts) {
               "assistant",
               [{ type: "text", text: stripAllTaggedSpans(text) }],
               sender,
+              simulatedCommitMetadata(request.id, runId, "stream"),
             );
             broadcastPages();
           }
@@ -5760,10 +5952,13 @@ function createRelay(opts) {
           handler.formatListenCommitted(text, "endpoint", request.sessionKey || null),
         );
 
+        const voiceSendId = simulatedCommitMetadata(request.id, null, "voice").id;
         const publishCommittedUserMessage = () => {
           conversationState.addMessage(
             "user",
             buildLocalUserMessageContent(text, null),
+            null,
+            { clientSendId: voiceSendId },
           );
           emitDebug(
             "openclaw.message",
@@ -5861,7 +6056,11 @@ function createRelay(opts) {
             logger.error(`[relay] Failed to send /new: ${err.message}`);
           });
       }
-      return resetPromise.then(() => pages);
+      return resetPromise.then(() => {
+
+        broadcastEntriesForActiveLedgerClients("new_chat");
+        return pages;
+      });
     },
 
     onGetSessions() {
@@ -6043,6 +6242,8 @@ function createRelay(opts) {
           }));
         case "test":
           return inputPredictionService.test(clientId, payload);
+        case "modelAllow":
+          return inputPredictionService.modelAllow(clientId, payload);
         default:
           return Promise.reject(new Error(`unknown input prediction op: ${op}`));
       }
@@ -7107,7 +7308,13 @@ function createRelay(opts) {
       ledgerV1: activeConversationSupportsLedger(),
     };
 
-    if (setupHintPhase) status.setupHint = setupHintPhase;
+    if (setupHintError) {
+
+      status.setupHint = "first-reply-errored";
+      status.setupHintErrorClass = setupHintError.code;
+    } else if (setupHintPhase) {
+      status.setupHint = setupHintPhase;
+    }
     if (includeDownstreamReadiness) {
       status.downstreamReadiness =
         server && typeof server.getReadinessSnapshot === "function"
@@ -7209,21 +7416,25 @@ function createRelay(opts) {
         : null;
 
       const upstreamSentEnough = rowsFromUpstream !== null && rowsFromUpstream >= previousCount;
+      const expectedReset = sessionChanged || reason === "new_chat";
       const verdict = sessionChanged
         ? "session_changed_expected"
-        : reason === "gateway_history" || reason === "mirror_rehydrate"
-          ? (upstreamSentEnough ? "local_filter_dropped_rows" : "upstream_history_shrank")
-          : reason === "session_switch"
-            ? "session_switch_same_key"
-            : "local_state_shrank";
+        : reason === "new_chat"
+
+          ? "new_chat_expected"
+          : reason === "gateway_history" || reason === "mirror_rehydrate"
+            ? (upstreamSentEnough ? "local_filter_dropped_rows" : "upstream_history_shrank")
+            : reason === "session_switch"
+              ? "session_switch_same_key"
+              : "local_state_shrank";
       emitDebug(
         "relay.session",
         "ledger_snapshot_shrank",
-        sessionChanged ? "info" : "warn",
+        expectedReset ? "info" : "warn",
         { sessionKey: sessionId },
         () => ({
           verdict,
-          implicates: sessionChanged
+          implicates: expectedReset
             ? "neither"
             : verdict === "upstream_history_shrank"
               ? "gateway"
@@ -7392,6 +7603,8 @@ function createRelay(opts) {
   let demandRouter      = null;
 
   upstreamRuntime = createUpstreamRuntime({
+
+    noteRunOutcomeFrame,
     observeSetupEvent: (name     , data     ) => {
       if (name === "message") observeFirstUse("reply", data);
       if (name === "error" || name === "connectFailed" || (name === "status" && data === "disconnected")) observeFirstUse("clear");
@@ -8199,6 +8412,8 @@ function createRelay(opts) {
 
     start() {
 
+      try { if (getActiveBackendKind() === "openclaw") firstUseRelayRun?.resume(); } catch (_) {  }
+
       if (!bundleCacheSweepTimer) {
         bundleCacheSweepTimer = setInterval(() => bundleCache.sweep(), 60_000);
         if (typeof bundleCacheSweepTimer.unref === "function") bundleCacheSweepTimer.unref();
@@ -8269,6 +8484,7 @@ function createRelay(opts) {
     },
 
     stop() {
+      firstUseRelayRun?.shutdown();
       setupWelcome?.cancel();
       if (liveuiTaskRunController) {
         liveuiTaskRunController.observeHostLoss();
@@ -8492,13 +8708,33 @@ function createRelay(opts) {
       if (input.installationId && input.installationId !== setupInstallation(opts.setupStateDir).id) throw new Error("installation-mismatch");
 
       try {
+
+        if (operation === "run_errored") {
+          const stored = firstUseStore.read();
+          if (!stored) return null;
+          if (stored.status === "awaiting-reply") return erroredRunSince(stored.startedAt);
+          return settledRunErrored(stored);
+        }
         if (operation === "begin") {
 
           let phone      = null;
           try { phone = readSetupPhone(); } catch (_) { phone = null; }
-          return firstUseStore.begin(input.sessionKey || firstUseStore.read()?.sessionKey || sessionService.peekSessionKey(), input.retry === true, phone);
+          const begun      = firstUseStore.begin(input.sessionKey || firstUseStore.read()?.sessionKey || sessionService.peekSessionKey(), input.retry === true, phone);
+          const settled = settledRunErrored(begun);
+          return settled ? { ...begun, replyRunErrored: settled } : begun;
         }
-        return runFirstUseOperation(firstUseStore, operation, input, () => readSetupPhone().sessionKey, readSetupPhone, observeFirstUseReplyEvidence);
+        const result      = runFirstUseOperation(firstUseStore, operation, input, () => readSetupPhone().sessionKey, readSetupPhone, observeFirstUseReplyEvidence);
+
+        if (operation === "first_use_wait" && result?.status === "awaiting-reply") {
+          const errored = erroredRunSince(firstUseStore.read()?.startedAt);
+          if (errored) return firstUseWithRunErrored(result, errored);
+        }
+
+        if (operation === "first_use_wait" && result?.replyWasProviderError === true) {
+          const settled = settledRunErrored(firstUseStore.read());
+          if (settled) return firstUseWithRunErrored(result, settled);
+        }
+        return result;
       } finally {
         publishSetupHintIfChanged();
       }
@@ -8523,6 +8759,74 @@ function createRelay(opts) {
     cancelSetupWelcome() {
       if (getActiveBackendKind() !== "openclaw" || !setupWelcome) return false;
       return setupWelcome.cancel("cancelled") === true;
+    },
+
+    setupFirstUseRelayAvailable() {
+      return getActiveBackendKind() === "openclaw" && !!firstUseRelayRun;
+    },
+    noteSetupSession(session     ) {
+      if (getActiveBackendKind() !== "openclaw" || !firstUseRelayRun) return;
+      firstUseRelayRun.noteSetupSession(session);
+    },
+    isSetupWakeRun(runId     ) {
+      return !!firstUseRelayRun && firstUseRelayRun.isWakeRun(runId) === true;
+    },
+    setupFirstUseRelay(operation     , input      = {}) {
+      if (getActiveBackendKind() !== "openclaw" || !firstUseStore || !firstUseRelayRun) throw new Error("setup-first-use-unavailable");
+      if (input.installationId && input.installationId !== setupInstallation(opts.setupStateDir).id) throw new Error("installation-mismatch");
+      const session = input.setupSession;
+      if (!session || typeof session.setupSessionKey !== "string") throw new Error("setup-session-required");
+      firstUseRelayRun.noteSetupSession(session);
+      const armed = (lines     ) => {
+        const result      = firstUseResult(firstUseStore.read());
+        if (result.status === "completed" || result.relayRun?.status !== "running") return result;
+        return { ...result, nextOperations: [], say: [...lines], action: FIRST_USE_RELAY_ARM_ACTION };
+      };
+      const phoneSession = () => readSetupPhone().sessionKey;
+      try {
+        const { setupSession, ...params } = input;
+        if (operation === "first_use_begin" || operation === "first_use_retry") {
+          const begun      = runFirstUseOperation(firstUseStore, operation, { ...params, relayRun: session },
+            phoneSession, readSetupPhone, observeFirstUseReplyEvidence);
+          if (begun.status === "completed") return begun;
+          firstUseRelayRun.arm();
+          const status = firstUseStore.read()?.status;
+          return armed(status === "awaiting-welcome" ? FIRST_USE_RELAY_WELCOME_LINES : FIRST_USE_RELAY_ARM_LINES);
+        }
+        if (operation === "first_use_wait") {
+
+          const r = firstUseStore.read();
+          if (!r) throw new Error("setup-attempt-required");
+          if (r.relayRun && !r.relayRun.ending && !firstUseRelayRun.running()) firstUseRelayRun.arm();
+          return armed(r.status === "awaiting-welcome" ? FIRST_USE_RELAY_WELCOME_LINES : FIRST_USE_RELAY_ARM_LINES);
+        }
+        if (operation === "first_use_confirm") {
+          const result      = runFirstUseOperation(firstUseStore, operation, params, phoneSession, readSetupPhone, observeFirstUseReplyEvidence);
+          const r = firstUseStore.read();
+          if (r?.status !== "awaiting-welcome" || r.welcome) return result;
+
+          firstUseStore.armRelayRun(r.attemptId, session);
+          firstUseRelayRun.arm();
+          return armed(FIRST_USE_RELAY_WELCOME_LINES);
+        }
+        if (operation === "first_use_welcome" || operation === "first_use_welcome_retry") {
+          const r = firstUseStore.read();
+          if (!r) throw new Error("setup-attempt-required");
+          if (r.status === "completed") return firstUseResult(r);
+          if (params.binding !== firstUseBinding(r)) throw new Error("setup-confirmation-mismatch");
+          if (r.status !== "awaiting-welcome") throw new Error("setup-welcome-mismatch");
+          const retry = operation === "first_use_welcome_retry";
+          if (r.welcome && !retry) throw new Error("setup-welcome-retry-required");
+          if (retry && r.welcome?.attempts >= 2) throw new Error("setup-welcome-retry-exhausted");
+          if (!setupWelcome?.available()) throw new Error("setup-welcome-unavailable");
+          firstUseStore.armRelayRun(r.attemptId, session);
+          firstUseRelayRun.arm({ retryWelcome: retry && !!r.welcome });
+          return armed(FIRST_USE_RELAY_WELCOME_LINES);
+        }
+        throw new Error("setup-first-use-operation-invalid");
+      } finally {
+        publishSetupHintIfChanged();
+      }
     },
 
     flushFirstSentUserMessageCache() {
@@ -8576,6 +8880,19 @@ function createRelay(opts) {
       return hermesSlashConfirmRouter.present(params || {});
     },
 
+    sendBoardMoment(moment     ) {
+      if (!server || typeof server.unicast !== "function" || typeof server.getReadinessSnapshot !== "function") return 0;
+      const frame = formatBoardMoment(moment);
+      let sent = 0;
+      for (const entry of server.getReadinessSnapshot().clients || []) {
+        if (entry && entry.clientKind === "app") {
+          server.unicast(entry.clientId, frame);
+          sent += 1;
+        }
+      }
+      return sent;
+    },
+
     sendGlassesUiSurfaceUpdate(params) {
       sendGlassesUiSurfaceUpdate(params);
     },
@@ -8585,37 +8902,7 @@ function createRelay(opts) {
     },
 
     dispatchGlassesWake(params) {
-      const sessionKey =
-        params && typeof params.sessionKey === "string" && params.sessionKey
-          ? params.sessionKey
-          : sessionService.ensureSessionKey();
-      const message = params && typeof params.message === "string" ? params.message : "";
-      if (!message) {
-        return Promise.reject(new Error("dispatchGlassesWake requires a message"));
-      }
-      const idempotencyKey =
-        params && typeof params.idempotencyKey === "string" && params.idempotencyKey
-          ? params.idempotencyKey
-          : null;
-      agentTurnTracker.markBusy(sessionKey);
-      emitDebug(
-        "relay.protocol",
-        "glasses_wake_dispatch",
-        "info",
-        { sessionKey },
-        () => ({
-          idempotencyKey,
-          messageChars: message.length,
-        }),
-      );
-      const gatewaySession = openclawGatewayKeyFor(sessionKey);
-      const requestParams = {
-        message,
-        sessionKey: gatewaySession.key,
-        ...(gatewaySession.agentId ? { agentId: gatewaySession.agentId } : {}),
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-      };
-      return gatewayBridge.request("agent", requestParams, { expectFinal: false });
+      return dispatchAgentWake(params);
     },
 
     isAgentTurnBusy(sessionKey) {

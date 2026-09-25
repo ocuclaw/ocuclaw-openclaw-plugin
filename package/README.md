@@ -21,8 +21,16 @@ agent to "set up OcuClaw":
 openclaw plugins install clawhub:ocuclaw
 ```
 
+On OpenClaw 2026.9 and later the install asks you to confirm (`y/N`). It lists
+what OcuClaw may do: 8 tools (draw on your glasses, manage LiveUI templates and
+tasks, read the glasses and device state, set session titles, read your
+location, run setup) and 2 skills (the glasses UI guide and the Setup
+Assistant). Answer `y` to install. ClawHub may ask twice; answer `y` both times.
+If your agent runs the install for you, it asks you the same question in chat
+first and never answers for you. Older OpenClaw hosts do not ask.
+
 The OcuClaw Setup Assistant ships inside the plugin, so that one command gives
-you both and `openclaw plugins update ocuclaw` keeps them in step. There is no
+you both and the plugin update (see [Update](#update)) keeps them in step. There is no
 separate assistant package to install. If you installed the standalone
 `ocuclaw-assist` skill before it was retired, it silently overrides the
 plugin's copy and pins you to an old guide. Clear it once and the bundled
@@ -42,7 +50,7 @@ The sections below are the manual reference for the plugin half.
 
 ## Requirements
 
-OpenClaw `>= 2026.6.9` (the plugin's minimum supported host version; older hosts refuse the install cleanly). Upgrade with `openclaw update`, or `npm install -g openclaw@latest` on very old builds.
+OpenClaw `>= 2026.7.1-2` (the plugin's minimum supported host version, the release Cloudways ships; older hosts refuse the install cleanly). Upgrade with `openclaw update`, or `npm install -g openclaw@latest` on very old builds.
 
 ## Install
 
@@ -55,6 +63,29 @@ openclaw plugins install clawhub:ocuclaw
 Stable releases use the explicit ClawHub source above. npm is the explicit
 fallback (`openclaw plugins install npm:ocuclaw`) and carries beta builds
 (`openclaw plugins install npm:ocuclaw@beta`).
+
+OpenClaw 2026.9 and later asks you to confirm OcuClaw's tools and skills
+(`y/N`) during the install: answer `y`. The plugin update can
+ask again when a new version adds a tool, and on the first update after you
+upgrade OpenClaw from 2026.7. In a script with no terminal, add
+`--accept-capabilities` once you have reviewed the list; OpenClaw 2026.7 does
+not know that flag. An npm install on 2026.9 also needs `--force`, because npm
+is outside ClawHub review. Never add `--force` to the install from ClawHub.
+
+## Update
+
+Use the command that matches how you installed OcuClaw:
+
+```bash
+openclaw plugins update ocuclaw@latest   # installed from npm (ocuclaw, npm:ocuclaw, npm:ocuclaw@beta)
+openclaw plugins update ocuclaw          # installed from ClawHub (clawhub:ocuclaw)
+```
+
+Not sure? `openclaw plugins inspect ocuclaw --json` shows it as
+`install.source`. On an npm install, plain `openclaw plugins update ocuclaw`
+can stay on your old version (it can say "already at 1.3.7" or "up to date");
+`@latest` moves you to the newest stable release. If you installed from
+ClawHub, `@latest` does not work: OpenClaw only matches it against npm installs.
 
 ## Configure
 
@@ -176,3 +207,8 @@ openclaw plugins inspect ocuclaw --runtime
 openclaw plugins doctor
 openclaw gateway status
 ```
+
+## Next steps
+
+This README covers the plugin half only. For the phone app, Tailscale, pairing
+and troubleshooting, follow the full setup guide at https://ocuclaw.com/setup.

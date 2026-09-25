@@ -2,7 +2,14 @@ import process from "node:process";
 import { planOptionalSetupActivation } from "./optional-activation-policy.js";
 import { saveOptionalCredential } from "./optional-credential-store.js";
 
-const FIELDS = { soniox: "sonioxApiKey", "even-ai": "evenAiToken" };
+const FIELDS = { soniox: "sonioxApiKey", "even-ai": "evenAiToken", typesafe: "typesafeApiKey" };
+
+const GUIDANCE = {
+  soniox: "Soniox live transcription: open https://console.soniox.com, choose your project, then API keys. Enable real-time speech-to-text, temporary API keys and model listing. Model sign-in does not provide Soniox access.\n",
+  "even-ai": "Enter the private Even AI token for this runtime. This is separate from the phone Relay Credential.\n",
+
+  typesafe: "Smart word order (silent input) uses TypeSafe: open https://typesafe.ai, sign in and create an API key. Saving it here arms ranking on this host; the phone turns the row on after its Check.\n",
+};
 
 export function readPrivateCredential(input = process.stdin, output = process.stderr) {
   if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") {
@@ -94,9 +101,7 @@ export function createOptionalCredentialCommand(api, dependencies = {}) {
       return { exitCode: 0, status: "preserved", present: true,
         instruction: `Existing credential preserved. To deliberately replace it, run openclaw ocuclaw credential ${capability} --replace.` };
     }
-    write(capability === "soniox"
-      ? "Soniox live transcription: open https://console.soniox.com, choose your project, then API keys. Enable real-time speech-to-text, temporary API keys and model listing. Model sign-in does not provide Soniox access.\n"
-      : "Enter the private Even AI token for this runtime. This is separate from the phone Relay Credential.\n");
+    write(GUIDANCE[capability]);
     let entered;
     try { entered = await read(); } catch (_) { return { exitCode: 1, status: "input_unavailable" }; }
     if (entered?.state !== "entered") {

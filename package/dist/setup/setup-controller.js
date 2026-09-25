@@ -5,7 +5,7 @@ import {
   hostSummary,
   mentionsGatewayRestart,
 } from "./cloudways-host.js";
-import { setupInstallation, setupJourney } from "./setup-journey.js";
+import { setupInstallation, setupJourney, toolPolicyWarnings } from "./setup-journey.js";
 import { assistantSkillSummary, unknownAssistantSkill } from "./assistant-skill.js";
 import { createFirstUseStore } from "./first-use.js";
 import {
@@ -37,6 +37,100 @@ function secretState(value) {
     validation: present
       ? SECRET_VALIDATION.NOT_CHECKED
       : SECRET_VALIDATION.NOT_APPLICABLE,
+  };
+}
+
+export const OCUCLAW_PLUGIN_ID = "ocuclaw";
+
+export const TOOL_POLICY_ALSO_ALLOW_COMMAND =
+  "openclaw config set tools.alsoAllow '[\"ocuclaw\"]' --strict-json";
+
+export const TOOL_POLICY_EXPOSURES = Object.freeze([
+  "default",
+  "hidden-by-profile",
+  "hidden-by-allowlist",
+  "denied",
+  "admitted",
+  "unknown",
+]);
+
+export function toolPolicyEntryTargetsOcuClaw(entry) {
+  if (typeof entry !== "string") return false;
+  const normalized = entry.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  if (normalized === "*" || normalized === "**") return true;
+  if (normalized === OCUCLAW_PLUGIN_ID) return true;
+  const wildcard = normalized.endsWith("*")
+    ? normalized.slice(0, -1)
+    : null;
+  if (wildcard !== null) {
+
+    return wildcard === OCUCLAW_PLUGIN_ID || wildcard === `${OCUCLAW_PLUGIN_ID}_`;
+  }
+  return normalized.startsWith(`${OCUCLAW_PLUGIN_ID}_`);
+}
+
+function toolPolicyListVerdict(value) {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  return value.some(toolPolicyEntryTargetsOcuClaw);
+}
+
+export function classifyToolPolicyExposure(tools) {
+  if (tools === undefined || tools === null) {
+    return {
+      profile: null,
+      allowAdmitsOcuclaw: null,
+      alsoAllowAdmitsOcuclaw: null,
+      denyBlocksOcuclaw: null,
+      exposure: "default",
+    };
+  }
+  if (typeof tools !== "object" || Array.isArray(tools)) {
+    return {
+      profile: null,
+      allowAdmitsOcuclaw: null,
+      alsoAllowAdmitsOcuclaw: null,
+      denyBlocksOcuclaw: null,
+      exposure: "unknown",
+    };
+  }
+  const profile =
+    typeof tools.profile === "string" && tools.profile.trim().length > 0
+      ? tools.profile
+      : null;
+  for (const key of ["allow", "alsoAllow", "deny"]) {
+    const value = tools[key];
+    if (value === undefined || value === null) continue;
+
+    if (!Array.isArray(value)) {
+      return {
+        profile,
+        allowAdmitsOcuclaw: null,
+        alsoAllowAdmitsOcuclaw: null,
+        denyBlocksOcuclaw: null,
+        exposure: "unknown",
+      };
+    }
+  }
+  const allowAdmitsOcuclaw = toolPolicyListVerdict(tools.allow);
+  const alsoAllowAdmitsOcuclaw = toolPolicyListVerdict(tools.alsoAllow);
+  const denyBlocksOcuclaw = toolPolicyListVerdict(tools.deny);
+  const exposure =
+    denyBlocksOcuclaw === true
+      ? "denied"
+      : allowAdmitsOcuclaw === false
+        ? "hidden-by-allowlist"
+        : allowAdmitsOcuclaw === true || alsoAllowAdmitsOcuclaw === true
+          ? "admitted"
+          : profile === null || profile.trim().toLowerCase() === "full"
+            ? "default"
+            : "hidden-by-profile";
+  return {
+    profile,
+    allowAdmitsOcuclaw,
+    alsoAllowAdmitsOcuclaw,
+    denyBlocksOcuclaw,
+    exposure,
   };
 }
 
@@ -830,6 +924,8 @@ function createSetupStateReader(options) {
         evidence: invokedAsTool
           ? "successful-tool-invocation"
           : "no-effective-policy-context",
+
+        ...classifyToolPolicyExposure(api && api.config ? api.config.tools : undefined),
       },
       secrets: {
         relayToken: liveRelayTokenSecretState(api) ?? secretState(config.relayToken),
@@ -903,7 +999,11 @@ export function createSetupController(options) {
       let firstUse;
       try { firstUse = createFirstUseStore(resolveSetupStateDir(options.api)).read(); }
       catch (_) { firstUse = { status: "unavailable", reason: "setup-state-unreadable-or-foreign" }; }
-      const local = setupJourney(reportedState, installation, null, firstUse);
+
+      let runErrored = null;
+      try { runErrored = options.service?.getRelay?.()?.setupFirstUse?.("run_errored", { installationId: installation.id }) ?? null; }
+      catch (_) { runErrored = null; }
+      const local = setupJourney(reportedState, installation, null, firstUse, null, runErrored);
       if (options.runtimeStatus === "unknown" && typeof options.readLiveJourney === "function") {
         return Promise.resolve(options.readLiveJourney(local)).then((owner) => {
           const verified = owner !== local && owner?.installation?.id === installation.id;
@@ -913,6 +1013,8 @@ export function createSetupController(options) {
           };
           if (operation === "journey") return withAssistantSkill(options, { ...(verified ? owner : local),
             toolPolicy: state.toolPolicy,
+
+            warnings: toolPolicyWarnings(state.toolPolicy),
             capabilities: { ...(verified ? owner.capabilities : capabilities), ...effectiveCapabilities } }, context);
           const effectiveState = { ...reportedState, capabilities: { ...capabilities, ...effectiveCapabilities } };
           return operation === "overview" ? effectiveState : completeSetupOperation(effectiveState, operation);
@@ -932,7 +1034,7 @@ export function createSetupController(options) {
           Promise.resolve(options.readPrivateRoute(state.relay.port, routeContext)),
           readDaemon,
         ]).then(([route, tailnetDaemon]) =>
-          withAssistantSkill(options, setupJourney(reportedState, installation, route, firstUse, tailnetDaemon), context));
+          withAssistantSkill(options, setupJourney(reportedState, installation, route, firstUse, tailnetDaemon, runErrored), context));
       }
       return withAssistantSkill(options, local, context);
     }

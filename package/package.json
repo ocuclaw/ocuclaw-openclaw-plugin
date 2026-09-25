@@ -1,6 +1,6 @@
 {
   "name": "ocuclaw",
-  "version": "2.0.9",
+  "version": "2.1.0",
   "requiresClientVersion": "2.0.2",
   "description": "OcuClaw for Even Realities G2 smart glasses.",
   "type": "module",
@@ -32,14 +32,14 @@
       "clawhubSpec": "clawhub:ocuclaw",
       "npmSpec": "ocuclaw",
       "defaultChoice": "clawhub",
-      "minHostVersion": ">=2026.6.9"
+      "minHostVersion": ">=2026.7.1-2"
     },
     "compat": {
-      "pluginApi": ">=2026.6.9 <2027.0.0"
+      "pluginApi": ">=2026.7.1-2 <2027.0.0"
     },
     "build": {
-      "openclawVersion": "2026.6.9",
-      "pluginSdkVersion": "2026.6.9",
+      "openclawVersion": "2026.7.1-2",
+      "pluginSdkVersion": "2026.7.1-2",
       "bundledDist": true
     }
   },

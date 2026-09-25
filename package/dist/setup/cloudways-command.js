@@ -7,6 +7,7 @@ import {
   install,
   resolveLayout,
   rollback,
+  STALE_ENROLLMENT_MESSAGE,
   STATE_RUNNING,
   status,
 } from "./cloudways.js";
@@ -50,6 +51,7 @@ export function renderInstall(report     ) {
 
 export function renderEnroll(report     ) {
   const lines = [`Cloudways enroll — ${report.state}`];
+  if (report.staleMarkerCleared === true) lines.push(`  ${STALE_ENROLLMENT_MESSAGE}`);
   if (report.authUrl) {
     lines.push("  Open this link on any device signed in to the tailnet, then approve the node:");
     lines.push(`    ${report.authUrl}`);

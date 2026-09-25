@@ -1,6 +1,6 @@
 # OcuClaw troubleshooting — named cases
 
-**Guide version:** 2026-09-19 (1.0.56)
+**Guide version:** 2026-09-25 (1.0.58)
 
 **Reference only** — execute nothing here unless a step routed you here by its
 case name. After resolving a case, return to the skill's SKILL.md and re-run
@@ -47,7 +47,7 @@ the saved token or enabling a flag alone is not end-to-end success.
 
 ---
 
-**CASE-D** — ⚠️ Migration note: if the config has `evenAiEnabled: true` without `evenAiToken`, `openclaw plugins update ocuclaw` fails validation. Even AI requests were already silently failing in that state. Fix: the user sets `evenAiToken` (the password in the Even Realities app's Agent Configure section) in their terminal — or you run `openclaw config set plugins.entries.ocuclaw.config.evenAiEnabled false --strict-json`. Then re-run the update.
+**CASE-D** — ⚠️ Migration note: if the config has `evenAiEnabled: true` without `evenAiToken`, the plugin update (`openclaw plugins update ocuclaw@latest`, or `update ocuclaw` on a ClawHub record) fails validation. Even AI requests were already silently failing in that state. Fix: the user sets `evenAiToken` (the password in the Even Realities app's Agent Configure section) in their terminal — or you run `openclaw config set plugins.entries.ocuclaw.config.evenAiEnabled false --strict-json`. Then re-run the update.
 
 ---
 
@@ -86,6 +86,37 @@ their existing credential. Verify connection before declaring recovery.
 
 ---
 
+**TS-DNS-SELF** — the route applies but `journey` reports `unreachable` with
+`privateRoute.evidence: front_door_unresolved`: this node cannot resolve its
+own MagicDNS name. Common on containers and userspace-networking nodes, where
+Tailscale never installs a resolver. Fix any one of these on the node that runs
+the gateway, then re-read `journey`:
+- `tailscale set --accept-dns=true` (the normal fix);
+- a `nameserver 100.100.100.100` line in that node's resolver configuration;
+- an `/etc/hosts` line mapping the node's tailnet IP to
+  `<node>.<tailnet>.ts.net`, exactly as Step 7 printed the name.
+A timeout or a refused connection is a different failure: that is certificates
+or the relay, not DNS — take the Step 7 certificate wait, then the Step 5 relay
+bind check.
+
+---
+
+**TS-CLI-ABSENT** — `journey` reports the private route `unknown` with evidence
+`serve_cli_absent` on a host that is not Cloudways. The controller reads
+`tailscale serve status` from the gateway process's PATH, and that command is
+not there. Two causes, one rule: Tailscale must run where the gateway runs.
+- **macOS App Store build** — the CLI is not on `PATH`. Expose it (symlink or
+  call `/Applications/Tailscale.app/Contents/MacOS/Tailscale`), or install the
+  standalone package (Step 6), then re-read `journey`.
+- **Tailscale in a different container or VM than the gateway** — move one of
+  them: run `tailscaled` inside the gateway's own namespace (userspace
+  networking, `--tun=userspace-networking`, is fine), or move the gateway into
+  the namespace that already has Tailscale. Redo Steps 6 and 7 from there. A
+  bridge + outside proxy cannot pass Step 7 or Step 9 and is not a supported
+  lane; never widen `wsBind` to work around it.
+
+---
+
 **PHONE-NO-REACH** — check in order: is the phone's Tailscale app actually connected (VPN toggle on)? Same account as this machine (the phone shows up in `tailscale status`)? Device pending approval at `login.tailscale.com/admin/machines`?
 
 ---
@@ -95,14 +126,14 @@ their existing credential. Verify connection before declaring recovery.
 The relay logs every connection attempt; collect evidence before guessing. Connection evidence lives in the relay log and the typed verify's `runtime.appClientConnected` — never in session listings, which are scope-restricted (`visibility=tree`) and blind to the phone's session from this lane; a count of 0 there is not disproof. Have the user tap Connect, then read the tail of the gateway log (`openclaw logs`, or the newest `/tmp/openclaw/openclaw-*.log` on Linux/macOS):
 - `[ocuclaw] relay rejected connection: invalid token …` **anywhere in the last minute** → token mismatch → have the user re-enter the credential in the app. If they cannot — they have forgotten it, or never knew it — that is the all-device reset described in the fresh-install Step 3 block "**Credential present but the user cannot enter it on the phone**": the supported route is a bundle with terminal pairing (`openclaw ocuclaw pair` delivers the credential privately); replacing the credential disconnects every phone paired to this machine and must be set up again, so name it, get an explicit OK, and go through the explicit reset procedure only — never a hand-typed value. (Repeat rejects from the same address are collapsed into one line per 60s — a fresh tap often prints nothing new while an earlier reject line is still the live evidence.)
 - `[ocuclaw] relay client connected …` at that moment → the relay WAS reached — the problem is past connectivity (version banner in the app, or app-side).
-- No connect **and no reject line in the last minute** → the attempt never reached the relay → address/route problem: work the address checklist below, re-verify the Serve routes (Step 7), and on a containerized host → DOCKER-RELAY-UNREACHABLE.
+- No connect **and no reject line in the last minute** → the attempt never reached the relay → address/route problem: work the address checklist below, re-verify the Serve routes (Step 7), and on a containerized host → DOCKER-RELAY-UNREACHABLE (which moves Tailscale into the gateway's namespace; it never widens the relay).
 
 Have the user **read back exactly** what's in the app's Address field (the address must be `wss://…:8444` — see Step 9 ⚠️ for the full address rules):
 - starts with `wss://`
 - ends in `:8444`
 - machine name `<node>.<tailnet>.ts.net` spelled exactly as Step 7 printed it
 
-Then the token (a mismatch logs the reject line above): have the user re-enter it; if they cannot, take the all-device reset named in the bullet above — the fresh-install Step 3 block "**Credential present but the user cannot enter it on the phone**" — with its explicit OK first. Relay actually up? `openclaw plugins inspect ocuclaw` shows `Status: loaded`. Still failing on a containerized host → DOCKER-RELAY-UNREACHABLE.
+Then the token (a mismatch logs the reject line above): have the user re-enter it; if they cannot, take the all-device reset named in the bullet above — the fresh-install Step 3 block "**Credential present but the user cannot enter it on the phone**" — with its explicit OK first. Relay actually up? `openclaw plugins inspect ocuclaw` shows `Status: loaded`. Still failing on a containerized host → DOCKER-RELAY-UNREACHABLE (which moves Tailscale into the gateway's namespace; it never widens the relay).
 
 ---
 
@@ -138,7 +169,7 @@ allow reload, and verify. Only if the live runtime is proven stale request one
 
 ---
 
-**HOST-OLD** — OpenClaw below 2026.6.9 is under the plugin's minimum host version (installs and updates refuse), and builds below 2026.4.25 additionally have a known plugin-install bug. Upgrade with `openclaw update` (detects the install type, can run `openclaw doctor`, and restarts the gateway itself). If that subcommand isn't available on a very old build, fall back to `npm install -g openclaw@latest` then `openclaw gateway restart`. Give the restart warning first either way, then re-run the State Assessment.
+**HOST-OLD** — OpenClaw below 2026.7.1 (floor 2026.7.1-2, the release Cloudways ships) is under the plugin's minimum host version (installs and updates refuse), and builds below 2026.4.25 additionally have a known plugin-install bug. Upgrade with `openclaw update` (detects the install type, can run `openclaw doctor`, and restarts the gateway itself). If that subcommand isn't available on a very old build, fall back to `npm install -g openclaw@latest` then `openclaw gateway restart`. Give the restart warning first either way, then re-run the State Assessment.
 
 ---
 
@@ -187,71 +218,57 @@ If OpenClaw intentionally runs as root, repair the managed plugin root to root o
 ---
 
 **DOCKER-RELAY-UNREACHABLE** — enter this lane only after the user actually taps
-Connect in Step 9 and the attempt never reaches the relay. Before this lane may
-widen the listener, its host inspection must confirm both halves of the
-topology: OpenClaw uses a bridge or named Docker network, and Tailscale Serve /
-the ingress proxy runs outside that network namespace. The runtime's container
-notice does not confirm either half; container detection alone cannot
-distinguish bridged Docker from host networking, a same-network-namespace
-proxy, or a Sprite/microVM. When the proxy shares the relay's same network
-namespace, keep loopback and return to `APP-CONNECT-FAIL` diagnostics instead.
+Connect in Step 9 and the attempt never reaches the relay.
 
-1. Preserve the safe bind while establishing the path. In the OpenClaw terminal,
-   read `openclaw config get plugins.entries.ocuclaw.config.wsBind`. `Config path
-   not found` or a configured loopback address is safe. Until every crossing
-   condition below is proven, restore any non-loopback value (including a stale
-   `0.0.0.0`) with:
+**This lane never widens the relay listener.** The bridge + outside-proxy setup
+is retired: Tailscale must run where the gateway runs, because the controller
+reads `tailscale serve status` from the gateway process's PATH. A proxy outside
+the gateway's network namespace cannot pass Step 7 or Step 9 however `wsBind`
+is set, so the fix is to move one of them, never to open the relay. The
+runtime's container notice proves nothing on its own: container detection
+cannot distinguish bridged Docker from host networking, a same-namespace proxy,
+or a Sprite/microVM.
+
+1. Restore and keep the safe bind. In the OpenClaw terminal, read
+   `openclaw config get plugins.entries.ocuclaw.config.wsBind`. `Config path
+   not found` or a configured loopback address is safe. Restore any
+   non-loopback value (including a stale `0.0.0.0` left by the retired lane)
+   with:
    `openclaw config set plugins.entries.ocuclaw.config.wsBind "127.0.0.1"`.
 
-   Then, in the HOST terminal, establish the topology:
+2. Establish the topology in the HOST terminal:
    - `docker inspect -f '{{.HostConfig.NetworkMode}}' <container>` → `host` means
      the relay and host share a namespace: keep `127.0.0.1`, publish no port, and
      return to `APP-CONNECT-FAIL`.
-   - `bridge` or a named network is only the first half. Locate where Tailscale
-     Serve / the ingress proxy runs. If it runs in the relay's same network
-     namespace, keep loopback and return to `APP-CONNECT-FAIL`. Continue here
-     only when the proxy is outside that namespace and must cross the bridge.
-   - If the network mode or proxy location remains unknown, preserve loopback
-     and stop for the host operator; do not guess from the container notice.
+   - `bridge` or a named network → locate where Tailscale Serve / the ingress
+     proxy runs. If it runs in the relay's same network namespace, keep loopback
+     and return to `APP-CONNECT-FAIL`.
+   - Proxy outside that namespace → this is the retired crossing. Move
+     Tailscale: run `tailscaled` inside the container or VM that runs the
+     gateway (userspace networking, `--tun=userspace-networking`, is fine), or
+     move the gateway into the namespace that already has Tailscale. Then redo
+     Step 6 and Step 7 from inside that namespace, with the relay still on
+     loopback. Do not set `wsBind` to `0.0.0.0`.
+   - Network mode or proxy location unknown → preserve loopback and stop for the
+     host operator; do not guess from the container notice.
 
-2. Make the host publish safe before widening the listener. On the host, run
-   `docker ps --format '{{.Names}} {{.Ports}}'` and inspect the OpenClaw
-   container's `<port>` mapping (`<port>` = Step 5 `wsPort`):
-   - `127.0.0.1:<port>-><port>/tcp` → publish already safe; continue to step 3.
-   - `0.0.0.0:<port>->…` → ⚠️ **publicly exposed on the host's public IP**;
-     repair it below while the relay still listens only on loopback.
-   - no `<port>` mapping → add the host-loopback publish below while the relay
-     still listens only on loopback.
-
-   To add or repair the publish, run `docker compose ls` (host) first:
-   - **Compose-managed** (a project is listed): edit the file shown under CONFIG FILES — in the OpenClaw service's `ports:` list add or correct to `- "127.0.0.1:<port>:<port>"` (remove any stale mapping for an old relay port) — then `docker compose -f <that file> up -d`.
-   - **Not compose-managed** (empty list — standalone `docker run`): the container must be RECREATED with `-p 127.0.0.1:<port>:<port>` and otherwise identical settings. Read them first — `docker inspect <name>` shows image, volumes/mounts, env, and restart policy. Confirm the state lives on a mount/volume (not the container's own filesystem) BEFORE removing anything, write out the full stop → remove → re-run sequence (`docker stop`, container removal, then the complete `docker run …` line) for the user, and check with them at each step.
+3. Repair a leftover public publish. If `docker ps --format '{{.Names}} {{.Ports}}'`
+   shows `0.0.0.0:<port>->…` for the OpenClaw container (`<port>` = Step 5
+   `wsPort`), that is ⚠️ **publicly exposed on the host's public IP** — a
+   leftover of the retired lane. Repair it to `127.0.0.1:<port>:<port>`, or drop
+   the mapping entirely once Tailscale runs in the gateway's namespace. Run
+   `docker compose ls` (host) first:
+   - **Compose-managed** (a project is listed): edit the file shown under CONFIG FILES — in the OpenClaw service's `ports:` list correct it to `- "127.0.0.1:<port>:<port>"` (remove any stale mapping for an old relay port) — then `docker compose -f <that file> up -d`.
+   - **Not compose-managed** (empty list — standalone `docker run`): the container must be RECREATED with the corrected `-p 127.0.0.1:<port>:<port>` and otherwise identical settings. Read them first — `docker inspect <name>` shows image, volumes/mounts, env, and restart policy. Confirm the state lives on a mount/volume (not the container's own filesystem) BEFORE removing anything, write out the full stop → remove → re-run sequence (`docker stop`, container removal, then the complete `docker run …` line) for the user, and check with them at each step.
    Either path restarts OpenClaw — give the restart warning (rule 5) first. If you (the agent) live inside that container, the restart also cuts THIS chat: hand the user the complete remaining command list *and* the verify steps below before they apply anything, plus a one-line resume note they can paste into a fresh session.
 
-   VERIFY the safety condition before continuing: `docker ps` must now show
-   exactly `127.0.0.1:<port>-><port>/tcp`. Do not widen `wsBind` until this passes.
+4. VERIFY, from inside the gateway's own namespace:
+   - `tailscale serve status` runs there and shows the Step 7 route.
+   - `curl -s -i --max-time 5 http://127.0.0.1:<port>/ | head -3` returns `404`
+     (not `connection refused`).
+   - `docker ps` shows no `0.0.0.0` mapping for `<port>`.
 
-3. Only after step 2 passes, widen the container listener from the OpenClaw
-   terminal (non-secret):
-   `openclaw config set plugins.entries.ocuclaw.config.wsBind "0.0.0.0"`.
-   Allow config reload, then confirm the startup log shows
-   `ws://0.0.0.0:<port>`. If the live runtime remains stale, give rule 5's
-   warning and request one `openclaw gateway restart --safe` before verifying
-   again.
-
-4. VERIFY both sides:
-   - **In the container:** `curl -s -i --max-time 5 http://$(hostname -i):<port>/ | head -3` returns `404` (not `connection refused`).
-   - **On the host:** `docker ps` still shows only
-     `127.0.0.1:<port>-><port>/tcp`, and
-     `npx -y wscat -c ws://127.0.0.1:<port>` prints `Connected` then
-     `Disconnected (code: 4001, reason: "invalid_token")`. That close is the
-     pass signal: the relay answered and asked for auth. `error: socket hang up`
-     means a dead backend; recheck the publish target port and bind. No node/npx
-     on the host → fallback:
-     `curl -s -i --max-time 5 http://127.0.0.1:<port>/ | head -3`; `404` is the
-     weaker pass, `connection refused` is failure.
-
-Then resume where the flow left off (usually Step 7 or Step 9).
+Then resume where the flow left off (usually Step 6 or Step 7).
 
 ---
 
@@ -285,7 +302,7 @@ If the bug icon or Send flow isn't available (very old app build, or the app was
 
 **Lane 2 — Discord paste block.** Assemble this paste-ready breakdown, show it to the user, confirm together it contains no secrets, and point them at the OcuClaw Discord:
 ```
-OcuClaw setup help — guide 2026-09-19 (1.0.56)
+OcuClaw setup help — guide 2026-09-25 (1.0.58)
 Platform/OS:
 openclaw --version:
 openclaw status --all (read-only, pasteable — confirm no secrets):
@@ -304,7 +321,7 @@ Debug upload ticket (if sent):
 
 **BETA-REPORT** — when a beta build misbehaves, assemble this paste-ready report, show it to the user, confirm together it contains no secrets, and have them post it in the beta-testing Discord (`https://discord.ocuclaw.com`). If the app is installed, also offer the ESCALATE Lane 1 in-app debug upload first — the ticket attaches real diagnostics to the report:
 ```
-OcuClaw beta report — guide 2026-09-19 (1.0.56)
+OcuClaw beta report — guide 2026-09-25 (1.0.58)
 Installed beta version (from plugins inspect):
 Platform/OS:
 openclaw --version:

@@ -10,6 +10,9 @@ import { AGENT_OPERATIONS, AGENT_ERRORS, agentsRequest, agentsResult } from "./h
 import { TOOLS_OPERATIONS, toolsRequest, toolsManagementResult } from "./hermes-tools-management.js";
 import { CONNECTION_OPERATIONS, CONNECTION_READS, connectionsRequest, connectionsManagementResult } from "./hermes-connections-management.js";
 import { isLearningOperation, learningRequest, learningManagementResult } from "./hermes-learning-management.js";
+import { BOARD_OPERATIONS, BOARD_ERRORS, BOARD_UNCERTAIN_WRITES, boardErrorMessage, boardRequest, boardResult } from "./hermes-board-management.js";
+
+const BOARD_UNCERTAIN_CODES = new Set(["management_unavailable", "response_identity_mismatch", "invalid_board_result"]);
 
 export function managementIdentity(value) {
   const text = (v, max) => typeof v === "string" && v.length <= max && !/[\u0000-\u001f]/.test(v) ? v : "";
@@ -28,6 +31,7 @@ export function sanitizeManagementRequest(value) {
 export function validManagementRequest(value) {
   if (CONNECTION_OPERATIONS.has(value.operation)) return Boolean(value.requestId && value.profileId && value.scope === "profile" && value.connections !== null && connectionsRequest(value.operation, value.connections));
   if (TOOLS_OPERATIONS.has(value.operation)) return Boolean(value.requestId && value.profileId && value.scope === "profile" && value.tools !== null && toolsRequest(value.operation, value.tools));
+  if (BOARD_OPERATIONS.has(value.operation)) return Boolean(value.requestId && value.profileId && value.scope === "profile" && value.board !== null);
   if (["restart.preview", "restart.request", "restart.status"].includes(value.operation)) {
     const keys = value.operation === "restart.preview" ? [] : value.operation === "restart.status"
       ? ["operationId", "gatewayId"] : ["operationId", "gatewayId", "bootId", "scopeRevision"];
@@ -63,6 +67,10 @@ export function managementRequest(value) {
     const allowed = ["type", "requestId", "operation", "scope", "profileId", "tools"];
     identity.tools = Object.keys(value || {}).every(key => allowed.includes(key)) ? toolsRequest(identity.operation, value.tools) : null;
   }
+  if (BOARD_OPERATIONS.has(identity.operation)) {
+    const allowed = ["type", "requestId", "operation", "scope", "profileId", "board"];
+    identity.board = Object.keys(value || {}).every(key => allowed.includes(key)) ? boardRequest(identity.operation, value?.board) : null;
+  }
   if (identity.operation.startsWith("restart.")) identity.payload = value?.payload ?? {};
   if (MEMORY_OPERATIONS.includes(identity.operation)) identity.memory = memoryRequest(identity.operation, value?.memory);
   if (HERMES_JOB_OPERATIONS.has(identity.operation)) identity.jobs = jobsRequest(identity.operation, value?.jobs);
@@ -94,6 +102,8 @@ export function managementFailure(identity, code = "management_unavailable", uns
   if (!unsupported && HERMES_JOB_OPERATIONS.has(identity.operation) && !HERMES_JOB_READS.has(identity.operation)) code = "outcome_unknown";
   if (!unsupported && HERMES_AUTOMATION_OPERATIONS.has(identity.operation) && !HERMES_AUTOMATION_READS.has(identity.operation)) code = "outcome_unknown";
   if (!unsupported && HEALTH_OPERATIONS.has(identity.operation) && !HEALTH_READS.has(identity.operation)) code = "outcome_unknown";
+
+  if (!unsupported && BOARD_UNCERTAIN_WRITES.has(identity.operation) && BOARD_UNCERTAIN_CODES.has(code)) code = "outcome_unknown";
   return { ...managementIdentity(identity), status: unsupported ? "unsupported" : "error",
     capabilities: [], errorCode: code,
     errorMessage: unsupported ? "This Hermes host does not support this operation. Update Hermes and OcuClaw to a compatible version." : code === "outcome_unknown" ? "Outcome unknown. Check the operation receipt; do not repeat this action." : "Could not read Hermes management state. Refresh when connected." };
@@ -145,6 +155,10 @@ export function managementResult(identity, raw) {
         failed.errorCode = raw.errorCode;
         failed.errorMessage = messages[raw.errorCode];
       }
+    }
+    if (BOARD_OPERATIONS.has(identity.operation) && Object.hasOwn(BOARD_ERRORS, raw.errorCode)) {
+      failed.errorCode = raw.errorCode;
+      failed.errorMessage = boardErrorMessage(identity.operation, raw.errorCode);
     }
     if (SAVED_OPERATIONS.includes(identity.operation) && SAVED_ERRORS[raw.errorCode]) {
       failed.errorCode = raw.errorCode;
@@ -226,5 +240,9 @@ export function managementResult(identity, raw) {
     catch { return managementFailure(identity, "invalid_saved_response"); }
   }
   if (AGENT_OPERATIONS.includes(identity.operation)) result.agents = agentsResult(raw.agents);
+  if (BOARD_OPERATIONS.has(identity.operation)) {
+    try { result.board = boardResult(identity.operation, raw.board, identity.board); }
+    catch { return managementFailure(identity, "invalid_board_result"); }
+  }
   return result;
 }

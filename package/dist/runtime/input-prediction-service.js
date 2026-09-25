@@ -1,4 +1,6 @@
 import {
+  INPUT_PREDICTION_CANDIDATE_SCHEMAS,
+  INPUT_PREDICTION_UNSUPPORTED_SCHEMA_REASON,
   INPUT_PREDICTION_LIMITS,
   INPUT_PREDICTION_METHODS,
   INPUT_PREDICTION_PER_WORD_RETIRED_REASON,
@@ -7,6 +9,9 @@ import {
   INPUT_PREDICTION_PURPOSE,
   INPUT_PREDICTION_TEST_EXAMPLE,
   findForbiddenKey,
+  isCandidateUnderSchema,
+  modelAllowResult,
+  normalizeCandidateSchema,
   normalizeJevContext,
   normalizePredictionRequest,
   normalizeUsage,
@@ -17,6 +22,7 @@ import {
   SILENT_INPUT_OPEN_LIMITS,
   SILENT_INPUT_OPEN_PROMPT_VERSION,
   classifyOpenReplyError,
+  OPEN_REPLY_MODEL_UNREACHABLE_REASON,
   normalizeOpenRequest,
   openReplyResult,
   openReplyTelemetry,
@@ -34,6 +40,22 @@ export const INPUT_PREDICTION_SERVICE_DEFAULTS = Object.freeze({
 export const INPUT_PREDICTION_DEBUG_CATEGORY = "silentInput.prediction";
 
 export const INPUT_PREDICTION_TEST_ROUND_TRIP_MARGIN_MS = 500;
+
+export const INPUT_PREDICTION_TEST_JOBS = Object.freeze(["ranking", "replies"]);
+
+export const INPUT_PREDICTION_TEST_REASON_CODES = Object.freeze([
+  "ok",
+  "no_key",
+  "key_rejected",
+  "model_unusable",
+
+  "model_unreachable",
+  "busy",
+  "policy_denied",
+  "cancelled",
+  "no_session",
+  "error",
+]);
 
 const REQUEST_ID_RE = /^[A-Za-z0-9._:@/-]{1,128}$/;
 
@@ -96,6 +118,8 @@ export function createInputPredictionService(opts) {
     provider: (jevAnswer && cleanString(jevAnswer.provider)) || "typesafe",
     model: (jevAnswer && cleanString(jevAnswer.model)) || "",
   };
+
+  const typesafeKeyPresent = jevAnswer !== null || o.typesafeKeyPresent === true;
   const limits = {
     maxConcurrent: nonNegativeInt(o.maxConcurrent, INPUT_PREDICTION_SERVICE_DEFAULTS.maxConcurrent) || 1,
     minIntervalMs: nonNegativeInt(o.minIntervalMs, INPUT_PREDICTION_SERVICE_DEFAULTS.minIntervalMs),
@@ -116,6 +140,8 @@ export function createInputPredictionService(opts) {
   const openActiveByClient = new Map();
 
   const openReplyByClient = new Map();
+
+  const openReplyRouteByClient = new Map();
   let activeCount = 0;
   let policyRevision = "";
   const stats = {
@@ -200,6 +226,28 @@ export function createInputPredictionService(opts) {
 
   const OPEN_REPLY_UNSUPPORTED_REASON = "this host does not write whole replies";
 
+  const NO_TYPESAFE_KEY_REASON = "this host has no TypeSafe key";
+
+  function testReasonCode(status, reason) {
+    if (status === "ready") return "ok";
+    if (status === "invalid-output") return "model_unusable";
+    if (status === "busy") return "busy";
+    if (status === "policy-denied") return "policy_denied";
+    if (status === "cancelled") return "cancelled";
+    const text = typeof reason === "string" ? reason : "";
+
+    if ((status === "unavailable" || status === "error") && text === OPEN_REPLY_MODEL_UNREACHABLE_REASON) {
+      return "model_unreachable";
+    }
+    if (status === "unavailable") {
+      if (text === NO_SESSION_REASON || text === SESSION_MISMATCH_REASON) return "no_session";
+      if (text === NO_TYPESAFE_KEY_REASON) return "no_key";
+      if (text === "jev:http_401" || text === "jev:http_403") return "key_rejected";
+    }
+
+    return "error";
+  }
+
   function phoneSessionMismatch(p, identity) {
     const phoneSession = cleanString(p.sessionKey);
     return phoneSession !== "" && phoneSession !== identity.sessionKey;
@@ -210,6 +258,8 @@ export function createInputPredictionService(opts) {
     const jev = jevAnswer ? normalizeJevContext(payload) : null;
 
     const editorEpoch = nonNegativeInt(payload && payload.editorEpoch, 0);
+
+    const schema = normalizeCandidateSchema(payload);
     return [
       clientId,
       identity.connectionId,
@@ -227,7 +277,31 @@ export function createInputPredictionService(opts) {
       String(editorEpoch),
       openWordsMarker(clientId, editorEpoch),
     ]
-      .concat(jev ? ["jev", jev.replyingTo] : []).join("\u001f");
+      .concat(jev ? ["jev", jev.replyingTo] : [])
+      .concat(schema.ok && schema.named ? ["schema", schema.schema] : []).join("\u001f");
+  }
+
+  function schemaEcho(payload) {
+    const schema = normalizeCandidateSchema(payload);
+    return schema.ok && schema.named ? { candidateSchema: schema.schema } : {};
+  }
+
+  function sanitizeUnderSchema(result, schema) {
+    const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+    result.candidates = candidates.filter((word) => isCandidateUnderSchema(word, schema));
+    if (Array.isArray(result.rankedWords)) {
+      const scores = Array.isArray(result.rankedScores) ? result.rankedScores : [];
+      const words = [];
+      const kept = [];
+      for (let i = 0; i < result.rankedWords.length; i += 1) {
+        if (!isCandidateUnderSchema(result.rankedWords[i], schema)) continue;
+        words.push(result.rankedWords[i]);
+        kept.push(scores[i]);
+      }
+      result.rankedWords = words;
+      if (Array.isArray(result.rankedScores)) result.rankedScores = kept;
+    }
+    return result;
   }
 
   function noteIdentity(clientId, identity) {
@@ -282,6 +356,7 @@ export function createInputPredictionService(opts) {
       draftRevision: nonNegativeInt(payload.draftRevision, 0),
       settingsRevision: nonNegativeInt(payload.settingsRevision, 0),
       dictionaryRevision: nonNegativeInt(payload.dictionaryRevision, 0),
+      ...schemaEcho(payload),
     };
   }
 
@@ -344,6 +419,9 @@ export function createInputPredictionService(opts) {
     const supported = ranking || writesReplies;
 
     openReplyByClient.set(clientId, writesReplies);
+    const openRoute = normalizeRoute(c.openReplyRoute)
+      || (c.connectionDefault && typeof c.connectionDefault === "object" ? normalizeRoute(c.connectionDefault) : null);
+    if (openRoute) openReplyRouteByClient.set(clientId, openRoute);
     return {
       protocolVersion: INPUT_PREDICTION_PROTOCOL_VERSION,
 
@@ -364,11 +442,17 @@ export function createInputPredictionService(opts) {
 
       jevRanker: ranking,
 
+      typesafeKeyPresent,
+
+      candidateSchemas: INPUT_PREDICTION_CANDIDATE_SCHEMAS.slice(),
+
       openReply: c.openReply === true,
 
       openReplyRoute: normalizeRoute(c.openReplyRoute),
 
       models: ranking ? [] : (Array.isArray(c.models) ? c.models : []),
+
+      replyModels: Array.isArray(c.models) ? c.models : [],
       connectionDefault: ranking
         ? { provider: jevRoute.provider, model: jevRoute.model }
         : (c.connectionDefault && typeof c.connectionDefault === "object" ? c.connectionDefault : null),
@@ -377,7 +461,7 @@ export function createInputPredictionService(opts) {
     };
   }
 
-  function makeJob(clientId, payload, req, identity, resolve, kind = "request") {
+  function makeJob(clientId, payload, req, identity, resolve, kind = "request", routeOverride = "") {
     return {
       clientId,
       payload,
@@ -387,7 +471,7 @@ export function createInputPredictionService(opts) {
 
       kind,
 
-      route: jevAnswer ? "jev" : "bridge",
+      route: routeOverride === "jev" || routeOverride === "bridge" ? routeOverride : (jevAnswer ? "jev" : "bridge"),
 
       abort: null,
       laneKey: "",
@@ -510,7 +594,12 @@ export function createInputPredictionService(opts) {
 
           job.kind === "test"
             ? {}
-            : { ...normalizeJevContext(job.payload), openWords: openWordsFor(clientId, job.payload && job.payload.editorEpoch) },
+            : {
+              ...normalizeJevContext(job.payload),
+              openWords: openWordsFor(clientId, job.payload && job.payload.editorEpoch),
+
+              candidateSchema: normalizeCandidateSchema(job.payload).schema,
+            },
           { signal: job.abort.signal, perGroup: job.kind === "test" ? 1 : 0 },
         )
         : await bridge.request(job.kind === "test" ? INPUT_PREDICTION_METHODS.test : INPUT_PREDICTION_METHODS.request, {
@@ -523,10 +612,15 @@ export function createInputPredictionService(opts) {
       const r = raw && typeof raw === "object" ? raw : {};
 
       const result = predictionResult(r.status, { ...r, ...echo, usage: normalizeUsage(r.usage) });
+
+      if (job.kind !== "test") sanitizeUnderSchema(result, normalizeCandidateSchema(job.payload).schema);
       if (job.cancelled && result.status === "ready") {
 
         result.status = "cancelled";
         result.candidates = [];
+
+        delete result.rankedWords;
+        delete result.rankedScores;
         result.reason = "cancelled before result";
       }
       if (result.status === "ready" && key) {
@@ -579,6 +673,7 @@ export function createInputPredictionService(opts) {
       draftRevision: nonNegativeInt(p.draftRevision, 0),
       settingsRevision: nonNegativeInt(p.settingsRevision, 0),
       dictionaryRevision: nonNegativeInt(p.dictionaryRevision, 0),
+      ...schemaEcho(p),
     };
     if (!requestIdIn) {
       return Promise.resolve(predictionResult("error", { ...baseEcho, reason: "invalid-request: requestId required" }));
@@ -594,6 +689,12 @@ export function createInputPredictionService(opts) {
       const rejected = predictionResult(normalized.status, { ...baseEcho, reason: normalized.reason });
       telemetry("prediction_rejected", rejected, { clientId });
       return Promise.resolve(rejected);
+    }
+
+    if (!normalizeCandidateSchema(p).ok) {
+      const refused = predictionResult("error", { ...baseEcho, reason: INPUT_PREDICTION_UNSUPPORTED_SCHEMA_REASON });
+      telemetry("prediction_rejected", refused, { clientId, candidateSchemaKnown: false });
+      return Promise.resolve(refused);
     }
     if (identity.noSession) {
       const unavailable = predictionResult("unavailable", { ...baseEcho, reason: NO_SESSION_REASON });
@@ -626,12 +727,12 @@ export function createInputPredictionService(opts) {
     return enqueue(clientId, p, req, identity, laneKey(clientId, editorEpoch), baseEcho, "request");
   }
 
-  function enqueue(clientId, p, req, identity, lk, baseEcho, kind) {
+  function enqueue(clientId, p, req, identity, lk, baseEcho, kind, routeOverride = "") {
     const clientState = clients.get(clientId) || { lastCallAtMs: 0 };
     const sinceLast = now() - clientState.lastCallAtMs;
     const lane = lanes.get(lk) || { active: null, pending: null };
     return new Promise((resolve) => {
-      const job = makeJob(clientId, p, req, identity, resolve, kind);
+      const job = makeJob(clientId, p, req, identity, resolve, kind, routeOverride);
       job.laneKey = lk;
       if (lane.active && lane.active.scheduledTimer) {
 
@@ -936,17 +1037,32 @@ export function createInputPredictionService(opts) {
     const modelChoice = cleanString(p.modelChoice) || "default";
 
     const clientRequestId = typeof p.requestId === "string" && REQUEST_ID_RE.test(p.requestId) ? p.requestId : "";
-    const testShape = (r) => ({
-      requestId: clientRequestId,
-      ...identityFields(identity),
-      status: typeof r.status === "string" ? r.status : "error",
-      provider: cleanString(r.provider),
-      model: cleanString(r.model),
-      elapsedMs: Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0,
-      candidates: Array.isArray(r.candidates) ? r.candidates : [],
-      usage: normalizeUsage(r.usage),
-      reason: cleanString(r.reason) || undefined,
-    });
+
+    const asked = cleanString(p.job);
+    const job = INPUT_PREDICTION_TEST_JOBS.includes(asked) ? asked : (jevAnswer ? "ranking" : "replies");
+
+    const jobRoute = job === "ranking" ? "jev" : "bridge";
+
+    const knownRoute = job === "ranking" ? jevRoute : (openReplyRouteByClient.get(clientId) || null);
+    const testShape = (r) => {
+      const status = typeof r.status === "string" ? r.status : "error";
+      const reason = cleanString(r.reason) || undefined;
+      return {
+        requestId: clientRequestId,
+        ...identityFields(identity),
+
+        status,
+        job,
+
+        reasonCode: testReasonCode(status, reason),
+        provider: cleanString(r.provider) || (knownRoute ? knownRoute.provider : ""),
+        model: cleanString(r.model) || (knownRoute ? knownRoute.model : ""),
+        elapsedMs: Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0,
+        candidates: Array.isArray(r.candidates) ? r.candidates : [],
+        usage: normalizeUsage(r.usage),
+        reason,
+      };
+    };
     if (!REQUEST_ID_RE.test(modelChoice)) {
       return testShape({ status: "policy-denied", reason: "modelChoice is not a known choice id" });
     }
@@ -956,10 +1072,14 @@ export function createInputPredictionService(opts) {
     if (phoneSessionMismatch(p, identity)) {
       return testShape({ status: "unavailable", reason: SESSION_MISMATCH_REASON });
     }
+
+    if (jobRoute === "jev" && !jevAnswer) {
+      return testShape({ status: "unavailable", reason: NO_TYPESAFE_KEY_REASON });
+    }
     testSeq += 1;
     const requestId = `test-${testSeq}`;
 
-    const testTimeoutMs = jevAnswer
+    const testTimeoutMs = jobRoute === "jev"
       ? limits.timeoutMs
       : Math.max(limits.timeoutMs, openTimeoutMs + INPUT_PREDICTION_TEST_ROUND_TRIP_MARGIN_MS);
     const normalized = normalizePredictionRequest({
@@ -973,12 +1093,40 @@ export function createInputPredictionService(opts) {
     const testRequest = { ...normalized.value, timeoutMs: testTimeoutMs };
     const baseEcho = { requestId, editorEpoch: 0, draftRevision: 0, settingsRevision: 0, dictionaryRevision: 0 };
     try {
-      const raw = await enqueue(clientId, { requestId }, testRequest, identity, `${clientId}|test`, baseEcho, "test");
+      const raw = await enqueue(clientId, { requestId }, testRequest, identity, `${clientId}|test`, baseEcho, "test", jobRoute);
       const result = testShape(raw && typeof raw === "object" ? raw : {});
       telemetry("prediction_test", result, { clientId });
       return result;
     } catch (err) {
       return testShape({ status: "error", reason: err && err.message ? String(err.message) : String(err) });
+    }
+  }
+
+  async function modelAllow(clientId, payload) {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const requestId = typeof p.requestId === "string" && REQUEST_ID_RE.test(p.requestId) ? p.requestId : "";
+    const modelChoice = cleanString(p.modelChoice).trim();
+    if (findForbiddenKey(p, { phone: true }) || !modelChoice || modelChoice === "default" || !REQUEST_ID_RE.test(modelChoice)) {
+      return modelAllowResult(requestId, "policy-denied");
+    }
+    const identity = identityFor(clientId);
+    if (identity.noSession || phoneSessionMismatch(p, identity)) return modelAllowResult(requestId, "error");
+    try {
+      const raw = await bridge.request(INPUT_PREDICTION_METHODS.modelAllow, {
+        requestId,
+        modelChoice,
+        clientId,
+        connectionId: identity.connectionId,
+        agentId: identity.agentId || undefined,
+        profileId: identity.profileId || undefined,
+      });
+      const r = raw && typeof raw === "object" ? raw : {};
+      const result = modelAllowResult(requestId, r.status, r.activation);
+      if (result.status === "saved") clearCache();
+      emitDebug(INPUT_PREDICTION_DEBUG_CATEGORY, "prediction_model_allow", { clientId, modelChoice, status: result.status });
+      return result;
+    } catch {
+      return modelAllowResult(requestId, "error");
     }
   }
 
@@ -1031,5 +1179,5 @@ export function createInputPredictionService(opts) {
     };
   }
 
-  return { capabilities, request, open, openWordsFor, cancel, test, onClientDisconnect, clearCache, snapshot };
+  return { capabilities, request, open, openWordsFor, cancel, test, modelAllow, onClientDisconnect, clearCache, snapshot };
 }

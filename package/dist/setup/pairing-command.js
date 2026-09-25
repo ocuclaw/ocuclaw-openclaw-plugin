@@ -6,7 +6,21 @@ import { compatibilityStatus } from "./setup-controller.js";
 import process from "node:process";
 
 export const TERMINAL_PAIRING_HOST_REQUIREMENT =
-  "an OpenClaw host inside the plugin's declared compatibility window (2026.6.9 or newer) with Node 20+; the recommended candidate is OpenClaw 2026.9.4 with Node 24.16+ within 24.x or 26.1+";
+  "an OpenClaw host inside the plugin's declared compatibility window (2026.7.1-2 or newer) with Node 20+; the recommended candidate is OpenClaw 2026.9.4 with Node 24.16+ within 24.x or 26.1+";
+
+export const PAIR_PREREQUISITE_MESSAGES = Object.freeze({
+  "verify-plugin": "OcuClaw is not loaded by your agent yet.",
+  "verify-host": "This computer's OcuClaw setup is not finished yet.",
+  "configure-host": "This computer's OcuClaw setup is not finished yet.",
+  "verify-relay": "The OcuClaw relay is not running yet.",
+  "verify-private-route":
+    "The private route for your phone is not ready. Tailscale must be installed,\nsigned in and serving the relay on this computer.",
+});
+
+export const PAIR_REFUSAL_NEXT_LINES = Object.freeze([
+  "Run openclaw ocuclaw journey to see what is missing, then run openclaw ocuclaw pair again.",
+  "Existing credentials and phones were preserved.",
+]);
 
 export function terminalPairingCapability(api     ) {
 
@@ -24,7 +38,8 @@ export function createTerminalPairingCommand(api     , controller     , deps    
     const output = io.output ?? process.stdout;
     const error = io.error ?? process.stderr;
     const refuse = (reason        ) => {
-      error.write(`${reason}\nRun openclaw ocuclaw journey to resolve the missing checkpoint, then retry openclaw ocuclaw pair. Existing credentials and phones were preserved.\n`);
+
+      error.write(`${reason}\n${PAIR_REFUSAL_NEXT_LINES.join("\n")}\n`);
       return { exitCode: 2, outcome: "preflight-refused" };
     };
     if (!input.isTTY || !output.isTTY) return refuse("Pairing requires your own interactive terminal; piped input/output cannot approve.");
@@ -34,7 +49,11 @@ export function createTerminalPairingCommand(api     , controller     , deps    
       const journey = await controller("journey", { surface: "cli" });
       if (!journey?.installation?.id || journey.capabilities?.pairing !== "available") return refuse("The owning installation and pairing capability could not be verified.");
       const required = ["verify-plugin", "verify-host", "configure-host", "verify-relay", "verify-private-route"];
-      if (required.some((id) => !journey.checkpoints?.some((c     ) => c.id === id && c.status === "complete"))) return refuse("The owning gateway has an incomplete prerequisite.");
+      const missing = required.find((id) => !journey.checkpoints?.some((c     ) => c.id === id && c.status === "complete"));
+      if (missing) {
+        const named      = PAIR_PREREQUISITE_MESSAGES;
+        return refuse(named[missing] || "Your agent's OcuClaw setup is not finished yet.");
+      }
       const live = api.runtime.config.current();
       const classified = classifyConfiguredRelayCredential(live);
 
