@@ -10,6 +10,18 @@ export function isDistillerSessionKey(sessionKey) {
   return typeof sessionKey === "string" && sessionKey.startsWith(DISTILLER_SESSION_PREFIX);
 }
 
+export const TITLE_DISTILLER_RUN_ID_PREFIX = "ocuclaw-title-";
+const TITLE_DISTILLER_SESSION_MARKER = ":title-distiller:";
+
+export function isTitleDistillerRun(runId, sessionKey) {
+  if (typeof runId === "string" && runId.trim().startsWith(TITLE_DISTILLER_RUN_ID_PREFIX)) {
+    return true;
+  }
+  if (typeof sessionKey !== "string") return false;
+  const key = sessionKey.trim();
+  return key.startsWith(DISTILLER_SESSION_PREFIX) || key.includes(TITLE_DISTILLER_SESSION_MARKER);
+}
+
 export function stripAgentSessionPrefix(sessionKey) {
   if (typeof sessionKey !== "string") return sessionKey;
   const m = /^agent:[^:]+:(.+)$/.exec(sessionKey);

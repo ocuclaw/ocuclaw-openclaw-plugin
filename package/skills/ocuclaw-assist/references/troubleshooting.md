@@ -1,6 +1,6 @@
 # OcuClaw troubleshooting — named cases
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 **Reference only** — execute nothing here unless a step routed you here by its
 case name. After resolving a case, return to the skill's SKILL.md and re-run
@@ -186,6 +186,18 @@ and hand the host failure to its operator.
 
 ---
 
+**PLUGIN-OFF-AFTER-REINSTALL** — any `openclaw ocuclaw …` command (Cloudways
+`setup` included) prints ``The `openclaw ocuclaw` command is unavailable
+because `plugins.entries.ocuclaw.enabled=false` ``, or `openclaw plugins list`
+shows OcuClaw `disabled` right after an install. OpenClaw prints this before
+OcuClaw loads: on 2026.9 `openclaw plugins uninstall ocuclaw` leaves
+`plugins.entries.ocuclaw = {"enabled": false}` and a later install keeps it.
+Fix: `openclaw plugins enable ocuclaw` (it hot-reloads), then re-run the
+command. To avoid it next time, follow an uninstall with
+`openclaw config unset plugins.entries.ocuclaw`.
+
+---
+
 **GW-DOWN** — `openclaw status` (or `openclaw status --all` for the full read-only pasteable diagnosis), then `openclaw gateway status`, `openclaw gateway restart`, and `openclaw plugins doctor`. Read any errors to the user in plain words. Deeper probes when the surface checks look healthy but behavior disagrees:
 - `openclaw gateway status --deep --require-rpc` — proves the live Gateway answers RPC (a wrapper/supervisor being up is not the same thing).
 - `openclaw config get plugins.allow` — if it returns a list, `"ocuclaw"` must be in it (and `plugins.deny` wins over everything, including enablement).
@@ -302,7 +314,7 @@ If the bug icon or Send flow isn't available (very old app build, or the app was
 
 **Lane 2 — Discord paste block.** Assemble this paste-ready breakdown, show it to the user, confirm together it contains no secrets, and point them at the OcuClaw Discord:
 ```
-OcuClaw setup help — guide 2026-09-25 (1.0.58)
+OcuClaw setup help — guide 2026-09-28 (1.0.59)
 Platform/OS:
 openclaw --version:
 openclaw status --all (read-only, pasteable — confirm no secrets):
@@ -321,7 +333,7 @@ Debug upload ticket (if sent):
 
 **BETA-REPORT** — when a beta build misbehaves, assemble this paste-ready report, show it to the user, confirm together it contains no secrets, and have them post it in the beta-testing Discord (`https://discord.ocuclaw.com`). If the app is installed, also offer the ESCALATE Lane 1 in-app debug upload first — the ticket attaches real diagnostics to the report:
 ```
-OcuClaw beta report — guide 2026-09-25 (1.0.58)
+OcuClaw beta report — guide 2026-09-28 (1.0.59)
 Installed beta version (from plugins inspect):
 Platform/OS:
 openclaw --version:

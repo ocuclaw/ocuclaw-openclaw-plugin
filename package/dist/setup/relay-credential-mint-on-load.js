@@ -97,8 +97,17 @@ export function createRelayCredentialMintOnLoad(api, deps = {}) {
     }
 
     let receipt;
+
+    let persisted = null;
     try {
-      receipt = await provision({ operation: PROVISION_RELAY_CREDENTIAL_OPERATION });
+      receipt = await provision(
+        { operation: PROVISION_RELAY_CREDENTIAL_OPERATION },
+        {
+          onPersisted(value) {
+            persisted = typeof value === "string" && value.length > 0 ? value : null;
+          },
+        },
+      );
     } catch (err) {
       const code = typeof err?.code === "string" ? err.code : "mint_failed";
       if (code === "stale_precondition") {
@@ -129,7 +138,7 @@ export function createRelayCredentialMintOnLoad(api, deps = {}) {
       }
     }
 
-    const minted = readLiveRelayCredential(api);
+    const minted = persisted || readLiveRelayCredential(api);
     if (!minted) {
       return outcome(MINT_ON_LOAD_STATUS.FAILED, {
         code: "verification_failed",

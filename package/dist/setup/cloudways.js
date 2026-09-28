@@ -324,6 +324,27 @@ export async function tailscaleUpRunning(deps      = {}, layout      = null) {
   return false;
 }
 
+export async function gatewayProcessRunning(deps      = {}) {
+  let result     ;
+  try {
+    result = await runnerOf(deps)(["pgrep", "-a", "-f", "openclaw-gateway"], { timeoutMs: 5000 });
+  } catch (_) {
+    return null;
+  }
+  if (!result || result.spawnFailed) return null;
+  if (result.code === 1) return false;
+  if (result.code !== 0) return null;
+  for (const line of String(result.stdout || "").split("\n")) {
+    const trimmed = line.trim();
+    const space = trimmed.indexOf(" ");
+    if (space <= 0) continue;
+    const pid = Number(trimmed.slice(0, space));
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    return true;
+  }
+  return false;
+}
+
 export async function legacyInventory(layout     , deps      = {}) {
   const processes = await daemonProcesses(layout, deps);
   return {

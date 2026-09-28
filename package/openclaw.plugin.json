@@ -171,6 +171,11 @@
       "help": "Continuously lease app-side debug categories on developer hosts. Defaults to the External debug tools setting.",
       "advanced": true
     },
+    "liveuiReconnectGraceMs": {
+      "label": "LiveUI reconnect grace (ms)",
+      "help": "How long live glasses screens wait for the phone to come back after a connection drop before they close. 0 closes them at once.",
+      "advanced": true
+    },
     "allowDebugUpload": {
       "label": "Allow debug bundle upload",
       "help": "Allow the relay to hand the full diagnostic bundle to the phone for user-initiated upload. Local assembly and save do not require this flag. Requires External debug tools. Off by default.",
@@ -298,6 +303,13 @@
         "type": "boolean",
         "default": false,
         "description": "Allow the relay to hand the full diagnostic bundle to the phone for user-initiated upload. Local assembly and save do not require this flag. Requires externalDebugToolsEnabled. Off by default."
+      },
+      "liveuiReconnectGraceMs": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 60000,
+        "default": 12000,
+        "description": "ADR-0015 decision 5: how long a session's live glasses screens, refreshes and open render calls wait for the phone to come back after a connection drop. 0 drains at once. The OCUCLAW_LIVEUI_RECONNECT_GRACE_MS environment variable overrides it."
       },
       "debugUploadMaxZipBytes": {
         "type": "integer",

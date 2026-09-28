@@ -1,6 +1,6 @@
 # OcuClaw quick reference
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 Reminders only. For recovery procedures, load
 `{baseDir}/references/troubleshooting.md`. Back to the skill's SKILL.md. The

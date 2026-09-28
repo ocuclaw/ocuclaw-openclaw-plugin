@@ -1,11 +1,12 @@
 {
   "name": "ocuclaw",
-  "version": "2.1.0",
-  "requiresClientVersion": "2.0.2",
+  "version": "2.1.1",
+  "requiresClientVersion": "2.1.1",
   "description": "OcuClaw for Even Realities G2 smart glasses.",
   "type": "module",
   "main": "./dist/index.js",
   "files": [
+    "CONFIGURATION.md",
     "NOTICE.md",
     "README.md",
     "dist/",

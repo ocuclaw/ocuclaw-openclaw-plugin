@@ -632,6 +632,15 @@ export function createEvenAiEndpoint(opts = {}) {
       : () => opts.systemPrompt;
   const hostProvidesReadability =
     Reflect.get(opts, "hostProvidesReadability") === true;
+
+  const configuredGetSharedSessionChannelPrompt = Reflect.get(
+    opts,
+    "getSharedSessionChannelPrompt",
+  );
+  const getSharedSessionChannelPrompt =
+    typeof configuredGetSharedSessionChannelPrompt === "function"
+      ? configuredGetSharedSessionChannelPrompt
+      : () => "";
   const getSettingsSnapshot =
     typeof opts.getSettingsSnapshot === "function"
       ? opts.getSettingsSnapshot
@@ -667,6 +676,11 @@ export function createEvenAiEndpoint(opts = {}) {
     "gatewayUserSendHoldDeadlineMs",
   );
   const runWaiter = opts.runWaiter;
+  const restartRecoveryOption = Reflect.get(opts, "restartRecovery");
+  const restartRecovery =
+    restartRecoveryOption && typeof restartRecoveryOption.recordAcceptedSend === "function"
+      ? restartRecoveryOption
+      : null;
   const emitDebug = typeof opts.emitDebug === "function" ? opts.emitDebug : () => {};
   const onSessionActivated =
     typeof opts.onSessionActivated === "function" ? opts.onSessionActivated : null;
@@ -2200,6 +2214,26 @@ export function createEvenAiEndpoint(opts = {}) {
           lane: "turn-scoped",
         },
       };
+      if (localBackendKind === "hermes") {
+
+        let sharedPrompt = "";
+        if (routingMode === "active") {
+          try {
+            sharedPrompt = trimString(getSharedSessionChannelPrompt(sessionKey));
+          } catch (_err) {
+            sharedPrompt = "";
+          }
+        }
+        if (sharedPrompt) {
+          sendOptions.prompt = {
+            content: sharedPrompt,
+            owner: "even-ai",
+            lane: "logical-session-frozen",
+          };
+        } else {
+          delete sendOptions.prompt;
+        }
+      }
       const bindingAgentRef = trimString(
         route && route.sessionMinted === true && route.mintedAgentRef
           ? route.mintedAgentRef
@@ -2307,6 +2341,16 @@ export function createEvenAiEndpoint(opts = {}) {
         throw new Error(
           trimString(ack && ack.error) || `Even AI upstream returned ${ack.status}.`,
         );
+      }
+
+      if (restartRecovery && !userText.trimStart().startsWith("/")) {
+        restartRecovery.recordAcceptedSend({
+          runId,
+          sessionKey,
+          text: userText,
+          sendOptions,
+          sharesOcuClawSession: routingMode === "active",
+        });
       }
 
       emitDebug(

@@ -220,6 +220,8 @@ function bootRelay(ackPayload) {
 
   let boardMoments = null;
   relay = createRelay({
+
+    failStartOnBindConflict: true,
     onBoardMomentAck: (ack) => {
       if (boardMoments) boardMoments.ack(ack);
     },

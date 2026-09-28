@@ -20,6 +20,7 @@ import {
 import { OPENCLAW_BUNDLE_DEFAULT_WS_PORT } from "../config/runtime-config.js";
 import { taskIndexPromptInjectionStatus } from "../runtime/task-index-prompt-injection.js";
 import { classifyConfiguredRelayCredential } from "./relay-credential-provision.js";
+import { CAPABILITY_CONSENT_COMMAND, readCapabilityConsent } from "./capability-consent.js";
 
 const SECRET_PRESENCE = Object.freeze({
   PRESENT: "present",
@@ -457,6 +458,10 @@ function configurationState(api, config) {
 }
 
 const FINDING_TEXT = Object.freeze({
+  "plugin.capability-consent-required": [
+    "warning",
+    `OpenClaw has no current consent for OcuClaw's declared capabilities (usual after an OpenClaw upgrade), so openclaw plugins list warns about the plugin. Run: ${CAPABILITY_CONSENT_COMMAND}`,
+  ],
   task_index_prompt_injection_disabled: [
     "warning",
     "OpenClaw blocks prompt-mutating plugin hooks, so the hidden per-turn LiveUI Task index is disabled and the saved Even AI custom prompt cannot reach the model: its owner text is delivered per turn through the same hook, because a resumed native thread ignores changed developer instructions.",
@@ -516,6 +521,9 @@ function finding(id, evidence) {
 
 function findingsFor(state) {
   const findings = [];
+  if (state.plugin && state.plugin.capabilityConsent && state.plugin.capabilityConsent.status === "required") {
+    findings.push(finding("plugin.capability-consent-required", state.plugin.capabilityConsent.evidence));
+  }
   if (state.taskIndex.status === "disabled") {
     findings.push(finding(
       "task_index_prompt_injection_disabled",
@@ -566,6 +574,12 @@ function findingsFor(state) {
 }
 
 const REMEDIATIONS = Object.freeze({
+  "plugin.capability-consent-required": {
+    id: "accept-plugin-capabilities",
+    action: `Run ${CAPABILITY_CONSENT_COMMAND} on this host. It records the consent OpenClaw asks for; the plugin stays enabled and its config is kept.`,
+    preconditions: ["The owner has reviewed OcuClaw's declared capabilities (openclaw plugins inspect ocuclaw)."],
+    risks: [],
+  },
   task_index_prompt_injection_disabled: {
     id: "enable-task-index-prompt-injection",
     action: "Set plugins.entries.ocuclaw.hooks.allowPromptInjection to true, then restart the gateway. Until then the LiveUI Task index stays hidden and Even AI requests run without the saved Even AI custom prompt.",
@@ -862,6 +876,8 @@ function createSetupStateReader(options) {
               ? pluginStatusEvidence
               : "unknown",
         unavailableStatusEvidence: ["absent", "disabled", "load-failure"],
+
+        capabilityConsent: readCapabilityConsentState(options),
       },
 
       runtime:
@@ -949,6 +965,15 @@ function readHostSummary(options) {
     return hostSummary();
   } catch (_) {
     return { managed: null, detectVerdict: "unknown", guide: null, gatewayRestart: "supported" };
+  }
+}
+
+function readCapabilityConsentState(options) {
+  try {
+    if (options && options.capabilityConsent && typeof options.capabilityConsent === "object") return options.capabilityConsent;
+    return readCapabilityConsent({ stateDir: resolveSetupStateDir(options && options.api) });
+  } catch (_) {
+    return { status: "unknown", evidence: "capability-consent-read-failed" };
   }
 }
 

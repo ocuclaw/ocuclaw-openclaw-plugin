@@ -6,6 +6,14 @@ import process from "node:process";
 import { PAIRING_CONTROL_PATH } from "../domain/pairing/pairing-endpoint-address.js";
 import { PAIRING_CONTROL_AUTH_HEADER, PAIRING_CONTROL_SECRET_HEADER } from "../domain/pairing/pairing-control-service.js";
 import { terminalAllowsColor, terminalText } from "./terminal-text.js";
+import {
+  QR_REDRAW_BIGGER_LINE,
+  QR_REDRAW_PAIRING_LEAD,
+  qrFitsWindow,
+  renderPairingQr,
+  zoomKeyFor,
+} from "../domain/pairing/pairing-bootstrap-presenter.js";
+import { parseQrPayload } from "../domain/pairing/qr-terminal.js";
 
 class PairingControlError extends Error {
            reason                                           ;
@@ -207,7 +215,23 @@ export async function runPairingTerminal(connection                           , 
 
     }
   };
-  const pause = () => new Promise      ((resolve) => setTimeout(resolve, pollMs));
+
+  let redraw                                                                                    = null;
+
+  let sizedFor = { columns: 0, rows: 0 };
+  const tryRedraw = () => {
+    if (redraw === null || cancelled) return;
+    if (!qrFitsWindow(redraw, { columns: output.columns || 0, rows: output.rows || 0 }, sizedFor)) return;
+    output.write(`\n${QR_REDRAW_PAIRING_LEAD}\n${redraw.text}\n`);
+    redraw = null;
+  };
+
+  const pause = async () => {
+    for (let left = pollMs; left > 0 && !cancelled; left -= 500) {
+      await new Promise      ((resolve) => setTimeout(resolve, Math.min(left, 500)));
+      tryRedraw();
+    }
+  };
   const call = (op        , extra                          = {}) => request(connection, { op, ...extra }, secret);
 
   const probed = await probeTerminalUnicode(input, output, io.probeTimeoutMs);
@@ -223,9 +247,12 @@ export async function runPairingTerminal(connection                           , 
   try {
     input.setRawMode(true);
     input.resume();
+    const terminal = { unicode, color: terminalAllowsColor(output, env),
+      columns: output.columns || 0, rows: output.rows || 0,
+
+      redraw: true, zoom: zoomKeyFor(env, process.platform) };
     const created = await call("create", { address: connection.phoneAddress, lightTerminal: connection.lightTerminal === true,
-      terminal: { unicode,
-        color: terminalAllowsColor(output, env), columns: output.columns || 0, rows: output.rows || 0 } });
+      terminal });
     if (typeof created.controlSecret !== "string" || !created.controlSecret || typeof created.exchangeId !== "string") throw new Error("Invalid control response");
     secret = created.controlSecret;
     exchangeId = created.exchangeId;
@@ -239,6 +266,11 @@ export async function runPairingTerminal(connection                           , 
     output.write(terminalText("Keep the pairing code and words private. Do not paste them into chats or logs.\n", "detail", output));
     output.write(created.bootstrapBlock);
     output.write("Waiting for the phone. Ctrl-C cancels.\n");
+    if (created.bootstrapBlock.includes(QR_REDRAW_BIGGER_LINE) && typeof created.payloadText === "string") {
+      const payload = parseQrPayload(created.payloadText);
+      if (payload) redraw = renderPairingQr(payload, terminal, connection.lightTerminal === true);
+      sizedFor = { columns: terminal.columns, rows: terminal.rows };
+    }
     result.phase = "waiting-for-phone";
     let prompted = false;
     while (!cancelled && Date.now() < deadline) {
@@ -247,7 +279,12 @@ export async function runPairingTerminal(connection                           , 
       if (state.exchangeId !== exchangeId) throw new Error("Exchange changed");
       if (state.state === "awaiting-approval" || state.prompt) result.phase = "awaiting-approval";
       if (state.state === "awaiting-phone-completion") result.phase = "awaiting-phone-connection";
-      if (state.state === "failed") { finished = true; result.outcome = state.failure?.reason === "expired" ? "expired" : "failed"; break; }
+      if (state.state === "failed") {
+        finished = true;
+        result.outcome = state.failure?.reason === "expired" ? "expired" : "failed";
+        if (result.outcome === "expired") result.failureReason = "expired";
+        break;
+      }
       if (state.state === "completed") {
         finished = true;
 
@@ -258,7 +295,10 @@ export async function runPairingTerminal(connection                           , 
         }
         break;
       }
+
+      if (state.state === "awaiting-approval" || state.state === "awaiting-phone-completion") redraw = null;
       if (state.prompt && !prompted) {
+        redraw = null;
         const words = state.prompt.safetyPhrase;
         if (state.prompt.exchangeId !== exchangeId || !Array.isArray(words) || words.length !== 4 || !words.every((word         ) => typeof word === "string" && /^[a-z]+$/.test(word))) throw new Error("Invalid comparison");
 
@@ -295,6 +335,17 @@ export async function runPairingTerminal(connection                           , 
         const response = await call(op);
         if (!approve) { finished = true; result.outcome = op === "cancel" ? "cancelled" : "refused"; break; }
         if (response.credentialExposure === "delivered") result.credentialDelivery = "delivered";
+
+        if (!response.ok && response.state === "failed" && response.failure?.reason === "expired") {
+          finished = true;
+          result.outcome = "expired";
+          result.failureReason = "expired";
+          if (response.credentialExposure === "none") {
+            result.credentialDelivery = "not-observed";
+            result.phase = "awaiting-approval";
+          }
+          break;
+        }
         if (!response.ok) throw new Error("Decision refused");
         if (response.state === "completed" && response.credentialExposure === "delivered") {
           finished = true;
@@ -334,7 +385,11 @@ export async function runPairingTerminal(connection                           , 
   } else if (io.driven === true && result.outcome === "expired") {
     output.write("\n");
   } else {
-    output.write(`\nPairing ${result.outcome}. ${result.credentialDelivery === "uncertain" ? "Credential delivery is uncertain; check the phone before retrying." : "No credential delivery was observed. Start pairing again to retry."}\n`);
+
+    const ending = result.outcome === "expired"
+      ? "Pairing took longer than the two-minute window."
+      : `Pairing ${result.outcome}.`;
+    output.write(`\n${ending} ${result.credentialDelivery === "uncertain" ? "Credential delivery is uncertain; check the phone before retrying." : "No credential delivery was observed. Start pairing again to retry."}\n`);
   }
   return result;
 }

@@ -1,6 +1,6 @@
 # OcuClaw fresh install — Steps 1–13
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 Return to the skill's SKILL.md for the guardrails, lane card, checklist, and
 router at any time.
@@ -686,7 +686,7 @@ GOAL: the user installs and connects the OcuClaw phone app to the relay on this 
 `capabilities.pairing` is `available`, hand off once to the user's own interactive
 terminal: `openclaw ocuclaw pair`. The command rechecks this installation,
 credential and owned reachable private route. On the phone, the user opens
-OcuClaw in Even Hub, taps **Pair with your computer**, then
+OcuClaw in Even Hub, taps **Pair with your agent** (older apps: **Pair with your computer**), then
 **Take a photo of the QR code**; if the camera cannot read it, they tap
 **Enter the pairing code instead** and type the short-lived address and code
 the terminal shows. Both

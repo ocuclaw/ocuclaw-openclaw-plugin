@@ -480,6 +480,12 @@ function mapListRow(row) {
     }
   }
 
+  if (typeof row.fastMode === "boolean") Reflect.set(mapped, "fastMode", row.fastMode);
+
+  if (typeof row.fastModeSupported === "boolean") {
+    Reflect.set(mapped, "fastModeSupported", row.fastModeSupported);
+  }
+
   return mapped;
 }
 

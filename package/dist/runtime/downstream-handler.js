@@ -36,6 +36,7 @@ import {
   isForeignHermesSessionKey,
 } from "./hermes-session-keys.js";
 import { normalizeSessionListFixture } from "./session-list-fixture.js";
+import { APP_CLIENT_NAME } from "./relay-client-names.js";
 import { normalizeAndValidateCustomSystemPrompt } from "../domain/custom-system-prompt-limit.js";
 import { parseOptionalSetupRequest, optionalSetupFailure, optionalSetupResult } from "../setup/optional-setup-protocol.js";
 
@@ -164,6 +165,7 @@ function createDownstreamHandler(opts) {
   const onSlashCommand = opts.onSlashCommand;
   const onGetModelsCatalog = opts.onGetModelsCatalog;
   const onInputPrediction = typeof opts.onInputPrediction === "function" ? opts.onInputPrediction : null;
+  const onInputStarted = typeof opts.onInputStarted === "function" ? opts.onInputStarted : null;
   const onClientSessionSelected =
     typeof opts.onClientSessionSelected === "function" ? opts.onClientSessionSelected : null;
 
@@ -185,9 +187,29 @@ function createDownstreamHandler(opts) {
   const onSetLiveuiTaskExecutor = opts.onSetLiveuiTaskExecutor || null;
   const onSetLiveuiTaskSettingValues = opts.onSetLiveuiTaskSettingValues || null;
   const onSetLiveuiTaskPreferredTemplate = opts.onSetLiveuiTaskPreferredTemplate || null;
+
   const isPhoneClient = typeof opts.isPhoneClient === "function"
     ? opts.isPhoneClient
-    : () => true;
+    : () => false;
+  const clientNameOf = typeof opts.clientNameOf === "function" ? opts.clientNameOf : () => null;
+  const logSafe = (value, max) =>
+    typeof value === "string" && value ? value.replace(/[^A-Za-z0-9._:@/-]/g, "?").slice(0, max) : "";
+
+  function admitPhoneOnlyWrite(clientId, operation) {
+    if (isPhoneClient(clientId) !== true) return false;
+    let clientName = null;
+    try {
+      clientName = clientNameOf(clientId);
+    } catch (_err) {
+      clientName = null;
+    }
+    if (clientName !== APP_CLIENT_NAME) {
+      logger.warn(
+        `[downstream] phone-only write from non-app client name=${logSafe(clientName, 64) || "(none)"} operation=${logSafe(operation, 120) || "(unknown)"}`,
+      );
+    }
+    return true;
+  }
   const onReviewLiveuiTask = opts.onReviewLiveuiTask || null;
   const onSetLiveuiTaskContext = opts.onSetLiveuiTaskContext || null;
   const onGetLiveuiPrefs = opts.onGetLiveuiPrefs || null;
@@ -359,6 +381,8 @@ function createDownstreamHandler(opts) {
 
     inputPredictionModelAllow: "ocuclaw.input.prediction.model.allow",
     inputPredictionModelAllowResult: "ocuclaw.input.prediction.model.allow.result",
+
+    inputStarted: "ocuclaw.input.started",
     providerUsageGet: "ocuclaw.provider.usage.get",
     providerUsageSnapshot: "ocuclaw.provider.usage.snapshot",
     skillsCatalogGet: "ocuclaw.skills.catalog.get",
@@ -643,6 +667,13 @@ function createDownstreamHandler(opts) {
       Number.isFinite(Number(meta.seq))
     ) {
       payload.seq = Math.max(0, Math.floor(Number(meta.seq)));
+    }
+    if (
+      meta.messageIndex !== null &&
+      meta.messageIndex !== undefined &&
+      Number.isFinite(Number(meta.messageIndex))
+    ) {
+      payload.messageIndex = Math.max(0, Math.floor(Number(meta.messageIndex)));
     }
     if (Array.isArray(emojiSpans) && emojiSpans.length > 0) {
       payload.emojiSpans = emojiSpans;
@@ -1476,6 +1507,9 @@ function createDownstreamHandler(opts) {
           ? payload.verboseLevel
           : "off",
       fastMode: !!(payload && payload.fastMode === true),
+      ...(typeof payload?.fastModeSupported === "boolean"
+        ? { fastModeSupported: payload.fastModeSupported }
+        : {}),
       elevatedLevel:
         payload && typeof payload.elevatedLevel === "string"
           ? payload.elevatedLevel
@@ -3418,7 +3452,7 @@ function createDownstreamHandler(opts) {
 
       const text = typeof msg.text === "string" ? msg.text : "";
 
-      if (!/^(?:settings|open-board|default:[a-z0-9][a-z0-9_-]{0,63}|lane:[a-z][a-z_]{0,31}=(?:on|off)|initial:[a-z][a-z_]{0,31}|watch:(?:off|notify|notify_wake)|watch-(?:bell|cancel)|new-card|create-(?:save|check|retry|close|more|open|done|voice)|create-title:[A-Za-z0-9][A-Za-z0-9 .,'!?-]{0,79}|create-lane:(?:triage|ready)|create-watch:(?:off|notify)|create-priority:[0-2]|create-worker:(?:[a-z0-9][a-z0-9_-]{0,63})?|verdict:(?:approve|request_changes)|verdict-(?:send|cancel|check)|verdict-reason:[A-Za-z0-9][A-Za-z0-9 .,'!?-]{0,79}|moment|moment-dismiss|moments:(?:on|off)|done:(?:on|off)|quiet:(?:off|(?:[01][0-9]|2[0-3]):[0-5][0-9]-(?:[01][0-9]|2[0-3]):[0-5][0-9])|quiet-zone:phone|board:[a-z0-9][a-z0-9_-]{0,63}|filter:[a-z][a-z_]{0,31}|list-more|refresh|card:[A-Za-z0-9_.:-]{1,64}|home|stat:(?:needs_you|running|failed|total)|queue:[A-Za-z0-9_.:-]{1,64}|say-card|picker|comment|comment-(?:send|cancel|check)|comment-text:[A-Za-z0-9][A-Za-z0-9 .,'!?-]{0,79}|answer|tools-enable|tools-confirm|tools-cancel|reason-lab|more|card-action:(?:make_ready|reassign|set_model|retry|split|archive)|card-worker:(?:[a-z0-9][a-z0-9_-]{0,63})?|card-model:(?:[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63})?|card-(?:confirm|cancel|check)|create-parent:[A-Za-z0-9_.:-]{1,64}|create-split|create-split-check|maint|maint-(?:refresh|export|confirm|cancel|check)|maint-reclaim:[A-Za-z0-9_.:-]{1,64}|maint-attachments:(?:on|off)|maint-logs:(?:on|off)|artifact:[0-9]{1,15}|artifact-(?:save|close|source|scripts(?:-(?:run|cancel|stop))?))$/.test(text)) throw new Error("Invalid Hermes board action");
+      if (!/^(?:settings|open-board|default:[a-z0-9][a-z0-9_-]{0,63}|lane:[a-z][a-z_]{0,31}=(?:on|off)|initial:[a-z][a-z_]{0,31}|watch:(?:off|notify|notify_wake)|watch-(?:bell|cancel)|new-card|create-(?:save|check|retry|close|more|open|done|voice)|create-title:[A-Za-z0-9][A-Za-z0-9 .,'!?-]{0,79}|create-lane:(?:triage|ready)|create-watch:(?:off|notify)|create-priority:[0-2]|create-worker:(?:[a-z0-9][a-z0-9_-]{0,63})?|verdict:(?:approve|request_changes)|verdict-(?:send|cancel|check)|verdict-reason:[A-Za-z0-9][A-Za-z0-9 .,'!?-]{0,79}|moment|moment-dismiss|moments:(?:on|off)|done:(?:on|off)|quiet:(?:off|(?:[01][0-9]|2[0-3]):[0-5][0-9]-(?:[01][0-9]|2[0-3]):[0-5][0-9])|quiet-zone:phone|rule:(?:[a-z0-9][a-z0-9_-]{0,63}\/)?[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:(?:off|notify|failures|notify_failures)|board:[a-z0-9][a-z0-9_-]{0,63}|filter:[a-z][a-z_]{0,31}|list-more|refresh|card:[A-Za-z0-9_.:-]{1,64}|home|stat:(?:needs_you|running|failed|total)|queue:[A-Za-z0-9_.:-]{1,64}|say-card|picker|comment|comment-(?:send|cancel|check)|comment-text:[A-Za-z0-9][A-Za-z0-9 .,'!?-]{0,79}|answer|tools-enable|tools-confirm|tools-cancel|reason-lab|more|card-action:(?:make_ready|reassign|set_model|retry|split|archive)|card-worker:(?:[a-z0-9][a-z0-9_-]{0,63})?|card-model:(?:[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63})?|card-(?:confirm|cancel|check)|create-parent:[A-Za-z0-9_.:-]{1,64}|create-split|create-split-check|maint|maint-(?:refresh|export|confirm|cancel|check)|maint-reclaim:[A-Za-z0-9_.:-]{1,64}|maint-attachments:(?:on|off)|maint-logs:(?:on|off)|artifact:[0-9]{1,15}|artifact-(?:save|close|source|scripts(?:-(?:run|cancel|stop))?))$/.test(text)) throw new Error("Invalid Hermes board action");
       return { ...payload, text };
     }
     if (action === "webui-hermes-learning") {
@@ -4034,13 +4068,16 @@ function createDownstreamHandler(opts) {
     const sessionId = parseOptionalTrimmedString(msg.sessionId);
     if (!sessionId || typeof callback !== "function") return null;
     try {
-      const result = callback({
+      const payload = {
         sessionId,
         lastSeq: parseOptionalInteger(msg.lastSeq),
         entriesRevision: parseOptionalInteger(msg.entriesRevision),
         digest: parseOptionalInteger(msg.digest),
         fromSeq: parseOptionalInteger(msg.fromSeq),
-      });
+      };
+
+      if (msg.quiet === true) payload.quiet = true;
+      const result = callback(payload);
       return result ? { unicast: formatEntries(result, sessionId) } : null;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -4417,7 +4454,8 @@ function createDownstreamHandler(opts) {
       (result) => {
         const status = result && result.status ? result.status : "accepted";
         const error = result && result.error ? result.error : undefined;
-        return { unicast: formatSendAckCompat(id, status, error) };
+        const errorCode = result && result.errorCode ? result.errorCode : undefined;
+        return { unicast: formatSendAckCompat(id, status, error, errorCode) };
       },
       (err) => ({
         unicast: formatSendAckCompat(
@@ -4893,13 +4931,14 @@ function createDownstreamHandler(opts) {
       phase !== "partial" &&
       phase !== "commit" &&
       phase !== "end" &&
-      phase !== "reopen"
+      phase !== "reopen" &&
+      phase !== "await-send"
     ) {
       return {
         unicast: formatSendAckCompat(
           id,
           "rejected",
-          "simulateVoice phase must be arm|disarm|partial|commit|end|reopen",
+          "simulateVoice phase must be arm|disarm|partial|commit|end|reopen|await-send",
         ),
       };
     }
@@ -4918,6 +4957,12 @@ function createDownstreamHandler(opts) {
       phase,
       text,
       sessionKey: parseOptionalTrimmedString(msg.sessionKey) || null,
+
+      ...(phase === "commit" && msg.awaitAppSend === true ? { awaitAppSend: true } : {}),
+      ...(phase === "commit" && msg.awaitAppSend === true && parseOptionalTrimmedString(msg.runId)
+        ? { runId: parseOptionalTrimmedString(msg.runId) }
+        : {}),
+      ...(phase === "await-send" && Number.isFinite(msg.timeoutMs) ? { timeoutMs: msg.timeoutMs } : {}),
     }));
   }
 
@@ -5180,6 +5225,19 @@ function createDownstreamHandler(opts) {
     );
   }
 
+  function handleInputStarted(clientId, msg) {
+    if (!onInputStarted) return null;
+    try {
+      onInputStarted(clientId, {
+        source: typeof msg.source === "string" ? msg.source : "",
+        sessionKey: typeof msg.sessionKey === "string" && msg.sessionKey ? msg.sessionKey : null,
+      });
+    } catch (err) {
+      logger.warn(`[downstream] input started handler threw: ${err && err.message ? err.message : err}`);
+    }
+    return null;
+  }
+
   function handleInputPrediction(clientId, op, msg) {
     const payload = msg && typeof msg === "object" ? msg : {};
     const requestId = typeof payload.requestId === "string" ? payload.requestId : "";
@@ -5411,7 +5469,7 @@ function createDownstreamHandler(opts) {
     const taskId = typeof msg.taskId === "string" ? msg.taskId : "";
     const action = typeof msg.action === "string" ? msg.action : "";
     const expectedDigest = typeof msg.expectedDigest === "string" ? msg.expectedDigest : "";
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiTaskReview)) {
       return {
         unicast: formatLiveuiTaskReviewAck({
           taskId,
@@ -5482,7 +5540,7 @@ function createDownstreamHandler(opts) {
           agentId: typeof msg.executor.agentId === "string" ? msg.executor.agentId : "",
         }
       : { host: "", agentId: "" };
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiTaskExecutorSet)) {
       return {
         unicast: formatLiveuiTaskExecutorAck({
           taskId,
@@ -5534,7 +5592,7 @@ function createDownstreamHandler(opts) {
       : typeof msg.templateId === "string"
         ? msg.templateId
         : "";
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiTaskPreferredTemplateSet)) {
       return {
         unicast: formatLiveuiTaskPreferredTemplateAck({
           taskId,
@@ -5586,7 +5644,7 @@ function createDownstreamHandler(opts) {
   function handleSetLiveuiTaskContext(clientId, msg) {
     const taskId = typeof msg.taskId === "string" ? msg.taskId : "";
     const context = typeof msg.context === "string" ? msg.context : "";
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiTaskContextSet)) {
       return {
         unicast: formatLiveuiTaskContextAck({
           taskId,
@@ -5658,7 +5716,7 @@ function createDownstreamHandler(opts) {
   }
 
   function handleSetLiveuiPrefs(clientId, msg) {
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiPrefsSet)) {
       return { unicast: formatLiveuiPrefsAck({ status: "rejected", code: "phone_only" }) };
     }
     if (!onSetLiveuiPrefs) {
@@ -5731,7 +5789,7 @@ function createDownstreamHandler(opts) {
   function handleSetLiveuiGrant(clientId, msg) {
     const action = typeof msg.action === "string" ? msg.action : "";
     const host = typeof msg.host === "string" ? msg.host : "";
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiGrantsSet)) {
       return {
         unicast: formatLiveuiGrantsAck({ action, host, status: "rejected", code: "phone_only" }),
       };
@@ -5843,7 +5901,7 @@ function createDownstreamHandler(opts) {
     const values = msg.values && typeof msg.values === "object" && !Array.isArray(msg.values)
       ? msg.values
       : {};
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiTaskSettingsSet)) {
       return {
         unicast: formatLiveuiTaskSettingsAck({
           taskId,
@@ -5906,7 +5964,7 @@ function createDownstreamHandler(opts) {
         : {}),
       ...(Object.prototype.hasOwnProperty.call(msg, "icon") ? { icon: msg.icon } : {}),
     };
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.liveuiLibraryOrganize)) {
       return {
         unicast: formatLiveuiLibraryOrganizeAck({
           action: params.action,
@@ -6050,7 +6108,7 @@ function createDownstreamHandler(opts) {
         }),
       };
     }
-    if (!isPhoneClient(clientId)) {
+    if (!admitPhoneOnlyWrite(clientId, msg?.type)) {
       return failure(Object.assign(new Error("Agent creation is phone-only."), { code: "phone_only" }));
     }
     if (typeof options.handler !== "function") {
@@ -6078,7 +6136,7 @@ function createDownstreamHandler(opts) {
   async function handleHermesManagement(clientId, msg) {
     const identity = managementRequest(msg);
     const reply = (payload) => ({ unicast: JSON.stringify({ type: "ocuclaw.hermes.management.result", ...payload }) });
-    if (!isPhoneClient(clientId)) return reply(managementFailure(identity, "phone_only"));
+    if (!admitPhoneOnlyWrite(clientId, `${APP_PROTOCOL.hermesManagement}:${identity.operation}`)) return reply(managementFailure(identity, "phone_only"));
     if (!validManagementRequest(identity)) return reply(managementFailure(identity, "invalid_request"));
     if (typeof onHermesManagement !== "function") return reply(managementFailure(identity, "unsupported", true));
     try {
@@ -6123,7 +6181,7 @@ function createDownstreamHandler(opts) {
     if (emoji !== null && (typeof emoji !== "string" || emoji.length > 16 || /[\u0000\r\n]/.test(emoji))) {
       return fail("invalid_emoji", "Choose one emoji.");
     }
-    if (!isPhoneClient(clientId)) return fail("phone_only", "Agent emoji changes are phone-only.");
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.agentEmojiSet)) return fail("phone_only", "Agent emoji changes are phone-only.");
     if (typeof onSetAgentEmoji !== "function") return fail("unsupported", "Agent emoji changes are not available.");
     const failure = (err) => fail(
       err && typeof err.code === "string" && err.code ? err.code : "update_failed",
@@ -6176,7 +6234,7 @@ function createDownstreamHandler(opts) {
     if (!msg.setup || typeof msg.setup !== "object" || Array.isArray(msg.setup)) {
       return agentSettingsFailure(parsed.requestId, parsed.agentId, Object.assign(new Error("Agent settings are missing."), { code: "invalid_settings" }));
     }
-    if (!isPhoneClient(clientId)) return agentSettingsFailure(parsed.requestId, parsed.agentId, Object.assign(new Error("Agent settings are phone-only."), { code: "phone_only" }));
+    if (!admitPhoneOnlyWrite(clientId, APP_PROTOCOL.agentSettingsSet)) return agentSettingsFailure(parsed.requestId, parsed.agentId, Object.assign(new Error("Agent settings are phone-only."), { code: "phone_only" }));
     if (typeof onSetAgentSettings !== "function") return agentSettingsFailure(parsed.requestId, parsed.agentId, Object.assign(new Error("Agent settings are not available."), { code: "unsupported" }));
     const failure = (error) => agentSettingsFailure(parsed.requestId, parsed.agentId, error);
     return Promise.resolve(onSetAgentSettings({ agentId: parsed.agentId, emoji, setup: msg.setup,
@@ -7579,7 +7637,7 @@ function createDownstreamHandler(opts) {
         case "ocuclaw.optional.setup.request": {
           const request = parseOptionalSetupRequest(msg);
           const respond = (result) => ({ unicast: JSON.stringify({ type: "ocuclaw.optional.setup.result", ...result }) });
-          if (typeof opts.isPhoneClient !== "function" || opts.isPhoneClient(clientId) !== true) return respond(optionalSetupFailure(msg, "phone_only"));
+          if (!admitPhoneOnlyWrite(clientId, msg.type)) return respond(optionalSetupFailure(msg, "phone_only"));
           if (!request) return respond(optionalSetupFailure(msg, "invalid_request"));
           if (typeof opts.onOptionalSetup !== "function") return respond(optionalSetupFailure(request, "unsupported", "unsupported"));
           return Promise.resolve().then(() => opts.onOptionalSetup(clientId, request, transportContext.workerEpoch))
@@ -7663,9 +7721,11 @@ function createDownstreamHandler(opts) {
           return handleInputPrediction(clientId, "cancel", msg);
         case APP_PROTOCOL.inputPredictionTest:
           return handleInputPrediction(clientId, "test", msg);
+        case APP_PROTOCOL.inputStarted:
+          return handleInputStarted(clientId, msg);
         case APP_PROTOCOL.inputPredictionModelAllow:
 
-          if (typeof opts.isPhoneClient !== "function" || opts.isPhoneClient(clientId) !== true) {
+          if (!admitPhoneOnlyWrite(clientId, msg.type)) {
             return {
               unicast: JSON.stringify({
                 type: APP_PROTOCOL.inputPredictionModelAllowResult,

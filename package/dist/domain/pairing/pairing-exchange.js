@@ -44,7 +44,9 @@ const FAILURE_MESSAGES                                       = {
 
   "credential-unavailable":
     "This computer could not read the settings OcuClaw pairs with, so nothing was sent.",
-  expired: "The pairing window closed before the phone finished. Start pairing again.",
+
+  expired:
+    "Pairing took longer than the two-minute window. Start pairing again.",
   "exchange-not-found":
     "That pairing request is no longer active. Start pairing again.",
   "exchange-already-used":
@@ -338,13 +340,20 @@ export function createPairingExchangeHost(
     return detail;
   }
 
+  function lateCompletionReason(
+    target                ,
+    current        ,
+  )                                          {
+    return current >= target.expiresAt ? "expired" : "completion-window-elapsed";
+  }
+
   function evaluateDeadlines()       {
     if (!exchange || TERMINAL_STATES.has(exchange.state)) return;
     const current = now();
     if (exchange.completion) {
 
       if (current >= exchange.completion.deadline) {
-        failClosed(exchange, "completion-window-elapsed");
+        failClosed(exchange, lateCompletionReason(exchange, current));
       }
       return;
     }
@@ -662,7 +671,7 @@ export function createPairingExchangeHost(
       return;
     }
     if (now() >= target.completion.deadline) {
-      failClosed(target, "completion-window-elapsed");
+      failClosed(target, lateCompletionReason(target, now()));
       return;
     }
 
@@ -685,7 +694,7 @@ export function createPairingExchangeHost(
     if (isStale(target) || !target.completion) return;
 
     if (now() >= target.completion.deadline) {
-      failClosed(target, "completion-window-elapsed");
+      failClosed(target, lateCompletionReason(target, now()));
       return;
     }
 

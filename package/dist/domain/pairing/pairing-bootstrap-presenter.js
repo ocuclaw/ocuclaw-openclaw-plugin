@@ -1,6 +1,7 @@
 import {
   renderQrPayloadToTerminal,
   renderQrPayloadToTerminalAnsi,
+  renderQrPayloadToTerminalColour,
   serializeQrPayload,
 } from "./qr-terminal.js";
 
@@ -9,6 +10,51 @@ import {
                                        
 
                                                            
+
+export function zoomKeyFor(env     , platform     )         {
+  const e = env || {};
+  if (e.TERM_PROGRAM === "Apple_Terminal" || e.TERM_PROGRAM === "iTerm.app") return "mac";
+  if (e.WT_SESSION) return "pc";
+
+  if (e.SSH_CONNECTION !== undefined || e.SSH_CLIENT !== undefined || e.SSH_TTY !== undefined) return "any";
+  if (platform === "darwin") return "mac";
+  if (platform === "win32") return "pc";
+  if (platform === "linux" && (e.DISPLAY !== undefined || e.WAYLAND_DISPLAY !== undefined)) return "pc";
+  return "any";
+}
+
+export const QR_REDRAW_RESERVED_ROWS = 3;
+
+export const QR_REDRAW_BIGGER_LINE = "Make the window bigger or zoom out, and the code will appear here.";
+
+export const QR_REDRAW_PAIRING_LEAD = "The code fits now. In OcuClaw tap Take a photo of the QR code.";
+
+export const QR_REDRAW_APPROVAL_LEAD = "The code fits now. Point your phone's camera at it to approve this server:";
+
+export function qrRedrawHintLines(code        , window                                     , zoom         )           {
+  const need = `${code.columns}x${code.rows + QR_REDRAW_RESERVED_ROWS}`;
+  const columns = Number(window.columns) || 0;
+  const rows = Number(window.rows) || 0;
+  const have = columns > 0 && rows > 0 ? `; this one is ${columns}x${rows}` : "";
+  const key = zoom === "mac"
+    ? "Zoom out: Cmd+minus."
+    : zoom === "pc"
+      ? "Zoom out: Ctrl+minus."
+      : "Zoom out: Cmd+minus on Mac, Ctrl+minus on Windows and Linux.";
+  return [`QR needs a ${need} window${have}.`, QR_REDRAW_BIGGER_LINE, key];
+}
+
+export function qrFitsWindow(
+  code        ,
+  window                                     ,
+  since                                      ,
+)          {
+  const columns = Number(window.columns) || 0;
+  const rows = Number(window.rows) || 0;
+  if (since && columns === (Number(since.columns) || 0) && rows === (Number(since.rows) || 0)) return false;
+  if (columns <= 0 || code.columns > columns) return false;
+  return rows <= 0 || code.rows + QR_REDRAW_RESERVED_ROWS <= rows;
+}
 
 export const ASSUMED_TERMINAL                       = Object.freeze({
   unicode: true,
@@ -25,12 +71,28 @@ export const PAIRING_BOOTSTRAP_FORBIDDEN_SUBSTRINGS                    = Object.
 
 export const NARROW_TERMINAL_COLUMNS = 76;
 
+export function renderPairingQr(
+  qrPayload                  ,
+  terminal                      ,
+  lightTerminal         ,
+)                                                                                    {
+  if (terminal.unicode) {
+    if (terminal.color) return renderQrPayloadToTerminalColour(qrPayload);
+    const text = renderQrPayloadToTerminal(qrPayload, { invert: !lightTerminal });
+    const lines = text.split("\n");
+
+    return { text, columns: lines[0].length, rows: lines.length };
+  }
+  if (terminal.color) return renderQrPayloadToTerminalAnsi(qrPayload);
+  return null;
+}
+
 function renderCodeSection(
   qrPayload                  ,
   lightTerminal         ,
   terminal                      ,
   prefix          ,
-)           {
+)                                                       {
 
   const fits = (text        , columns        ) => {
     if (terminal.columns > 0 && columns > terminal.columns) return false;
@@ -39,27 +101,16 @@ function renderCodeSection(
     const prefixRows = prefix.reduce((total, line) => total + Math.max(1, Math.ceil(line.length / width)), 0);
     return prefixRows + text.split("\n").length + 2 <= terminal.rows;
   };
-  if (terminal.unicode) {
-    const code = renderQrPayloadToTerminal(qrPayload, { invert: !lightTerminal });
+  const code = renderPairingQr(qrPayload, terminal, lightTerminal);
 
-    const codeColumns = code.split("\n")[0].length;
-    if (fits(code, codeColumns)) {
-      return [code];
-    }
+  if (code === null) return { note: ["QR rendering is unavailable."] };
 
-    return [
-      "QR cannot fit in this terminal.",
-    ];
+  const widthKnown = terminal.unicode || terminal.columns > 0;
+  if (widthKnown && fits(code.text, code.columns)) return { code: code.text };
+  if (terminal.redraw === true) {
+    return { note: qrRedrawHintLines(code, terminal, terminal.zoom) };
   }
-
-  const ansi = renderQrPayloadToTerminalAnsi(qrPayload);
-  if (terminal.color && terminal.columns > 0 && fits(ansi.text, ansi.columns)) {
-    return [ansi.text];
-  }
-
-  return [terminal.color
-    ? "QR cannot fit in this terminal."
-    : "QR rendering is unavailable."];
+  return { note: ["QR cannot fit in this terminal."] };
 }
 
 export function renderPairingBootstrap(view                      )         {
@@ -78,7 +129,7 @@ export function renderPairingBootstrap(view                      )         {
       : `${minutes} minute${minutes === 1 ? "" : "s"}`;
 
   const instructions = [
-    "In OcuClaw tap Pair with your computer > Take a photo of the QR code.",
+    "In OcuClaw tap the Pair button > Take a photo of the QR code.",
     `Expires in ${window}. Or tap Enter the pairing code instead and type:`,
   ];
   const manualDetails = [
@@ -87,17 +138,17 @@ export function renderPairingBootstrap(view                      )         {
   ];
   const prefix = [...instructions, ...manualDetails];
   const section = renderCodeSection(qrPayload, lightTerminal, terminal, prefix);
-  if (section.length === 1 && section[0].startsWith("QR ")) {
+  if (section.note) {
 
     return [
-      "In the OcuClaw app on your phone, tap Pair with your computer, then",
+      "In the OcuClaw app on your phone, tap the Pair button, then",
       `Enter the pairing code instead. Expires in ${window}.`,
-      section[0],
+      ...section.note,
       ...manualDetails,
       "",
     ].join("\n");
   }
-  return [...prefix, ...section, ""].join("\n");
+  return [...prefix, section.code, ""].join("\n");
 }
 
 export function pairingBootstrapPayloadText(qrPayload                  )         {

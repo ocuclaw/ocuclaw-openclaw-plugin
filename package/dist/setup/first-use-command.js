@@ -11,8 +11,14 @@ import { createFirstUseStore, firstUseBinding, firstUseResult, FIRST_USE_WAIT_MA
 import { terminalText } from "./terminal-text.js";
 import {
   awaitFirstUseReply,
+  createGatewayFreezeRider,
   firstUseProviderErrorVerdict,
   firstUseTimeoutMessage,
+  gatewayUnresponsiveMessage,
+  isGatewayTransportFailure,
+  isGatewayUnresponsive,
+  GatewayUnresponsiveError,
+  GATEWAY_UNRESPONSIVE_REASON,
   FIRST_USE_SEND_PROMPT,
   FIRST_USE_WAIT_PROMPT,
 } from "./first-use-wait.js";
@@ -115,7 +121,10 @@ export function createFirstUseWakeGuardHook(service     ) {
   };
 }
 
-export function createFirstUseTool(api     , transport      = setupFirstUseRequest, service      = null) {
+export function createFirstUseTool(api     , transport      = setupFirstUseRequest, service      = null, timing      = {}) {
+
+  const clock = typeof timing?.now === "function" ? timing.now : () => Date.now();
+  const pause = typeof timing?.sleep === "function" ? timing.sleep : null;
   return async (params     , signal      = null, ctx      = null) => {
     validateFirstUseParams(params);
     const installation = setupInstallation(resolveSetupStateDir(api));
@@ -133,7 +142,8 @@ export function createFirstUseTool(api     , transport      = setupFirstUseReque
 
     const waitMs = params.timeoutMs === undefined ? FIRST_USE_WAIT_MAX_MS
       : Math.max(0, params.timeoutMs - Math.min(1000, params.timeoutMs / 2));
-    const deadline = Date.now() + waitMs;
+
+    const deadline = clock() + waitMs;
 
     const projectWelcomeCapability = (result     ) => {
       if (!result?.nextOperations?.some((op        ) => op.startsWith("first_use_welcome"))) return result;
@@ -147,7 +157,8 @@ export function createFirstUseTool(api     , transport      = setupFirstUseReque
     };
     let last      = null;
 
-    let receiptSettleDeadline                = null;
+    let receiptSpent                = null;
+    let receiptLastAt = 0;
     do {
       if (signal?.aborted) return last ? { ...projectWelcomeCapability(last), wait: "cancelled" } : cancelledBeforeRead();
       try {
@@ -174,21 +185,23 @@ export function createFirstUseTool(api     , transport      = setupFirstUseReque
       if (params.operation !== "first_use_wait") return projectWelcomeCapability(last);
 
       if (last.status === "awaiting-confirmation" && last.replyEvidenceReason === "observation_pending") {
-        if (receiptSettleDeadline === null) {
-          receiptSettleDeadline = Math.min(deadline, Date.now() + FIRST_USE_RECEIPT_SETTLE_MAX_MS);
-        }
-        if (Date.now() >= receiptSettleDeadline) return projectWelcomeCapability(last);
+        const readAt = clock();
+        if (receiptSpent === null) receiptSpent = 0;
+        else receiptSpent += Math.min(Math.max(0, readAt - receiptLastAt), FIRST_USE_RECEIPT_GAP_MS);
+        receiptLastAt = readAt;
+        if (receiptSpent >= FIRST_USE_RECEIPT_SETTLE_MAX_MS) return projectWelcomeCapability(last);
       } else if (last.status !== "awaiting-reply") {
         return projectWelcomeCapability(last);
       } else if (last.replyRunErrored) {
 
         return projectWelcomeCapability(last);
       }
-      if (Date.now() >= deadline) return { ...last, wait: "timed-out" };
+      if (clock() >= deadline) return { ...last, wait: "timed-out" };
+      if (pause) { await pause(Math.min(250, Math.max(0, deadline - clock()))); continue; }
 
       await new Promise      (resolve => {
         const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
-        const timer = setTimeout(done, Math.min(250, Math.max(0, deadline - Date.now())));
+        const timer = setTimeout(done, Math.min(250, Math.max(0, deadline - clock())));
         signal?.addEventListener("abort", done, { once: true });
         if (signal?.aborted) done();
       });
@@ -259,11 +272,24 @@ export async function runSetupWelcome(api     , options      = {}, io      = {})
   process.on("SIGTERM", cancel);
   options.signal?.addEventListener?.("abort", cancel, { once: true });
   if (options.signal?.aborted) cancel();
+
+  let operation = options.retry === true ? "first_use_welcome_retry" : "first_use_welcome";
+  let resent = false;
+  const rider = createGatewayFreezeRider({
+    now: io.now, sleep: io.sleep ?? defaultSleep,
+    say: (text     ) => output.write(`${text}\n`),
+    cancelled: () => cancelling,
+  });
   try {
-    const result      = await request({
-      installationId: installation.id, binding, timeoutMs,
-      operation: options.retry === true ? "first_use_welcome_retry" : "first_use_welcome",
-    });
+    const result      = await rider.call(async () => {
+      try {
+        return await request({ installationId: installation.id, binding, timeoutMs, operation });
+      } catch (error) {
+        if (isGatewayTransportFailure(error)) { operation = "first_use_welcome_retry"; resent = true; }
+        throw error;
+      }
+    }, { retryable: (error     ) => isGatewayTransportFailure(error) ||
+      (resent && /\bsetup-welcome-already-waiting\b/.test(String(error?.message ?? ""))) });
     const record = result?.record ?? null;
     if (result?.installation?.id !== installation.id || !record?.status) {
       return { ok: false, outcome: "unavailable", reason: "setup-context-mismatch", record: null };
@@ -287,6 +313,10 @@ export async function runSetupWelcome(api     , options      = {}, io      = {})
   } catch (error     ) {
     const message = error?.message ? String(error.message) : String(error ?? "");
     const reason = /\b(setup-[a-z-]+|installation-mismatch|runtime-unavailable)\b/.exec(message)?.[1] ?? "setup-welcome-unavailable";
+    if (isGatewayUnresponsive(error) && !cancelling) {
+      output.write(`${gatewayUnresponsiveMessage(error.waitedMs)}\n`);
+      return { ok: false, outcome: GATEWAY_UNRESPONSIVE_REASON, reason: GATEWAY_UNRESPONSIVE_REASON, record: null };
+    }
     if (cancelling) {
       output.write(`${SETUP_WELCOME_CANCELLED_MESSAGE}\n`);
       return { ok: false, outcome: "cancelled", reason, record: null };
@@ -307,6 +337,12 @@ export async function runSetupWelcome(api     , options      = {}, io      = {})
 export const FIRST_USE_RECEIPT_MESSAGE =
   "Your phone reported SDK acceptance of the reply.";
 
+export const FIRST_USE_RECEIPT_STALL_MAX_MS = 120000;
+
+export const FIRST_USE_RECEIPT_GAP_MS = 3000;
+export const FIRST_USE_RECEIPT_STALL_MESSAGE =
+  "The gateway is slow to answer. Still waiting for the phone's receipt...";
+
 export const FIRST_USE_SEEN_PROMPT =
   "Only if you saw that reply on G2, type SEEN ON G2 and press Enter: ";
 
@@ -320,7 +356,9 @@ export function createFirstUseCommand(api     ) {
     }
     const testInput = options.testInput === true || !!(io.input || io.request);
     const installation = setupInstallation(resolveSetupStateDir(api));
-    const call = (params     ) => (io.request ?? setupFirstUseRequest)({ ...params, installationId: installation.id, testInput });
+
+    const rawCall = (params     ) => (io.request ?? setupFirstUseRequest)({ ...params, installationId: installation.id, testInput });
+    const call = (params     ) => rider.call(() => rawCall(params));
     let armed = false;
     let answer = "";
     let cancelled = false;
@@ -330,6 +368,17 @@ export function createFirstUseCommand(api     ) {
     const welcomeAbort = new AbortController();
     const stop = () => { cancelled = true; welcomeAbort.abort(); finish(""); };
 
+    const cancellableSleep = (ms        ) => new Promise      ((resolve) => {
+      const done = () => { clearTimeout(pause); input.off("data", onCancelPoll); resolve(); };
+      const onCancelPoll = () => { if (cancelled) done(); };
+      const pause = setTimeout(done, ms);
+      input.on("data", onCancelPoll);
+    });
+    const rider = createGatewayFreezeRider({
+      now: io.now, sleep: io.sleep ?? cancellableSleep,
+      say: (text     ) => output.write(`${text}\n`),
+      cancelled: () => cancelled,
+    });
     const showWelcome = async () => {
 
       clearTimeout(timer);
@@ -337,7 +386,8 @@ export function createFirstUseCommand(api     ) {
       try { stored = createFirstUseStore(resolveSetupStateDir(api)).read(); } catch (_) { stored = null; }
       const run = io.welcome ?? runSetupWelcome;
       const result = await run(api, { binding: firstUseBinding(stored), retry: !!stored?.welcome,
-        signal: welcomeAbort.signal }, { output, request: io.welcomeRequest });
+        signal: welcomeAbort.signal }, { output, request: io.welcomeRequest, now: io.now, sleep: io.sleep });
+      if (result?.outcome === GATEWAY_UNRESPONSIVE_REASON) return { exitCode: 1, gatewayUnresponsive: true };
       return { exitCode: result?.ok === true ? 0 : 1 };
     };
     const onData = (chunk     ) => {
@@ -380,6 +430,8 @@ export function createFirstUseCommand(api     ) {
         const waitMs = Number.isInteger(options.waitMs) ? options.waitMs : FIRST_USE_DEFAULT_WAIT_MS;
 
         let lastWaitRunErrored      = null;
+
+        let lostGateway      = null;
         output.write(`${terminalText(FIRST_USE_SEND_PROMPT, "action", output, io.env)}\n`);
         output.write(`${FIRST_USE_WAIT_PROMPT}\n`);
         const waited      = await awaitFirstUseReply({
@@ -390,6 +442,7 @@ export function createFirstUseCommand(api     ) {
               if (res?.record?.replyRunErrored) lastWaitRunErrored = res.record.replyRunErrored;
               return { ok: true, record: res?.record ?? null };
             } catch (error     ) {
+              if (isGatewayUnresponsive(error)) { lostGateway = error; return { ok: false, reason: GATEWAY_UNRESPONSIVE_REASON }; }
               const message = error?.message ? String(error.message) : String(error ?? "");
               return { ok: false, reason: /\b(setup-[a-z-]+)\b/.exec(message)?.[1] ?? "setup-first-use-unavailable" };
             }
@@ -402,12 +455,14 @@ export function createFirstUseCommand(api     ) {
           waitMs,
           pollMs: Number.isInteger(io.pollMs) ? io.pollMs : FIRST_USE_WAIT_POLL_MS,
           noticeMs: Number.isInteger(io.noticeMs) ? io.noticeMs : FIRST_USE_WAIT_NOTICE_MS,
-          strictPhone: false,
           initialStatus: r.status,
         });
         if (waited.outcome === "cancelled") {
           output.write(`\n${FIRST_USE_CANCELLED_BEFORE_REPLY_MESSAGE}\n`);
           return { exitCode: 1 };
+        }
+        if (waited.outcome === "unavailable" && waited.reason === GATEWAY_UNRESPONSIVE_REASON) {
+          throw lostGateway ?? new GatewayUnresponsiveError(0);
         }
 
         if (waited.outcome === "errored") {
@@ -435,10 +490,27 @@ export function createFirstUseCommand(api     ) {
       if (r.status === "awaiting-confirmation") {
 
         const settleNow = io.now ?? (() => Date.now());
-        const settleBy = settleNow() + FIRST_USE_RECEIPT_SETTLE_MAX_MS;
+
+        const settleStart = settleNow();
+        const stallBy = settleStart + FIRST_USE_RECEIPT_STALL_MAX_MS;
+        let lastAnswerAt = settleStart;
+        let spent = 0;
+        let stallSaid = false;
         for (;;) {
-          const observed      = await call({ operation: "first_use_wait" }).catch(() => null);
+          const observed      = await rawCall({ operation: "first_use_wait" }).catch(() => null);
           const seen = observed?.record;
+          if (!seen) {
+            if (cancelled) break;
+
+            if (!stallSaid) { stallSaid = true; if (!rider.said) { rider.said = true; output.write(`${FIRST_USE_RECEIPT_STALL_MESSAGE}\n`); } }
+            if (settleNow() >= stallBy) break;
+            if (io.sleep) { await io.sleep(1000); continue; }
+            await cancellableSleep(1000);
+            continue;
+          }
+          const answeredAt = settleNow();
+          spent += Math.min(answeredAt - lastAnswerAt, FIRST_USE_RECEIPT_GAP_MS);
+          lastAnswerAt = answeredAt;
           if (seen?.status === "awaiting-welcome" && seen.replyEvidence === "client_sdk_receipt") {
             output.write(`${FIRST_USE_RECEIPT_MESSAGE}\n`);
             return await showWelcome();
@@ -451,14 +523,9 @@ export function createFirstUseCommand(api     ) {
           if (cancelled) break;
           if (seen?.status !== "awaiting-confirmation" ||
               seen.replyEvidenceReason !== "observation_pending") break;
-          if (settleNow() >= settleBy) break;
+          if (spent >= FIRST_USE_RECEIPT_SETTLE_MAX_MS || settleNow() >= stallBy) break;
           if (io.sleep) { await io.sleep(200); continue; }
-          await new Promise      ((resolve) => {
-            const done = () => { clearTimeout(timer); input.off("data", onCancelPoll); resolve(); };
-            const onCancelPoll = () => { if (cancelled) done(); };
-            const timer = setTimeout(done, 200);
-            input.on("data", onCancelPoll);
-          });
+          await cancellableSleep(200);
         }
       }
       output.write(terminalText(`The phone reply completed at ${new Date(r.reply.completedAt).toISOString()}.\n`, "detail", output, io.env));
@@ -489,7 +556,16 @@ export function createFirstUseCommand(api     ) {
       if (confirmed?.status !== "completed" || confirmed.attemptId !== r.attemptId) throw new Error("completion-unverified");
       output.write(`\n${firstUseSuccessLines(confirmed).join("\n")}\n`);
       return { exitCode: 0 };
-    } catch (_) {
+    } catch (error     ) {
+
+      if (isGatewayUnresponsive(error)) {
+        output.write(`\n${gatewayUnresponsiveMessage(error?.waitedMs)}\n`);
+        return { exitCode: 1, gatewayUnresponsive: true };
+      }
+      if (cancelled && isGatewayTransportFailure(error)) {
+        output.write("\nG2 confirmation is still pending. Run openclaw ocuclaw first-use when ready; no need to pair again.\n");
+        return { exitCode: 1 };
+      }
       output.write("\nFirst-use state could not be verified.\nRun openclaw ocuclaw journey for this installation and retry.\nPreserve existing credentials and checkpoint files.\n");
       return { exitCode: 2 };
     } finally {

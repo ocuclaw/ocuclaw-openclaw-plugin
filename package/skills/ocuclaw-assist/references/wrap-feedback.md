@@ -1,6 +1,6 @@
 # OcuClaw wrap-up & feedback
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 Load this only at a genuine finish — fresh install, update, rollback, or a
 standalone fix completed. Never after an unresolved failure or an ESCALATE. If
@@ -81,7 +81,7 @@ Run this at **every genuine finish** — fresh install, update, rollback, or a r
 
 **Copy-paste block for the feedback form at `https://ocuclaw.com/setup`:**
 ```
-OcuClaw setup assistant feedback — guide 2026-09-25 (1.0.58)
+OcuClaw setup assistant feedback — guide 2026-09-28 (1.0.59)
 Platform: <OS only, e.g. macOS / Windows 11 / Ubuntu>
 OpenClaw version: <e.g. 2026.7.1>
 OcuClaw plugin version: <e.g. 1.3.4>

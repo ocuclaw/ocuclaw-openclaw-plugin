@@ -2,6 +2,7 @@ import { createOcuClawRelayService } from "./runtime/relay-service.js";
 import { configuredOpenReplyRoute, configuredReplyModels, createReplyModelPriceLookup, probeLlmCompleteOptions, runtimeOnlyModelMatcher } from "./gateway/input-prediction-openclaw.js";
 import { saveInputPredictionModelAllow } from "./setup/optional-credential-store.js";
 import { createEvenAiModelHook } from "./even-ai/even-ai-model-hook.js";
+import { createEvenAiAskUserGuard } from "./even-ai/even-ai-ask-user-guard.js";
 import { createChannelTwoHook } from "./runtime/channel-two-hook.js";
 import {
   getRegisteredLiveuiGlassesLibraryController,
@@ -35,6 +36,7 @@ import {
   MINT_ON_LOAD_AFTER_WRITE,
   mintOnLoadSupported,
 } from "./setup/relay-credential-mint-on-load.js";
+import { createHostConfigWriteGate } from "./setup/host-config-write-gate.js";
 import { createSetupApprovalHook } from "./setup/setup-approval.js";
 import { registerSetupFirstUseControl, registerSetupWelcomeControl, createFirstUseTool, createFirstUseWakeGuardHook } from "./setup/first-use-command.js";
 import { warnTaskIndexPromptInjectionDisabledOnce } from "./runtime/task-index-prompt-injection.js";
@@ -103,6 +105,15 @@ export default function register(api) {
               afterWrite: MINT_ON_LOAD_AFTER_WRITE,
             }),
           })
+        : undefined,
+
+    createConfigWriteGate:
+      typeof api?.runtime?.config?.current === "function"
+        ? (startedConfig) =>
+            createHostConfigWriteGate({
+              readLive: () => api.runtime.config.current(),
+              startedConfig,
+            })
         : undefined,
     onRelayCredentialAdopted: () => {
       relayCredentialAdopted = true;
@@ -182,8 +193,16 @@ export default function register(api) {
     readJourney: () => controller("journey", { surface: "phone" }),
   });
 
+  const evenAiAskUserGuard = createEvenAiAskUserGuard({
+    onBlocked: ({ runId, sessionKey }) =>
+      service.emitDebug("evenai", "ask_user_blocked", "info", { sessionKey, runId }),
+  });
+
   if (typeof api.on === "function") {
-    api.on("before_tool_call", createSetupApprovalHook([createFirstUseWakeGuardHook(service)]));
+    api.on("before_tool_call", createSetupApprovalHook([
+      createFirstUseWakeGuardHook(service),
+      evenAiAskUserGuard.beforeToolCall,
+    ]));
   }
 
   let glassesUiDispose = null;
@@ -214,8 +233,9 @@ export default function register(api) {
             getDisplayStartStates: (k) => service.getDisplayStartStates(k),
             getDisplayCurrentStates: (k) => service.getDisplayCurrentStates(k),
             hasConnectedAppClient: () => service.hasConnectedAppClient(),
-            consumePromptTurnOwnership: (k, identity) =>
-              service.consumePromptTurnOwnership(k, identity),
+            consumePromptTurnOwnership: evenAiAskUserGuard.observePromptTurnOwnership(
+              (k, identity) => service.consumePromptTurnOwnership(k, identity),
+            ),
 
             getEvenAiSystemPrompt() {
               const snapshot = service.getEvenAiSettingsSnapshot();
@@ -274,6 +294,7 @@ export default function register(api) {
       service.start({
         logger: ctx && ctx.logger,
         stateDir: ctx && ctx.stateDir,
+        config: ctx && ctx.config,
       }),
     stop: (ctx) => {
       if (typeof glassesUiDispose === "function") {

@@ -108,6 +108,19 @@ export function renderGeneric(title     , report     ) {
   return lines;
 }
 
+export const PLUGIN_UNINSTALL_HINT = [
+  "  next: to remove the plugin too, run both lines:",
+  "    openclaw plugins uninstall ocuclaw --force",
+  "    openclaw config unset plugins.entries.ocuclaw",
+  "  (the second line stops OpenClaw 2026.9 keeping OcuClaw switched off on a later install;",
+  "   \"Config path not found\" there means nothing was left to clear)",
+];
+
+export function renderRollback(report     ) {
+  const lines = renderGeneric("Cloudways rollback", report);
+  return report.ok ? [...lines, ...PLUGIN_UNINSTALL_HINT] : lines;
+}
+
 export async function runCloudwaysVerb(verb     , options      = {}, deps      = {}) {
   const layout = deps.layout || resolveLayout(options);
   if (verb === "detect") {
@@ -148,7 +161,7 @@ export async function runCloudwaysVerb(verb     , options      = {}, deps      =
       return { exitCode: EXIT_REFUSED, report, lines: renderGeneric("Cloudways rollback", report) };
     }
     const report = await rollback(layout, deps, { purgeIdentity: options.purgeIdentity === true });
-    return { exitCode: report.ok ? EXIT_OK : EXIT_PROBLEM, report, lines: renderGeneric("Cloudways rollback", report) };
+    return { exitCode: report.ok ? EXIT_OK : EXIT_PROBLEM, report, lines: renderRollback(report) };
   }
   return {
     exitCode: EXIT_REFUSED,

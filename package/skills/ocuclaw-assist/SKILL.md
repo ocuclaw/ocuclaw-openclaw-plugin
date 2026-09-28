@@ -7,7 +7,7 @@ metadata: {"openclaw": {"emoji": "👓"}}
 
 # OcuClaw Setup Assistant
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 Use this skill when a user asks to install, update, roll back, configure, or troubleshoot OcuClaw on this machine. Work phase by phase. Before each phase, say what you will do, why, and which commands matter. Ask for OK. Afterward, verify in plain words. Setup takes about 15 minutes; the user should keep their phone nearby.
 
@@ -396,7 +396,11 @@ matters for container/topology reasoning; the agent shell can sit in a
 different namespace). A runtime status of `starting` (evidence
 `relay-start-pending-bind`) means a relay handle exists but the bind never
 completed — treat it as NOT running and go read the gateway log for the bind
-failure. Do not
+failure. A `plugin.capabilityConsent.status` of `required` (finding
+`plugin.capability-consent-required`, usual after an OpenClaw upgrade) means
+OpenClaw wants the owner to approve OcuClaw's declared capabilities again:
+give the user the one command `openclaw plugins enable ocuclaw
+--accept-capabilities` and do not edit plugin config for it. Do not
 re-derive those facts with `plugins list`, `plugins inspect`, `gateway status`,
 or bare `config get` probes while that lane is live. This extends to reference
 steps: a step's read-only check command is already satisfied when a successful

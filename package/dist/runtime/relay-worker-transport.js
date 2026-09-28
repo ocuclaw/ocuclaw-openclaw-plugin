@@ -17,6 +17,15 @@ import { createRelayWorkerHealthMonitor } from "./relay-worker-health.js";
 import { createApprovalReplayCache } from "./relay-worker-approval-replay-cache.js";
 import { createLiveuiRenderErrorAuthority } from "./liveui-render-error-authority.js";
 import { createRelayClientNudgeController } from "./relay-client-nudge-controller.js";
+import {
+  RELAY_BIND_HOLDER_RETRY_DELAYS_MS,
+  createRelayBindConflictError,
+  describeRelayPortHolder,
+  formatRelayPortHeldExhaustedMessage,
+  formatRelayPortHeldRetryMessage,
+  formatRelayPortListenerMessage,
+} from "./relay-bind-holder.js";
+import { relayClientKindForName } from "./relay-client-names.js";
 import { constantTimeEqual } from "../domain/constant-time-equal.js";
 import {
   PAIRING_CONTROL_MAX_REQUEST_BODY_BYTES,
@@ -39,6 +48,99 @@ const LIVENESS_MAX_MISSED_PINGS = 2;
 
 const CONTROL_QUEUE_MAX_DEFAULT = 1000;
 const TRANSACTIONAL_QUEUE_MAX_DEFAULT = 1000;
+
+const LIVEUI_LANE_TYPES = new Set([
+  "glasses_ui_render",
+  "glasses_ui_surface_update",
+  "glasses_ui_session_reset",
+  "demand",
+  "demand_dismiss",
+]);
+
+const WS_DEFLATE_ENV = "OCUCLAW_RELAY_WS_DEFLATE";
+const WS_DEFLATE_CLIENT_MAX_WINDOW_BITS = 12;
+
+const WS_DEFLATE_SERVER_OPTIONS = Object.freeze({
+  serverMaxWindowBits: 15,
+  clientMaxWindowBits: WS_DEFLATE_CLIENT_MAX_WINDOW_BITS,
+  zlibDeflateOptions: Object.freeze({ level: 1, memLevel: 8 }),
+  threshold: 256,
+});
+
+function resolveWsDeflateEnabled(manifestDefault, envValue) {
+  if (typeof envValue === "string") {
+    const v = envValue.trim().toLowerCase();
+    if (v === "0" || v === "off" || v === "false") return false;
+    if (v === "1" || v === "on" || v === "true") return true;
+  }
+  return manifestDefault === true;
+}
+
+const DEFLATE_TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+
+function parseExtensionOffers(header) {
+  if (typeof header !== "string" || !header.trim()) return null;
+  const offers = [];
+  for (const rawOffer of header.split(",")) {
+    const parts = rawOffer.split(";").map((part) => part.trim());
+    if (!DEFLATE_TOKEN.test(parts[0])) return null;
+    const params = new Map();
+    for (const rawParam of parts.slice(1)) {
+      const eq = rawParam.indexOf("=");
+      const key = (eq === -1 ? rawParam : rawParam.slice(0, eq)).trim();
+      let value = eq === -1 ? true : rawParam.slice(eq + 1).trim();
+      if (!DEFLATE_TOKEN.test(key) || params.has(key)) return null;
+      if (value !== true) {
+        if (value.length >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+          value = value.slice(1, -1);
+        }
+        if (!DEFLATE_TOKEN.test(value)) return null;
+      }
+      params.set(key, value);
+    }
+    offers.push({ name: parts[0], params });
+  }
+  return offers;
+}
+
+function windowBitsAtLeast(value, min) {
+  if (value === true) return true;
+  if (!/^\d+$/.test(value)) return false;
+  const bits = Number(value);
+  return bits >= min && bits <= 15;
+}
+
+function acceptableDeflateOffer(params) {
+  for (const [key, value] of params) {
+    if (key === "server_no_context_takeover" || key === "client_no_context_takeover") {
+      if (value !== true) return false;
+    } else if (key === "server_max_window_bits") {
+      if (!windowBitsAtLeast(value, WS_DEFLATE_SERVER_OPTIONS.serverMaxWindowBits)) return false;
+    } else if (key === "client_max_window_bits") {
+      if (!windowBitsAtLeast(value, WS_DEFLATE_CLIENT_MAX_WINDOW_BITS)) return false;
+    } else {
+      return false;
+    }
+  }
+
+  return params.has("client_max_window_bits");
+}
+
+const CHROMIUM_UA = /\b(?:Chrome|Chromium|HeadlessChrome)\/\d/;
+const APPLE_WEBKIT_UA = /\b(?:iPhone|iPad|iPod|Macintosh)\b/;
+
+function wsDeflateEligible({ extensionsHeader, userAgent, pmdQuery } = {}) {
+  const offers = parseExtensionOffers(extensionsHeader);
+  if (!offers) return false;
+  const deflateOffers = offers.filter((offer) => offer.name === "permessage-deflate");
+  if (!deflateOffers.length || !acceptableDeflateOffer(deflateOffers[0].params)) return false;
+  if (pmdQuery === "1") return true;
+  const ua = typeof userAgent === "string" ? userAgent : "";
+  return CHROMIUM_UA.test(ua) && !APPLE_WEBKIT_UA.test(ua);
+}
+
+const STREAM_DELTA_TYPE = "ocuclaw.message.stream.delta";
+const STREAM_CLEAR_TYPE = "ocuclaw.message.stream.clear";
 
 function normalizeStringList(value) {
   if (!Array.isArray(value)) return [];
@@ -69,10 +171,23 @@ export function createRelayWorkerTransport(options = {}) {
     Number.isFinite(options.listenRetryMaxAttempts) && options.listenRetryMaxAttempts >= 0
       ? Math.floor(options.listenRetryMaxAttempts)
       : 5;
+
+  const bindOptions = options;
+  const bindHolderRetryDelaysMs = Array.isArray(bindOptions.bindHolderRetryDelaysMs)
+    ? bindOptions.bindHolderRetryDelaysMs
+        .filter((ms) => Number.isFinite(ms) && ms >= 0)
+        .map((ms) => Math.floor(ms))
+    : RELAY_BIND_HOLDER_RETRY_DELAYS_MS;
+  const describeBindHolder =
+    typeof bindOptions.describeBindHolder === "function"
+      ? bindOptions.describeBindHolder
+      : describeRelayPortHolder;
   let manifest = JSON.parse("null");
   let backendKind = "openclaw";
   let httpServer = null;
   let wss = null;
+
+  let wssDeflate = null;
   let nextClientId = 1;
 
   const TOKEN_REJECT_LOG_WINDOW_MS = 60000;
@@ -120,6 +235,7 @@ export function createRelayWorkerTransport(options = {}) {
     entries: null,
     status: null,
     debugConfig: null,
+    sessionContext: null,
     pagesRevision: null,
     entriesRevision: null,
     lastSeq: -1,
@@ -224,7 +340,10 @@ export function createRelayWorkerTransport(options = {}) {
         transactional: [],
         coalescableByType: new Map(),
         postCoalescable: [],
+        liveui: [],
         bestEffort: [],
+
+        streamDeltaSlots: new Map(),
         draining: false,
         retryTimer: null,
         pressureWarned: false,
@@ -240,7 +359,12 @@ export function createRelayWorkerTransport(options = {}) {
       type === "ocuclaw.approval.resolve.ack" ||
       type === "ocuclaw.approval.request" ||
       type === "ocuclaw.approval.resolved" ||
-      type === "ocuclaw.remote.control"
+      type === "ocuclaw.remote.control" ||
+
+      type === "sonioxTemporaryKey" ||
+      type === "sonioxTemporaryKeyError" ||
+      type === "cartesiaAccessToken" ||
+      type === "cartesiaAccessTokenError"
     ) {
       return true;
     }
@@ -311,11 +435,29 @@ export function createRelayWorkerTransport(options = {}) {
       type === APP_PROTOCOL.debugConfigSnapshot
     ) {
       q.coalescableByType.set(type, frame);
+    } else if (LIVEUI_LANE_TYPES.has(type)) {
+      q.liveui.push(frame);
     } else {
-      q.bestEffort.push(frame);
+      const runId = streamRunId(parsedFrame);
+
+      const slotKey = type === STREAM_DELTA_TYPE && runId ? streamSlotKey(runId, parsedFrame) : null;
+      const slot = slotKey ? q.streamDeltaSlots.get(slotKey) : null;
+      if (slot) {
+
+        slot.frame = frame;
+      } else {
+        if (type === STREAM_CLEAR_TYPE && runId) dropQueuedStreamDeltas(q, runId);
+        if (slotKey) {
+          const newSlot = { frame, runId, key: slotKey };
+          q.streamDeltaSlots.set(slotKey, newSlot);
+          q.bestEffort.push(newSlot);
+        } else {
+          q.bestEffort.push(frame);
+        }
+      }
       while (q.bestEffort.length > 100) {
 
-        const dropped = q.bestEffort.shift();
+        const dropped = takeBestEffortFrame(q);
         emitDebug("worker_best_effort_frame_dropped", "warn", {
           clientId,
           droppedType: parseMessageType(parseFrame(dropped)),
@@ -324,6 +466,32 @@ export function createRelayWorkerTransport(options = {}) {
       }
     }
     drainClientQueue(clientId);
+  }
+
+  function streamRunId(parsed) {
+    const runId = parsed && typeof parsed.runId === "string" ? parsed.runId : "";
+    return runId || null;
+  }
+
+  function streamSlotKey(runId, parsed) {
+    const index = Number.isInteger(parsed?.messageIndex) && parsed.messageIndex > 0 ? parsed.messageIndex : 0;
+    return `${runId}#${index}`;
+  }
+
+  function takeBestEffortFrame(q) {
+    const entry = q.bestEffort.shift();
+    if (typeof entry === "string") return entry;
+    if (q.streamDeltaSlots.get(entry.key) === entry) q.streamDeltaSlots.delete(entry.key);
+    return entry.frame;
+  }
+
+  function dropQueuedStreamDeltas(q, runId) {
+    for (const [key, slot] of q.streamDeltaSlots) {
+      if (slot.runId !== runId) continue;
+      q.streamDeltaSlots.delete(key);
+      const index = q.bestEffort.indexOf(slot);
+      if (index >= 0) q.bestEffort.splice(index, 1);
+    }
   }
 
   function nextQueuedFrame(q) {
@@ -335,7 +503,8 @@ export function createRelayWorkerTransport(options = {}) {
       return first[1];
     }
     if (q.postCoalescable.length) return q.postCoalescable.shift();
-    if (q.bestEffort.length) return q.bestEffort.shift();
+    if (q.liveui.length) return q.liveui.shift();
+    if (q.bestEffort.length) return takeBestEffortFrame(q);
     return null;
   }
 
@@ -346,6 +515,7 @@ export function createRelayWorkerTransport(options = {}) {
         q.transactional.length ||
         q.coalescableByType.size ||
         q.postCoalescable.length ||
+        q.liveui.length ||
         q.bestEffort.length)
     );
   }
@@ -473,6 +643,10 @@ export function createRelayWorkerTransport(options = {}) {
         sentApprovals += 1;
       }
     }
+
+    if (cache.sessionContext && supportsLedgerV1) {
+      enqueueFrame(clientId, cache.sessionContext);
+    }
     if (cache.debugConfig && (protocolState.get(clientId) || {}).clientKind === "app") {
       enqueueFrame(clientId, cache.debugConfig);
     }
@@ -520,10 +694,7 @@ export function createRelayWorkerTransport(options = {}) {
       return;
     }
 
-    const clientKind =
-      parsed.clientName === "debugctl" || parsed.clientName === "director"
-        ? "debug"
-        : "app";
+    const clientKind = relayClientKindForName(parsed.clientName);
     if (clientKind === "debug" && manifest.externalDebugToolsEnabled !== true) {
       ws.close(1008, "external_debug_tools_disabled");
       return;
@@ -1001,6 +1172,7 @@ export function createRelayWorkerTransport(options = {}) {
         if (frameRevision !== null) cache.statusRevision = frameRevision;
       }
       if (type === APP_PROTOCOL.debugConfigSnapshot) cache.debugConfig = message.frame;
+      if (type === APP_PROTOCOL.sessionContextSnapshot) cache.sessionContext = message.frame;
       if (message.revisions) {
         const pagesRevision = parseNonNegativeRevision(message.revisions.pagesRevision);
         const entriesRevision = parseNonNegativeRevision(message.revisions.entriesRevision);
@@ -1129,8 +1301,33 @@ export function createRelayWorkerTransport(options = {}) {
     });
 
     wss = new WebSocketServer({ noServer: true, maxPayload: manifest.rpc.wsMaxMessageBytes });
+
+    const deflateEnabled = resolveWsDeflateEnabled(
+      manifest.rpc.wsPerMessageDeflate,
+      Reflect.get(globalThis, "process")?.env?.[WS_DEFLATE_ENV],
+    );
+    wssDeflate = deflateEnabled
+      ? new WebSocketServer({
+          noServer: true,
+          maxPayload: manifest.rpc.wsMaxMessageBytes,
+          perMessageDeflate: {
+            ...WS_DEFLATE_SERVER_OPTIONS,
+            zlibDeflateOptions: { ...WS_DEFLATE_SERVER_OPTIONS.zlibDeflateOptions },
+          },
+        })
+      : null;
     httpServer.on("upgrade", (req, socket, head) => {
-      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+      let pmdQuery = null;
+      try {
+        pmdQuery = new URL(req.url || "/", "http://relay").searchParams.get("pmd");
+      } catch {}
+      const target = wssDeflate && wsDeflateEligible({
+        extensionsHeader: req.headers["sec-websocket-extensions"],
+        userAgent: req.headers["user-agent"],
+        pmdQuery,
+      }) ? wssDeflate : wss;
+
+      target.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
     });
     wss.on("connection", (ws, req) => {
       const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -1142,8 +1339,12 @@ export function createRelayWorkerTransport(options = {}) {
       }
       const clientId = `worker-client-${nextClientId++}`;
       const connectedAtMs = now();
+      const deflateSuffix =
+        typeof ws.extensions === "string" && ws.extensions.includes("permessage-deflate")
+          ? " deflate=on"
+          : "";
       logger.info(
-        `[ocuclaw] relay client connected clientId=${clientId} remote=${remoteAddress}`,
+        `[ocuclaw] relay client connected clientId=${clientId} remote=${remoteAddress}${deflateSuffix}`,
       );
       clients.set(clientId, ws);
 
@@ -1194,9 +1395,13 @@ export function createRelayWorkerTransport(options = {}) {
 
     await new Promise((resolve, reject) => {
       let attempt = 0;
+      let holderAttempt = 0;
+      let holderStartedAtMs = null;
       let settled = false;
       const onError = (err) => {
         if (settled) return;
+
+        if (httpServer) httpServer.removeListener("listening", onListening);
 
         if (err && err.code === "EADDRINUSE" && attempt < listenRetryMaxAttempts) {
           attempt += 1;
@@ -1209,9 +1414,84 @@ export function createRelayWorkerTransport(options = {}) {
           if (typeof retryTimer.unref === "function") retryTimer.unref();
           return;
         }
+        if (err && err.code === "EADDRINUSE") {
+          void handleHeldPort();
+          return;
+        }
         settled = true;
         reject(err);
       };
+
+      async function handleHeldPort() {
+        if (holderStartedAtMs === null) holderStartedAtMs = now();
+        const host = manifest.host;
+        const port = manifest.port;
+        let holder = null;
+        try {
+          holder = await describeBindHolder({ host, port });
+        } catch (_) {
+          holder = null;
+        }
+        if (settled) return;
+        const owner =
+          holder && typeof holder.owner === "string" && holder.owner ? holder.owner : "unknown";
+        const conflict = {
+          host,
+          port,
+          listening: Boolean(holder && holder.listening),
+          owner,
+          probe: (holder && holder.probe) || "unknown",
+          attempts: holderAttempt,
+        };
+        if (conflict.listening) {
+          emitDebug("worker_listen_holder", "error", { ...conflict, outcome: "listener" });
+          settled = true;
+          reject(
+            createRelayBindConflictError(
+              formatRelayPortListenerMessage({ host, port, owner }),
+              { ...conflict, outcome: "listener" },
+            ),
+          );
+          return;
+        }
+        if (holderAttempt < bindHolderRetryDelaysMs.length) {
+          const delayMs = bindHolderRetryDelaysMs[holderAttempt];
+          holderAttempt += 1;
+          logger.warn(
+            `[ocuclaw] ${formatRelayPortHeldRetryMessage({
+              host,
+              port,
+              owner,
+              attempt: holderAttempt,
+              maxAttempts: bindHolderRetryDelaysMs.length,
+              delayMs,
+            })}`,
+          );
+          emitDebug("worker_listen_holder_retry", "warn", {
+            ...conflict,
+            attempt: holderAttempt,
+            maxAttempts: bindHolderRetryDelaysMs.length,
+            delayMs,
+          });
+          const holderRetryTimer = setTimeout(tryListen, delayMs);
+          if (typeof holderRetryTimer.unref === "function") holderRetryTimer.unref();
+          return;
+        }
+        emitDebug("worker_listen_holder", "error", { ...conflict, outcome: "exhausted" });
+        settled = true;
+        reject(
+          createRelayBindConflictError(
+            formatRelayPortHeldExhaustedMessage({
+              host,
+              port,
+              owner,
+              attempts: holderAttempt,
+              elapsedMs: now() - holderStartedAtMs,
+            }),
+            { ...conflict, outcome: "exhausted" },
+          ),
+        );
+      }
       const onListening = () => {
         if (settled) return;
         settled = true;
@@ -1364,6 +1644,7 @@ export function createRelayWorkerTransport(options = {}) {
     for (const socket of sockets) socket.destroy();
     sockets.clear();
     if (wss) wss.close();
+    if (wssDeflate) wssDeflate.close();
     return new Promise((resolve) => {
       if (!httpServer) {
         resolve();
@@ -1377,6 +1658,7 @@ export function createRelayWorkerTransport(options = {}) {
         if (httpServer === server) {
           httpServer = null;
           wss = null;
+          wssDeflate = null;
         }
         resolve();
       }

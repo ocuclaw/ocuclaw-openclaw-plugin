@@ -1,6 +1,6 @@
 # Cloudways managed OpenClaw: userspace Tailscale kept alive by the plugin itself
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 Use this branch in place of fresh-install Steps 6 and 7 when the host is a
 Cloudways **Managed AI Agents** container running OpenClaw 2026.7.1-2 (hostname
@@ -142,7 +142,7 @@ always did.
 Scan instructions, Address and Pairing code precede the QR. The whole scan
 state, including the waiting line, must fit the terminal. A small terminal
 prints the typed **Enter the pairing code instead** lane rather than a clipped
-code. On the phone the controls are **Pair with your computer**, then
+code. On the phone the controls are **Pair with your agent** (older apps: **Pair with your computer**), then
 **Take a photo of the QR code** or **Enter the pairing code instead**. Use these exact control names. The four-word comparison
 appears only after the phone joins: type `approve`, `refuse`, or `cancel`.
 Case does not matter; a typo never approves. Approval waits for the phone's
@@ -189,7 +189,7 @@ root and no TUN device on this container, so those paths cannot work and must
 not be tried. Also never, on this host: Tailscale Funnel, ACL or tailnet
 policy edits, `tailscale serve reset`, or starting `tailscaled` by hand.
 
-Two host-configuration facts specific to OpenClaw 2026.7.1 on this box:
+Host-configuration facts specific to OpenClaw 2026.7.1 on this box:
 
 - `plugins.allow` on this host is a non-empty allowlist. `"ocuclaw"` must be
   in it or the plugin never loads:
@@ -211,17 +211,41 @@ Two host-configuration facts specific to OpenClaw 2026.7.1 on this box:
   empty, so the command is unchanged. If the box ever runs
   OpenClaw 2026.9.x, the probe adds `--accept-capabilities`, an archive needs
   `--force` too, and both need the person's yes first.
+- Every `openclaw` command on this box, `openclaw plugins install` included,
+  prints OpenClaw's own "Config warnings" about
+  `channels.whatsapp.allowFrom` twice before its first line: a plain list while
+  the CLI loads, then the same warnings boxed. That is OpenClaw reading the
+  host's WhatsApp channel config, not OcuClaw: it prints before any OcuClaw
+  code runs, and `openclaw ocuclaw cloudways setup` cannot suppress it
+  (#3808). On OpenClaw 2026.9.x the setup's step 2 grant prints the same
+  warnings once more, on one line, because OpenClaw validates the whole config
+  on every config write. Tell the user it is harmless for OcuClaw and leave the
+  WhatsApp settings alone unless they ask to change them.
 
-Plugin install on this host needs no gateway restart. Verified on 2026.7.1-2:
-`openclaw plugins install <tgz>` added `"ocuclaw"` to `plugins.allow`, wrote
-`plugins.entries.ocuclaw.enabled=true`, and the running gateway hot-loaded the
-plugin in the same process (same PID). Do not restart to "make it take
-effect". Verify with the gateway log line instead: the relay service reports
-the port it opened. A restart here restarts the whole container, so it costs
-the SSH session for nothing. `openclaw plugins install` still prints its own
-generic "Restart the gateway to load plugins." on this host: that is OpenClaw's
-text, not ours, `openclaw ocuclaw cloudways setup` says so in step 1, and you
-should tell the user to ignore it here.
+A fresh plugin install needs no restart on this host. Do not restart on your
+own: `openclaw ocuclaw cloudways setup` step 3 checks the running gateway and
+asks for the one restart only when it is needed (for example, an upgrade over
+an existing install). Step 1 says nothing about restarts. What the install
+prints differs by OpenClaw version:
+
+- 2026.7.1-2: no restart. `openclaw plugins install <tgz>` added `"ocuclaw"`
+  to `plugins.allow`, wrote `plugins.entries.ocuclaw.enabled=true`, and the
+  running gateway hot-loaded the plugin in the same process (same PID). Do not
+  restart to "make it take effect". A restart here restarts the whole
+  container, so it costs the SSH session for nothing. The install still prints
+  its own generic "Restart the gateway to load plugins.": that is OpenClaw's
+  text, not ours. Tell the user to skip it.
+- 2026.9.5: no restart either, but a slower check. The install prints no
+  restart hint; it ends with "Applied in Gateway generation N." The step 2
+  grant makes the gateway reload OcuClaw, and for about a minute the gateway
+  does not answer whether OcuClaw is loaded. Step 3 waits up to 3 minutes and
+  says "Still checking. This can take up to 3 minutes." while it does (#3889).
+  Tell the user to let it finish. If step 3 still prints the gateway kill
+  command, relay it as printed.
+- No gateway process running (for example after the gateway ran out of
+  memory and the respawned one exited): the kill command would end nothing,
+  so step 3 prints "Restart the agent from your Cloudways dashboard, then run
+  openclaw ocuclaw cloudways setup again." instead. Relay that.
 
 ## C1 · Detect
 
@@ -383,8 +407,9 @@ Ending the gateway process is acceptable only if the user accepts the SSH
 drop first.
 
 These all hot-reload with no restart: a fresh `openclaw plugins install
-<tgz>`, `openclaw config set ...`, and plugin uninstall. The one case that
-needs a container restart is an upgrade over an existing install
+<tgz>`, `openclaw config set ...`, and plugin uninstall. On 2026.9.5 a
+reload takes about a minute before OcuClaw answers again (see above). The one
+case that needs a container restart is an upgrade over an existing install
 (`openclaw plugins install --force <tgz>`, which does exist on 2026.7.1): the
 old code stays live until the container restarts.
 
@@ -403,3 +428,9 @@ route.
   added, so a later `install` comes back `running` without a new
   authorization. Without `--yes` it refuses. Rollback is a checkpoint; never
   run it unasked.
+- Removing the plugin too, after rollback: `openclaw plugins uninstall
+  ocuclaw --force`, then `openclaw config unset plugins.entries.ocuclaw`
+  (rollback prints both). OpenClaw 2026.9's uninstall leaves
+  `plugins.entries.ocuclaw.enabled=false`; without the unset a later install
+  stays off and `openclaw ocuclaw cloudways setup` fails at once with
+  OpenClaw's own message (troubleshooting case PLUGIN-OFF-AFTER-REINSTALL).

@@ -7,6 +7,8 @@ import {
 
 const SWEEP_INTERVAL_MS = 1000;
 
+const STALL_GAP_MS = 2000;
+
 export function selectReplyTarget(entries, sessionKey, runId, runErrored = false) {
   if (runErrored === true) return { target: null, reason: "reply_run_errored" };
   const ofRun = (Array.isArray(entries) ? entries : [])
@@ -50,6 +52,18 @@ export function createReplyDeliveryCoordinator({
   const tracked = new Map();
   let sweepTimer = null;
 
+  let lastBeat = null;
+  let frozenMs = 0;
+  function liveNow() {
+    const at = now();
+    if (sweepTimer !== null && lastBeat !== null) {
+      const gap = at - lastBeat;
+      if (gap > SWEEP_INTERVAL_MS + STALL_GAP_MS) frozenMs += gap - SWEEP_INTERVAL_MS;
+    }
+    lastBeat = at;
+    return at - frozenMs;
+  }
+
   const debug = (event, data) => {
     if (typeof emitDebug === "function") emitDebug(event, data);
   };
@@ -62,7 +76,7 @@ export function createReplyDeliveryCoordinator({
     stopSweepIfIdle();
   }
 
-  const delivery = createReplyDelivery({ now, randomId, deadlineMs, maxPending, onSettle: announce });
+  const delivery = createReplyDelivery({ now: liveNow, randomId, deadlineMs, maxPending, onSettle: announce });
   const terminal = (candidateKey, status, reason) => {
     const result = { status, reason, evidence: null };
     delivery.invalidate(candidateKey);
@@ -81,6 +95,8 @@ export function createReplyDeliveryCoordinator({
 
   function startSweep() {
     if (sweepTimer !== null) return;
+
+    lastBeat = now();
     sweepTimer = setIntervalFn(sweep, SWEEP_INTERVAL_MS);
     if (sweepTimer && typeof sweepTimer.unref === "function") sweepTimer.unref();
   }
@@ -94,7 +110,7 @@ export function createReplyDeliveryCoordinator({
   function sweep() {
     delivery.sweep();
     for (const [candidateKey, entry] of [...waiting]) {
-      if (now() - entry.at <= deadlineMs) continue;
+      if (liveNow() - entry.at <= deadlineMs) continue;
       waiting.delete(candidateKey);
 
       terminal(candidateKey, entry.reason === "reply_entry_not_found" ? "unconfirmed" : "unsupported", entry.reason);
@@ -155,7 +171,7 @@ export function createReplyDeliveryCoordinator({
     }
 
     const earlier = waiting.get(candidateKey);
-    const at = earlier ? earlier.at : now();
+    const at = earlier ? earlier.at : liveNow();
     const attempt = tryObserve(candidateKey, sessionKey, runId, at);
     if (attempt.settled) return attempt.settled;
 

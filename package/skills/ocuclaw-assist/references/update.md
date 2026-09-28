@@ -1,6 +1,6 @@
 # Updating OcuClaw
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 This is the **stable update** path — for any already-installed OcuClaw user. You
 do **not** need to be a beta tester to be here. For the **beta channel** (newer

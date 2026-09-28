@@ -124,6 +124,7 @@ export function createFirstUseStore(stateDir     , options      = {}) {
             !["dismissed", "back"].includes(r.welcome.outcome) ||
             r.welcome.source !== (r.confirmation?.source === "test-input" ? "test-input" : "bound-phone-gesture"))))) ||
         (r.status === "completed" && r.completionPolicy === "reply-and-welcome" && r.welcome?.status !== "completed") ||
+        (r.pairingCompletedAt !== undefined && !Number.isFinite(r.pairingCompletedAt)) ||
         (r.relayRun !== undefined && !validRelayRun(r.relayRun))) {
       throw new Error("setup-state-unreadable-or-foreign");
     }
@@ -153,7 +154,9 @@ export function createFirstUseStore(stateDir     , options      = {}) {
     begin(sessionKey     , retry = false, phone      = null, relayRun      = null) {
       const run = relayRun ? freshRelayRun(relayRun) : null;
       return change((r     ) => {
-        if (r && (!retry || (r.status === "completed" && r.confirmation?.source !== "test-input"))) {
+
+        if (r && !firstUseAttemptPredatesPairing(r) &&
+            (!retry || (r.status === "completed" && r.confirmation?.source !== "test-input"))) {
           if (sessionKey && sessionKey !== r.sessionKey) throw new Error("setup-session-mismatch");
           let next = r;
           if (phone && !r.completionPolicy && r.status !== "completed") {
@@ -187,6 +190,20 @@ export function createFirstUseStore(stateDir     , options      = {}) {
           outcome: ending.outcome, at: now(),
           ...(FIRST_USE_RELAY_STAGES.includes(ending.stage) ? { stage: ending.stage } : {}),
         } } };
+      });
+    },
+
+    notePairingCompleted() {
+      return change((r     ) => {
+        if (!r || !["awaiting-reply", "awaiting-confirmation"].includes(r.status)) return r;
+        return { ...r, pairingCompletedAt: now() };
+      });
+    },
+
+    adoptLandedPhone(attemptId     , phone     ) {
+      return change((r     ) => {
+        if (!r || r.attemptId !== attemptId || !firstUsePhoneLandedLate(r, phone)) return r;
+        return { ...r, phone: { clientId: phone.clientId, sessionKey: phone.sessionKey, generation: phone.generation } };
       });
     },
     noteRelayWake(attemptId     , status     ) {
@@ -308,6 +325,28 @@ export function sameFirstUsePhone(expected     , actual     ) {
     expected.generation === actual.generation;
 }
 
+export function firstUseAttemptPredatesPairing(r     ) {
+  if (!r || !Number.isFinite(r.pairingCompletedAt)) return false;
+  if (r.status === "awaiting-reply") return true;
+  return r.status === "awaiting-confirmation" && Number.isFinite(r.reply?.completedAt) &&
+    r.reply.completedAt < r.pairingCompletedAt;
+}
+
+export function firstUsePhoneLandedLate(r     , phone     ) {
+  return !!r && r.status === "awaiting-reply" && !r.reply &&
+    typeof r.phone?.sessionKey === "string" && r.phone.sessionKey !== r.sessionKey &&
+    !!phone && phone.sessionKey === r.sessionKey &&
+    typeof phone.clientId === "string" && !!phone.clientId &&
+    typeof phone.generation === "string" && !!phone.generation;
+}
+
+function adoptLandedPhone(store     , r     , readPhone     ) {
+  if (!r || typeof r.phone?.sessionKey !== "string" || r.phone.sessionKey === r.sessionKey || typeof readPhone !== "function") return r;
+  let phone      = null;
+  try { phone = readPhone(); } catch (_) { return r; }
+  return firstUsePhoneLandedLate(r, phone) ? store.adoptLandedPhone(r.attemptId, phone) ?? r : r;
+}
+
 export function firstUseBinding(r     ) {
   if (!r?.reply) return null;
   return createHash("sha256").update(JSON.stringify([
@@ -325,6 +364,14 @@ export const FIRST_USE_TOOL_OPERATIONS = Object.freeze([
 export const FIRST_USE_WAIT_MAX_MS = 60000;
 
 export const FIRST_USE_RECEIPT_SETTLE_MAX_MS = 30000;
+
+export const FIRST_USE_SIDE_WORK_HOLD_MAX_MS = 60 * 60 * 1000;
+
+export function firstUseAttemptHoldsSideWork(r     , nowMs     ) {
+  if (!r || typeof r !== "object" || r.status === "completed") return false;
+  if (!Number.isFinite(r.startedAt) || !Number.isFinite(nowMs)) return false;
+  return nowMs - r.startedAt < FIRST_USE_SIDE_WORK_HOLD_MAX_MS;
+}
 
 export function validateFirstUseParams(params     ) {
   const allowed = params?.operation === "first_use_confirm" ? ["operation", "binding", "answer"]
@@ -345,11 +392,13 @@ export function runFirstUseOperation(store     , operation     , input     , rea
   let r = store.read();
 
   const completed = r?.status === "completed" && r.confirmation?.source !== "test-input";
+  if (!completed && operation !== "first_use_retry") r = adoptLandedPhone(store, r, readPhoneContext);
   if (operation === "first_use_begin" || operation === "first_use_retry") {
     if (!completed) {
       const sessionKey = readPhoneSession();
       const phone = readPhoneContext ? readPhoneContext() : null;
-      if (r?.phone && operation !== "first_use_retry" && !sameFirstUsePhone(r.phone, phone)) throw new Error("setup-phone-binding-changed");
+      if (r?.phone && operation !== "first_use_retry" && !firstUseAttemptPredatesPairing(r) &&
+          !sameFirstUsePhone(r.phone, phone)) throw new Error("setup-phone-binding-changed");
       r = store.begin(sessionKey, operation === "first_use_retry", phone, input?.relayRun ?? null);
     }
   } else if (operation === "first_use_confirm") {
@@ -426,6 +475,8 @@ function welcomeAction(r     ) {
 
 export function createFirstUseObserver(store     , options      = {}) {
   const pending = new Map();
+
+  const attemptRuns = new Map();
   const now = options.now ?? Date.now;
   function prune() {
     for (const [id, p] of pending) if (now() - p.sendStartedAt > 300000) pending.delete(id);
@@ -449,8 +500,9 @@ export function createFirstUseObserver(store     , options      = {}) {
     sent({ backend, source, sessionKey, gatewaySessionKey, messageId, phone }     ) {
       prune();
       if (backend !== "openclaw" || source !== "phone_ui" || !messageId) return;
-      const r = store.read();
+      let r = store.read();
       if (!r || r.status !== "awaiting-reply" || r.sessionKey !== sessionKey) return;
+      if (firstUsePhoneLandedLate(r, phone)) r = store.adoptLandedPhone(r.attemptId, phone) ?? r;
       if (r.phone && !sameFirstUsePhone(r.phone, phone)) return;
       pending.set(messageId, { attemptId: r.attemptId, installationId: r.installationId,
         sessionKey, gatewaySessionKey: gatewaySessionKey || sessionKey,
@@ -463,7 +515,15 @@ export function createFirstUseObserver(store     , options      = {}) {
       if (!p) return;
       if (!result?.runId || !["accepted", "queued"].includes(result.status ?? "accepted")) { pending.delete(messageId); return; }
       p.runId = result.runId;
+      attemptRuns.delete(result.runId);
+      attemptRuns.set(result.runId, p.attemptId);
+      while (attemptRuns.size > 32) attemptRuns.delete(attemptRuns.keys().next().value);
       join(p);
+    },
+
+    runsForAttempt(attemptId     ) {
+      if (!attemptId) return [];
+      return [...attemptRuns].filter(([, id]) => id === attemptId).map(([runId]) => runId).reverse();
     },
     failed(messageId     ) { pending.delete(messageId); },
     clear() { pending.clear(); },

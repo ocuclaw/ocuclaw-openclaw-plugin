@@ -9,7 +9,7 @@ import { EMOJI_TAG_FAMILY_CONFIG } from "../domain/neural-emoji-reactor-tag-conf
 import { PACE_TAG_FAMILY_CONFIG } from "../domain/neural-pace-modulator-tag-config.js";
 import { applyMarkdownWithSpans } from "../domain/streaming-span-markdown.js";
 import { createSessionContextService } from "./session-context-service.js";
-import { DISTILLER_SESSION_PREFIX } from "./session-title-distiller-helpers.js";
+import { isTitleDistillerRun } from "./session-title-distiller-helpers.js";
 import { normalizeLogger } from "../domain/logger-adapter.js";
 import { reasoningCeilingForModel } from "./capability-snapshot.js";
 import { getActiveBackendKind } from "../gateway/backend-contract.js";
@@ -18,8 +18,6 @@ import { relaySessionKeyFor } from "./openclaw-session-key.js";
 const DEFAULT_MODEL_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-opus-4-6";
 const POOL_OUTCOME_FRESHNESS_MS = 10 * 60 * 1000;
-const TITLE_DISTILLER_RUN_ID_PREFIX = "ocuclaw-title-";
-const TITLE_DISTILLER_SESSION_MARKER = ":title-distiller:";
 const THINKING_FINALIZE_RETENTION_MS = 5 * 60 * 1000;
 const LEDGER_COMMIT_HISTORY_GRACE_MS = 1_000;
 const AGENT_PROGRESS_NOTES_DEFAULT = "conversation";
@@ -84,11 +82,36 @@ export function isTerminalActivityBoundary(state, phase, origin) {
 export function classifyRunOutcomeFrame(activity, phase, origin) {
   const failoverPending = !!activity && activity.failoverPending === true;
   const normalizedPhase = typeof phase === "string" ? phase.trim().toLowerCase() : "";
-  const errored = !failoverPending && !!activity && activity.isError === true && normalizedPhase === "error";
+
+  const cancelled = isCancelledRunFrame(activity);
+  const errored = !failoverPending && !cancelled && !!activity && activity.isError === true && normalizedPhase === "error";
   const terminal = !failoverPending
     && (errored || isTerminalActivityBoundary(activity && activity.state, phase, origin));
   const code = errored && activity && typeof activity.code === "string" && activity.code ? activity.code : null;
   return { terminal, errored, code };
+}
+
+const CANCELLED_RUN_CODES = new Set(["interrupted", "cancelled"]);
+function isCancelledRunFrame(activity) {
+  if (!activity || typeof activity !== "object") return false;
+  if (activity.aborted === true) return true;
+  return typeof activity.code === "string" && CANCELLED_RUN_CODES.has(activity.code.trim().toLowerCase());
+}
+
+const CANCELLED_CLOSE_DROPPED_FIELDS = [
+  "isError", "code", "label", "shortLabel", "detail", "title", "summary",
+  "message", "error", "reason", "rateLimitInfo",
+];
+
+export function quietCancelledRunClose(activity) {
+  if (!activity || typeof activity !== "object" || Array.isArray(activity)) return activity;
+  const phase = typeof activity.phase === "string" ? activity.phase.trim().toLowerCase() : "";
+  if (phase !== "error" || activity.failoverPending === true || !isCancelledRunFrame(activity)) {
+    return activity;
+  }
+  const quiet = { ...activity, state: "idle", phase: "end", aborted: true };
+  for (const field of CANCELLED_CLOSE_DROPPED_FIELDS) delete quiet[field];
+  return quiet;
 }
 
 function normalizeStreamingToken(raw) {
@@ -96,14 +119,7 @@ function normalizeStreamingToken(raw) {
 }
 
 function isTitleDistillerStreamingEvent(data) {
-  const runId = normalizeStreamingToken(data && data.runId);
-  if (runId && runId.startsWith(TITLE_DISTILLER_RUN_ID_PREFIX)) return true;
-  const sessionKey = normalizeStreamingToken(data && data.sessionKey);
-  return Boolean(
-    sessionKey &&
-      (sessionKey.startsWith(DISTILLER_SESSION_PREFIX) ||
-        sessionKey.includes(TITLE_DISTILLER_SESSION_MARKER)),
-  );
+  return isTitleDistillerRun(data && data.runId, data && data.sessionKey);
 }
 
 function fullMessageText(content) {
@@ -1226,6 +1242,22 @@ export function createUpstreamRuntime(opts = {}) {
     }
     return key !== null && toolProgressBubbles.has(key);
   }
+
+  let streamMessageIdState = null;
+  function streamMessageIndexFromId(runId, messageId) {
+    const id = normalizeStreamingToken(messageId);
+    if (!runId || !id) return null;
+    if (!streamMessageIdState || streamMessageIdState.runId !== runId) {
+      streamMessageIdState = { runId, messageId: id, index: 0 };
+    } else if (streamMessageIdState.messageId !== id) {
+      streamMessageIdState = {
+        runId,
+        messageId: id,
+        index: streamMessageIdState.index + 1,
+      };
+    }
+    return streamMessageIdState.index;
+  }
   const activeThinkingRuns = new Set();
   const finalizedThinkingRuns = new Map();
   const finalizedThinkingRunTimers = new Map();
@@ -1725,6 +1757,7 @@ export function createUpstreamRuntime(opts = {}) {
         handler.formatStreaming(text, emojiSpans, paceSpans, {
           runId,
           seq: streamSeq,
+          messageIndex: queuedStreaming.messageIndex,
         }),
       );
       const now = Date.now();
@@ -2448,6 +2481,7 @@ export function createUpstreamRuntime(opts = {}) {
   }
 
   function handleSessionChanged(trigger) {
+    clearActivityPlans();
     refreshSessionAttention();
     if (!openclawConnected) {
       cachedSkillsCatalogStale = true;
@@ -2507,6 +2541,31 @@ export function createUpstreamRuntime(opts = {}) {
   }
 
   let cachedRunActiveSessionKey = null;
+
+  const ACTIVITY_PLAN_CACHE_MAX = 32;
+  const activityPlanFrameBySession = new Map();
+  function rememberActivityPlan(data) {
+    if (!data || typeof data !== "object") return;
+    const plan = data.plan;
+    const sessionKey = typeof data.sessionKey === "string" ? data.sessionKey : "";
+    if (!sessionKey || !plan || typeof plan !== "object" || Array.isArray(plan)) return;
+    activityPlanFrameBySession.delete(sessionKey);
+    if (plan.cleared === true) return;
+    activityPlanFrameBySession.set(sessionKey, data);
+    while (activityPlanFrameBySession.size > ACTIVITY_PLAN_CACHE_MAX) {
+      activityPlanFrameBySession.delete(activityPlanFrameBySession.keys().next().value);
+    }
+  }
+  function clearActivityPlans() {
+    activityPlanFrameBySession.clear();
+  }
+
+  function getActivityPlanReplay() {
+    if (!cachedRunActiveSessionKey || !sessionService.isCurrentSession(cachedRunActiveSessionKey)) {
+      return null;
+    }
+    return activityPlanFrameBySession.get(cachedRunActiveSessionKey) || null;
+  }
 
   const sessionContextService = createSessionContextService({
     gatewayBridge,
@@ -3000,7 +3059,8 @@ export function createUpstreamRuntime(opts = {}) {
   });
 
   function ingestActivityFrame(data, activitySource = null) {
-    data = normalizeGatewaySessionEvent(data);
+
+    data = quietCancelledRunClose(normalizeGatewaySessionEvent(data));
     const taskSessionKey =
       data && typeof data._activeRunSessionKey === "string" && data._activeRunSessionKey.trim()
         ? data._activeRunSessionKey
@@ -3011,6 +3071,7 @@ export function createUpstreamRuntime(opts = {}) {
     if (noteRunOutcomeFrame && data && data.runId) {
       noteRunOutcomeFrame(data, data.phase || null, data.origin || null);
     }
+    rememberActivityPlan(data);
     if (!sessionService.isCurrentSession(data.sessionKey)) return;
     const runId = data.runId || null;
     const origin = data.origin || null;
@@ -3095,7 +3156,9 @@ export function createUpstreamRuntime(opts = {}) {
         logger.warn(`[relay] Provider usage refresh failed after rate limit activity: ${err.message}`);
       });
     }
-    if (runId && data.state === "idle" && data.isError === true && phase === "error") {
+
+    const endedWithoutReply = (data.isError === true && phase === "error") || (data.aborted === true && phase === "end");
+    if (runId && data.state === "idle" && endedWithoutReply) {
       upstreamRunPipeline.delete(runId);
 
       if (cachedRunActiveSessionKey) {
@@ -3514,11 +3577,27 @@ export function createUpstreamRuntime(opts = {}) {
     }
     const prefix = `${agentIdentity.name || "Agent"}: `;
 
+    const messageIndex =
+      Number.isInteger(data.messageIndex) && data.messageIndex >= 0
+        ? data.messageIndex
+        : streamMessageIndexFromId(runId, data.messageId);
+
+    if (
+      pendingStreaming &&
+      messageIndex != null &&
+      pendingStreaming.messageIndex != null &&
+      pendingStreaming.runId === runId &&
+      pendingStreaming.messageIndex < messageIndex
+    ) {
+      pendingStreaming.flushReason = "message_boundary";
+      flushPendingStreamingText();
+    }
     pendingStreaming = {
       rawText: data.text,
       prefix,
       sessionKey,
       runId,
+      messageIndex,
       rawAssistantChars,
       assistantDeltaChars,
       firstGatewayChunk,
@@ -3571,6 +3650,7 @@ export function createUpstreamRuntime(opts = {}) {
       logger.warn(`[relay] Upstream connected bootstrap failed: ${err.message}`);
     });
 
+    sessionContextService.resetConnectionCapabilities();
     sessionContextService.refreshActiveSessionContext().catch(() => {});
   });
 
@@ -3746,11 +3826,14 @@ export function createUpstreamRuntime(opts = {}) {
   });
 
   onGatewayEvent("error", (err) => {
-    logger.error(`[relay] Upstream error: ${err.message}`);
+
+    const cancelled = !!err && err.aborted === true;
+    if (cancelled) logger.info(`[relay] Upstream run cancelled: ${err.message}`);
+    else logger.error(`[relay] Upstream error: ${err.message}`);
     emitDebug(
       "relay.transport",
-      "upstream_error",
-      "error",
+      cancelled ? "upstream_run_cancelled" : "upstream_error",
+      cancelled ? "info" : "error",
       { sessionKey: sessionService.ensureSessionKey() },
       () => ({ message: err.message || null }),
     );
@@ -3793,6 +3876,7 @@ export function createUpstreamRuntime(opts = {}) {
     handleCurrentSessionModelConfigCleared,
     handleSessionChanged,
     refreshSessionAttention,
+    getActivityPlanReplay,
     ingestActivityFrame,
     ingestSimulatedGatewayEvent,
     ingestMirroredRows,

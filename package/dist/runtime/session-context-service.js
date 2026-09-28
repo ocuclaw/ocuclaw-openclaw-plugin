@@ -43,6 +43,14 @@ function persistModelContextWindowCache(cachePath, cache) {
   }
 }
 
+function isMethodNotFoundError(err) {
+  if (!err) return false;
+  const code = err.code ?? (err.error && err.error.code);
+  if (code === -32601 || code === "METHOD_NOT_FOUND") return true;
+  const message = typeof err.message === "string" ? err.message : String(err);
+  return /method not found|unknown method|no such method/i.test(message);
+}
+
 export function createSessionContextService(opts) {
   const gatewayBridge = opts.gatewayBridge;
   const getActiveSessionKey = opts.getActiveSessionKey;
@@ -62,6 +70,22 @@ export function createSessionContextService(opts) {
 
   const modelContextWindowCache = loadModelContextWindowCache(modelContextWindowCachePath);
 
+  let compactionListUnsupported = false;
+
+  function requestCompactionList(sessionKey) {
+    if (compactionListUnsupported) return Promise.resolve(null);
+    return gatewayBridge
+      .request("sessions.compaction.list", { key: sessionKey })
+      .catch((err) => {
+        if (isMethodNotFoundError(err)) compactionListUnsupported = true;
+        return null;
+      });
+  }
+
+  function resetConnectionCapabilities() {
+    compactionListUnsupported = false;
+  }
+
   async function refreshActiveSessionContext() {
     const sessionKey = getActiveSessionKey();
     if (!sessionKey) return null;
@@ -70,9 +94,7 @@ export function createSessionContextService(opts) {
     try {
       [describeResp, compactionResp] = await Promise.all([
         gatewayBridge.request("sessions.describe", { key: sessionKey }),
-        gatewayBridge
-          .request("sessions.compaction.list", { key: sessionKey })
-          .catch(() => null),
+        requestCompactionList(sessionKey),
       ]);
     } catch {
       return broadcastUnknownSessionContext(sessionKey);
@@ -110,11 +132,10 @@ export function createSessionContextService(opts) {
 
       contextWindow = modelContextWindowCache.get(modelKey);
     }
-    const checkpoints =
-      compactionResp && Array.isArray(compactionResp.checkpoints)
-        ? compactionResp.checkpoints
-        : [];
-    const compactionCount = checkpoints.length;
+
+    const compactionCountKnown =
+      !!compactionResp && Array.isArray(compactionResp.checkpoints);
+    const compactionCount = compactionCountKnown ? compactionResp.checkpoints.length : 0;
     const compactionKind = compactionResp && compactionResp.metric === "hops"
       ? "hops"
       : "compactions";
@@ -126,6 +147,7 @@ export function createSessionContextService(opts) {
       contextTokensKnown,
       contextWindow,
       compactionCount,
+      compactionCountKnown,
       compactionKind,
       runActive: !!getRunActive(),
       snapshotAtMs: nowMs(),
@@ -156,6 +178,7 @@ export function createSessionContextService(opts) {
       contextTokensKnown: false,
       contextWindow,
       compactionCount: 0,
+      compactionCountKnown: false,
       compactionKind: "compactions",
       runActive: !!getRunActive(),
       snapshotAtMs: nowMs(),
@@ -193,5 +216,6 @@ export function createSessionContextService(opts) {
     broadcastRunActive,
     compactActiveSession,
     lastSnapshotForResume,
+    resetConnectionCapabilities,
   };
 }

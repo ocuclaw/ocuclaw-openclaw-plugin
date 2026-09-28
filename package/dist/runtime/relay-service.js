@@ -16,6 +16,7 @@ import {
   isLoopbackBindAddress,
 } from "./container-env.js";
 import { createRelay as createPluginOwnedRelay } from "./relay-core.js";
+import { runOutsideRetiredPluginCache } from "./openclaw-plugin-cache-scope.js";
 import { createCloudwaysSupervisor } from "../setup/cloudways-supervisor.js";
 import { normalizeLogger } from "../domain/logger-adapter.js";
 
@@ -74,6 +75,8 @@ export function createOcuClawRelayService(opts = {}) {
     mintOnLoad: { status: "not-attempted", code: null, detail: null },
   };
   let relayCredentialAdoptionAnnounced = false;
+
+  let deferredStart = null;
   const optsAny0 = opts;
   function effectivePluginConfig() {
     if (adoptedRelayToken === null) return optsAny0.pluginConfig;
@@ -117,6 +120,8 @@ export function createOcuClawRelayService(opts = {}) {
     onLocationResponse: { registry: new Set(), liveUnsubs: new Map() },
     onAppClientDisconnect: { registry: new Set(), liveUnsubs: new Map() },
     onAppClientSessionLeft: { registry: new Set(), liveUnsubs: new Map() },
+
+    onAppPresenceChanged: { registry: new Set(), liveUnsubs: new Map() },
     onLogicalSessionReset: { registry: new Set(), liveUnsubs: new Map() },
     onAgentTurnChanged: { registry: new Set(), liveUnsubs: new Map() },
   };
@@ -228,12 +233,84 @@ export function createOcuClawRelayService(opts = {}) {
     return true;
   }
 
+  function pendingFirstLoadConfigWrites(stateDir) {
+    const pending = [];
+    if (!getSetupConfig().relayToken && typeof optsAny0.mintRelayCredentialAtLoad === "function") {
+      pending.push("relay-credential");
+    }
+    const wsPortViewAmbiguous =
+      hasExplicitWsPort(optsAny0.pluginConfig) &&
+      optsAny0.pluginConfig.wsPort === OPENCLAW_BUNDLE_DEFAULT_WS_PORT;
+    if (
+      !optsAny0.runtimeConfig &&
+      typeof optsAny0.persistFreshWsPortConfig === "function" &&
+      (!hasExplicitWsPort(optsAny0.pluginConfig) || wsPortViewAmbiguous) &&
+      resolveRelayPortDecision({ stateDir, fsImpl: optsAny0.relayPortFs }).origin === "fresh-default"
+    ) {
+      pending.push("relay-port");
+    }
+    return pending;
+  }
+
+  function deferStartUntilHostSettled(startOpts, logger, pending) {
+    const gate = optsAny0.createConfigWriteGate(startOpts.config);
+    const deferral = { gate };
+    deferredStart = deferral;
+    logger.info(
+      `[ocuclaw] relay start waits for OpenClaw to finish activating the plugin: first-load config write pending (${pending.join(", ")})`,
+    );
+    Promise.resolve(gate.whenSettled())
+      .then((outcome) => {
+        if (deferredStart !== deferral) return null;
+        deferredStart = null;
+        logger.info(
+          `[ocuclaw] OpenClaw activation settled (${(outcome && outcome.reason) || "unknown"}, ${
+            (outcome && outcome.waitedMs) || 0
+          } ms): starting relay`,
+        );
+
+        return runOutsideRetiredPluginCache(() => start({ ...startOpts, hostSettled: true }));
+      })
+      .catch((err) => {
+        logger.error(
+          `[ocuclaw] relay start after OpenClaw activation failed: ${err && err.message ? err.message : String(err)}`,
+        );
+      });
+    return null;
+  }
+
+  function cancelDeferredStart() {
+    if (!deferredStart) return false;
+    const deferral = deferredStart;
+    deferredStart = null;
+    try {
+      deferral.gate.cancel();
+    } catch (_) {
+
+    }
+    return true;
+  }
+
   async function start(startOpts = {}) {
     if (relay) {
       return relay;
     }
+    if (deferredStart) {
+      return null;
+    }
 
     const logger = normalizeLogger(startOpts.logger || baseLogger);
+    if (
+      startOpts.hostSettled !== true &&
+      typeof optsAny0.createConfigWriteGate === "function" &&
+      startOpts.config &&
+      typeof startOpts.config === "object"
+    ) {
+      const pending = pendingFirstLoadConfigWrites(startOpts.stateDir || optsAny0.stateDir);
+      if (pending.length > 0) {
+        return deferStartUntilHostSettled(startOpts, logger, pending);
+      }
+    }
     await resolveRelayCredentialAtStart(logger);
     const readiness = getSetupConfig();
     const missingRequiredSecrets = [];
@@ -356,6 +433,7 @@ export function createOcuClawRelayService(opts = {}) {
       externalDebugToolsEnabled: config.externalDebugToolsEnabled,
       debugAutoArm: config.debugAutoArm,
       allowDebugUpload: config.allowDebugUpload,
+      liveuiReconnectGraceMs: config.liveuiReconnectGraceMs,
       debugUploadMaxZipBytes: config.debugUploadMaxZipBytes,
       debugUploadCapturePreset: config.debugUploadCapturePreset,
       debugBundleSaveDir: config.debugBundleSaveDir,
@@ -474,6 +552,11 @@ export function createOcuClawRelayService(opts = {}) {
   }
 
   async function stop(stopOpts = {}) {
+    if (cancelDeferredStart()) {
+      normalizeLogger(stopOpts.logger || baseLogger).info(
+        "[ocuclaw] relay start cancelled: the service stopped before OpenClaw finished activating the plugin",
+      );
+    }
     if (!relay) {
       stopCloudwaysSupervisor();
       return;
@@ -545,6 +628,9 @@ export function createOcuClawRelayService(opts = {}) {
     },
     onAppClientSessionLeft(handler) {
       return subscribeFacadeChannel("onAppClientSessionLeft", handler);
+    },
+    onAppPresenceChanged(handler) {
+      return subscribeFacadeChannel("onAppPresenceChanged", handler);
     },
     onLogicalSessionReset(handler) {
       return subscribeFacadeChannel("onLogicalSessionReset", handler);
@@ -681,6 +767,13 @@ export function createOcuClawRelayService(opts = {}) {
         return liveRelay.getDistillerBudget();
       }
       return null;
+    },
+    isFirstUseAttemptOpen() {
+      const liveRelay = resolveLiveRelay();
+      if (liveRelay && typeof liveRelay.isFirstUseAttemptOpen === "function") {
+        return liveRelay.isFirstUseAttemptOpen();
+      }
+      return false;
     },
     deleteDistillerSession(sessionKey) {
       const liveRelay = resolveLiveRelay();

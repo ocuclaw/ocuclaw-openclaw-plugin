@@ -9,6 +9,7 @@ import {
   runCloudwaysVerb,
 } from "./cloudways-command.js";
 import { runCloudwaysSetup } from "./cloudways-setup.js";
+import { capabilityConsentLine } from "./capability-consent.js";
 
 import process from "node:process";
 
@@ -66,9 +67,11 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
           .description(`Print the redacted OcuClaw ${operation} result as JSON`);
         operationCommand.action(async function writeSetupResult() {
             const output = operationCommand.configureOutput();
-            output.writeOut(
-              `${JSON.stringify(await controller(operation, { surface: "cli" }), null, 2)}\n`,
-            );
+            const report = await controller(operation, { surface: "cli" });
+            output.writeOut(`${JSON.stringify(report, null, 2)}\n`);
+
+            const consentLine = capabilityConsentLine(report);
+            if (consentLine) output.writeErr(`${consentLine}\n`);
           });
       }
 
@@ -130,6 +133,7 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
         ocuclaw.command("pair")
           .description("Pair a phone directly in this terminal using QR or Manual and four safety words")
           .option("--light-terminal", "Render the QR for a light terminal background")
+          .option("--new-key", "Make a new relay key first: every paired phone is disconnected and must pair again")
           .action(async (options) => {
             const result = await pair(options);
             process.exitCode = result.exitCode;

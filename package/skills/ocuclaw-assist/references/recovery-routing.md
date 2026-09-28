@@ -1,6 +1,6 @@
 # Availability and focused recovery
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 Read on fresh installation, missing/failed controller, version mismatch or recovery.
 Use SKILL.md's capability-first controller routing and existing step procedures.

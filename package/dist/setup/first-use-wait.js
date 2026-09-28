@@ -17,6 +17,8 @@ export const FIRST_USE_ALREADY_COMPLETE_MESSAGE =
 
 export const FIRST_USE_OPEN_APP_NOTICE = "Open OcuClaw on your phone.";
 
+export const FIRST_USE_REARM_REASONS = Object.freeze(["setup-session-mismatch", "setup-phone-binding-changed"]);
+
 export const FIRST_USE_PHONE_WAIT_REASONS = Object.freeze([
   "setup-phone-session-ambiguous-or-disconnected",
   "setup-phone-session-unavailable",
@@ -55,6 +57,75 @@ export function firstUseTimeoutMessage(waitMs     ) {
   return `No reply was recorded for a phone message in this conversation within ${seconds} s.`;
 }
 
+export const GATEWAY_FREEZE_MAX_MS = 120000;
+export const GATEWAY_FREEZE_RETRY_MS = 2000;
+export const GATEWAY_SLOW_MESSAGE = "The gateway is slow to answer. Still waiting for it...";
+export const GATEWAY_UNRESPONSIVE_REASON = "gateway-unresponsive";
+
+export const FIRST_USE_RESUME_COMMAND = "openclaw ocuclaw first-use";
+
+export function gatewayUnresponsiveMessage(waitedMs      = GATEWAY_FREEZE_MAX_MS) {
+  const seconds = Math.max(1, Math.round(Number(waitedMs) / 1000) || 0);
+  return `The gateway did not answer for ${seconds} s. Your setup progress is saved on this server.\n` +
+    `When the gateway answers again, run: ${FIRST_USE_RESUME_COMMAND}`;
+}
+
+export class GatewayUnresponsiveError extends Error {
+  waitedMs        ;
+  constructor(waitedMs     ) {
+    super(GATEWAY_UNRESPONSIVE_REASON);
+    this.name = "GatewayUnresponsiveError";
+    this.waitedMs = Number(waitedMs) || 0;
+  }
+}
+
+export function isGatewayUnresponsive(error     ) {
+  return !!error && (error instanceof GatewayUnresponsiveError || error.name === "GatewayUnresponsiveError");
+}
+
+const GATEWAY_ANSWER_PATTERN = /\b(setup-[a-z-]+|installation-mismatch|runtime-unavailable|terminal-confirmation-required)\b|unauthori[sz]ed|forbidden|missing scope|pairing required|unknown method|method not found/i;
+
+export function isGatewayTransportFailure(error     ) {
+  if (!error || isGatewayUnresponsive(error)) return false;
+  const message = error.message ? String(error.message) : String(error);
+  return !GATEWAY_ANSWER_PATTERN.test(message);
+}
+
+export function createGatewayFreezeRider(io      = {}) {
+  const now = typeof io.now === "function" ? io.now : () => Date.now();
+  const sleep = typeof io.sleep === "function" ? io.sleep
+    : (ms        ) => new Promise      ((resolve) => { setTimeout(resolve, ms); });
+  const say = typeof io.say === "function" ? io.say : () => {};
+  const maxMs = Number.isFinite(io.maxMs) ? io.maxMs : GATEWAY_FREEZE_MAX_MS;
+  const retryMs = Number.isFinite(io.retryMs) ? io.retryMs : GATEWAY_FREEZE_RETRY_MS;
+  const cancelled = typeof io.cancelled === "function" ? io.cancelled : () => false;
+  const rider      = {
+    said: false,
+    noteSlow() {
+      if (rider.said) return;
+      rider.said = true;
+      say(GATEWAY_SLOW_MESSAGE);
+    },
+    async call(fn     , options      = {}) {
+      const retryable = typeof options.retryable === "function" ? options.retryable : isGatewayTransportFailure;
+      let since      = null;
+      for (;;) {
+        try {
+          return await fn();
+        } catch (error) {
+          if (!retryable(error) || cancelled()) throw error;
+          if (since === null) since = now();
+          rider.noteSlow();
+          if (now() - since >= maxMs) throw new GatewayUnresponsiveError(now() - since);
+          await sleep(retryMs);
+          if (cancelled()) throw error;
+        }
+      }
+    },
+  };
+  return rider;
+}
+
 function outcomeOf(outcome        , record      = null, reason      = null) {
   return { outcome, record, reason };
 }
@@ -69,7 +140,10 @@ export async function awaitFirstUseReply(io     ) {
   const pollMs = Number.isFinite(io.pollMs) ? io.pollMs : 3000;
   const noticeMs = Number.isFinite(io.noticeMs) ? io.noticeMs : 30000;
 
-  const strictPhone = io.strictPhone === true;
+  const phoneSettleMs = Number.isFinite(io.phoneSettleMs) && io.phoneSettleMs > 0 ? io.phoneSettleMs : 0;
+
+  const waiting = typeof io.waiting === "function" ? io.waiting : null;
+  const startedAt = now();
 
   const cancelled = () => !!(signal && signal.aborted);
   const deadline = now() + waitMs;
@@ -86,7 +160,8 @@ export async function awaitFirstUseReply(io     ) {
 
     if (!polled || polled.ok !== true) {
       const reason = (polled && polled.reason) || "unavailable";
-      if (reason === "setup-session-mismatch" && !rearmed && lastGoodStatus === "awaiting-reply") {
+
+      if (FIRST_USE_REARM_REASONS.includes(reason) && !rearmed && lastGoodStatus === "awaiting-reply") {
         rearmed = true;
         const again = await call({ operation: "first_use_retry" });
         if (cancelled()) return outcomeOf("cancelled");
@@ -97,8 +172,8 @@ export async function awaitFirstUseReply(io     ) {
         }
         return outcomeOf("unavailable", null, (again && again.reason) || "unavailable");
       }
-      if (!strictPhone && FIRST_USE_PHONE_WAIT_REASONS.includes(reason)) {
-        if (!openAppSaid) {
+      if (FIRST_USE_PHONE_WAIT_REASONS.includes(reason)) {
+        if (!openAppSaid && now() - startedAt >= phoneSettleMs) {
           openAppSaid = true;
           say(FIRST_USE_OPEN_APP_NOTICE, "action");
         }
@@ -130,7 +205,13 @@ export async function awaitFirstUseReply(io     ) {
     if (now() >= deadline) return outcomeOf("timeout");
     if (now() - lastNotice >= noticeMs) {
       lastNotice = now();
-      say(FIRST_USE_WAITING_MESSAGE);
+      if (waiting) {
+
+        const periods = Math.max(1, Math.floor((now() - startedAt) / noticeMs));
+        waiting(periods * noticeMs);
+      } else {
+        say(FIRST_USE_WAITING_MESSAGE);
+      }
     }
     await sleep(pollMs, signal);
   }

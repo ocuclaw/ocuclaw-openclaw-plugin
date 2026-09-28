@@ -1,6 +1,6 @@
 # OcuClaw beta channel & rollback
 
-**Guide version:** 2026-09-25 (1.0.58)
+**Guide version:** 2026-09-28 (1.0.59)
 
 **Beta-Discord testers only.** Beta builds are pre-release and can be unstable.
 If the user is **not** a confirmed beta-testing Discord member, this is the wrong
