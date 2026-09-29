@@ -24,11 +24,11 @@ OcuClaw app, or ask on [Discord](https://discord.ocuclaw.com).
 
 ## About this repository
 
-This repository holds the published files for OcuClaw 2.1.1.
+This repository holds the published files for OcuClaw 2.1.2.
 OcuClaw is a community package, not an official or bundled OpenClaw plugin.
 
 - `package/` is the plugin, byte for byte as published.
-- `artifact/ocuclaw-2.1.1.tgz` is the exact tarball.
+- `artifact/ocuclaw-2.1.2.tgz` is the exact tarball.
 - `.github/workflows/` checks that the two match before it publishes to ClawHub.
 
 ClawHub source attribution ties each release to this repository's commit and
