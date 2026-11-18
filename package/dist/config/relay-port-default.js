@@ -9,11 +9,11 @@ const MARKER_SCHEMA_VERSION = 1;
 
 const LEGACY_STATE_EVIDENCE_EXTRA_FILES = ["even-ai-settings.json", "debug-arm.json"];
 
-function isValidPort(value) {
+function isValidPort(value     ) {
   return Number.isInteger(value) && value >= 1 && value <= 65535;
 }
 
-export function hasExplicitWsPort(pluginConfig) {
+export function hasExplicitWsPort(pluginConfig     ) {
   return (
     pluginConfig !== null &&
     typeof pluginConfig === "object" &&
@@ -25,7 +25,7 @@ export function hasExplicitWsPort(pluginConfig) {
   );
 }
 
-function readMarker(stateDir, fsImpl) {
+function readMarker(stateDir     , fsImpl     ) {
   try {
     const raw = fsImpl.readFileSync(path.join(stateDir, RELAY_PORT_MARKER_FILE), "utf8");
     const parsed = JSON.parse(raw);
@@ -44,13 +44,13 @@ function readMarker(stateDir, fsImpl) {
   }
 }
 
-export function readRelayPortMarker(stateDir, fsImpl = fs) {
+export function readRelayPortMarker(stateDir     , fsImpl      = fs) {
   const dir = typeof stateDir === "string" && stateDir ? stateDir : null;
   if (!dir) return null;
   return readMarker(dir, fsImpl);
 }
 
-function hasLegacyStateEvidence(stateDir, fsImpl) {
+function hasLegacyStateEvidence(stateDir     , fsImpl     ) {
   let entries;
   try {
     entries = fsImpl.readdirSync(stateDir);
@@ -59,7 +59,7 @@ function hasLegacyStateEvidence(stateDir, fsImpl) {
     return true;
   }
   return entries.some(
-    (name) =>
+    (name     ) =>
       (name.startsWith("ocuclaw-") &&
         name.endsWith(".json") &&
         name !== RELAY_PORT_MARKER_FILE) ||
@@ -67,7 +67,7 @@ function hasLegacyStateEvidence(stateDir, fsImpl) {
   );
 }
 
-export function resolveRelayPortDecision(opts = {}) {
+export function resolveRelayPortDecision(opts      = {}) {
   const fsImpl = opts.fsImpl || fs;
   const stateDir = typeof opts.stateDir === "string" && opts.stateDir ? opts.stateDir : null;
   if (!stateDir) {
@@ -92,7 +92,7 @@ export function resolveRelayPortDecision(opts = {}) {
   };
 }
 
-export function persistRelayPortMarker(opts = {}) {
+export function persistRelayPortMarker(opts      = {}) {
   const fsImpl = opts.fsImpl || fs;
   const decision = opts.decision;
   if (
@@ -119,7 +119,7 @@ export function persistRelayPortMarker(opts = {}) {
       ) + "\n",
     );
     return true;
-  } catch (err) {
+  } catch (err     ) {
     if (opts.logger && typeof opts.logger.warn === "function") {
       opts.logger.warn(
         `[ocuclaw] could not persist relay-port marker: ${err && err.message}`,
@@ -129,7 +129,7 @@ export function persistRelayPortMarker(opts = {}) {
   }
 }
 
-export function supersedeRelayPortMarker(opts = {}) {
+export function supersedeRelayPortMarker(opts      = {}) {
   const fsImpl = opts.fsImpl || fs;
   const stateDir =
     typeof opts.stateDir === "string" && opts.stateDir ? opts.stateDir : null;
@@ -147,7 +147,7 @@ export function supersedeRelayPortMarker(opts = {}) {
   }
   const markerPath = path.join(stateDir, RELAY_PORT_MARKER_FILE);
 
-  let raw = { ...existing };
+  let raw      = { ...existing };
   try {
     const parsed = JSON.parse(fsImpl.readFileSync(markerPath, "utf8"));
     if (parsed && typeof parsed === "object") raw = parsed;
@@ -170,7 +170,7 @@ export function supersedeRelayPortMarker(opts = {}) {
   try {
     fsImpl.writeFileSync(markerPath, JSON.stringify(next, null, 2) + "\n");
     return true;
-  } catch (err) {
+  } catch (err     ) {
     if (opts.logger && typeof opts.logger.warn === "function") {
       opts.logger.warn(
         `[ocuclaw] could not supersede relay-port marker: ${err && err.message}`,
@@ -180,7 +180,7 @@ export function supersedeRelayPortMarker(opts = {}) {
   }
 }
 
-function ensurePluginConfigDraft(draft) {
+function ensurePluginConfigDraft(draft     ) {
   if (!draft.plugins || typeof draft.plugins !== "object") draft.plugins = {};
   if (!draft.plugins.entries || typeof draft.plugins.entries !== "object") {
     draft.plugins.entries = {};
@@ -197,7 +197,7 @@ function ensurePluginConfigDraft(draft) {
   return draft.plugins.entries.ocuclaw.config;
 }
 
-export function createFreshWsPortConfigWriter(api) {
+export function createFreshWsPortConfigWriter(api     ) {
   const runtimeConfig = api?.runtime?.config;
   if (
     !runtimeConfig ||
@@ -205,18 +205,18 @@ export function createFreshWsPortConfigWriter(api) {
   ) {
     return null;
   }
-  return async function persistFreshWsPortConfig(port) {
+  return async function persistFreshWsPortConfig(port     ) {
     if (!isValidPort(port)) {
       return { written: false, reason: "invalid-port" };
     }
 
-    let outcome = { written: false, reason: "mutation-not-run" };
+    let outcome      = { written: false, reason: "mutation-not-run" };
     await runtimeConfig.mutateConfigFile({
       afterWrite: {
         mode: "none",
         reason: "OcuClaw fresh-install relay port default",
       },
-      mutate(draft) {
+      mutate(draft     ) {
         const cfg = ensurePluginConfigDraft(draft);
         if (hasExplicitWsPort(cfg)) {
 

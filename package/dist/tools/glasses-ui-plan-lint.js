@@ -123,6 +123,12 @@ export const SYSTEM_STATS_KNOWN_FIELDS = Object.freeze([
   "memUsedPct",
   "cpuPct",
   "loadAvg1",
+  "mem_total_mb",
+  "mem_used_mb",
+  "mem_free_mb",
+  "mem_used_pct",
+  "cpu_pct",
+  "load_avg_1",
 ]);
 
 export const IMPLICIT_TEMPLATE_PATHS = Object.freeze(["output"]);
@@ -133,7 +139,7 @@ export const SHORT_INTERACTIVE_TIMEOUT_MS = 60_000;
 
 export const REPLACE_SUSPICIOUS_STACK_DEPTH = 2;
 
-export const REFERENCES_DIR_FROM_MODULE = "../../skills/glasses-ui/references";
+export const REFERENCES_DIR_FROM_MODULE = "../../registry";
 
 export const HTTP_RECIPE_FIELD_SETS_FILE = "http-recipe-field-sets.json";
 
@@ -757,7 +763,7 @@ export function lintGlassesUiPlan(spec, ctx) {
       if (matched) {
         const mappingPath = refresh.targets && refresh.targets.itemsFromPath;
         const mapping = typeof mappingPath === "string"
-          ? (matched.arrayMappings || []).find((candidate) => candidate.path === mappingPath)
+          ? (matched.arrayMappings || []).find((candidate     ) => candidate.path === mappingPath)
           : null;
         if (typeof mappingPath === "string" && !mapping) {
           findings.push(unknownFieldFinding(
@@ -767,7 +773,7 @@ export function lintGlassesUiPlan(spec, ctx) {
           ));
         }
         const known = knownPathSet(
-          ((mapping && mapping.knownFields) || matched.knownFields || []).map((f) => f.path),
+          ((mapping && mapping.knownFields) || matched.knownFields || []).map((f     ) => f.path),
         );
         const openPrefixes = (mapping && mapping.openPrefixes) || matched.openPrefixes || [];
         const closed = mapping

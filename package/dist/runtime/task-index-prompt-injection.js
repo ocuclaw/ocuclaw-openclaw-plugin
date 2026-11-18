@@ -3,7 +3,7 @@ export const TASK_INDEX_PROMPT_INJECTION_DISABLED_REASON =
 
 const WARNING_SYMBOL = Symbol.for("ocuclaw.task-index.prompt-injection-warning");
 
-export function taskIndexPromptInjectionStatus(openclawConfig) {
+export function taskIndexPromptInjectionStatus(openclawConfig     ) {
   const entry = openclawConfig && openclawConfig.plugins &&
     openclawConfig.plugins.entries && openclawConfig.plugins.entries.ocuclaw;
   const disabled = !!(
@@ -19,9 +19,9 @@ export function taskIndexPromptInjectionStatus(openclawConfig) {
 }
 
 export function warnTaskIndexPromptInjectionDisabledOnce(
-  openclawConfig,
-  logger,
-  scopeHost = globalThis,
+  openclawConfig     ,
+  logger     ,
+  scopeHost      = globalThis,
 ) {
   const status = taskIndexPromptInjectionStatus(openclawConfig);
   if (status.status !== "disabled") return status;

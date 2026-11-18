@@ -20,7 +20,9 @@ import {
 import { OPENCLAW_BUNDLE_DEFAULT_WS_PORT } from "../config/runtime-config.js";
 import { taskIndexPromptInjectionStatus } from "../runtime/task-index-prompt-injection.js";
 import { classifyConfiguredRelayCredential } from "./relay-credential-provision.js";
+import { configuredPhoneAddress } from "./custom-route.js";
 import { CAPABILITY_CONSENT_COMMAND, readCapabilityConsent } from "./capability-consent.js";
+import { codexLiveReasoningNote } from "./codex-engine.js";
 
 const SECRET_PRESENCE = Object.freeze({
   PRESENT: "present",
@@ -31,7 +33,7 @@ const SECRET_VALIDATION = Object.freeze({
   NOT_APPLICABLE: "not-applicable",
 });
 
-function secretState(value) {
+function secretState(value     ) {
   const present = typeof value === "string" && value.length > 0;
   return {
     presence: present ? SECRET_PRESENCE.PRESENT : SECRET_PRESENCE.ABSENT,
@@ -55,7 +57,7 @@ export const TOOL_POLICY_EXPOSURES = Object.freeze([
   "unknown",
 ]);
 
-export function toolPolicyEntryTargetsOcuClaw(entry) {
+export function toolPolicyEntryTargetsOcuClaw(entry     ) {
   if (typeof entry !== "string") return false;
   const normalized = entry.trim().toLowerCase();
   if (normalized.length === 0) return false;
@@ -71,12 +73,12 @@ export function toolPolicyEntryTargetsOcuClaw(entry) {
   return normalized.startsWith(`${OCUCLAW_PLUGIN_ID}_`);
 }
 
-function toolPolicyListVerdict(value) {
+function toolPolicyListVerdict(value     ) {
   if (!Array.isArray(value) || value.length === 0) return null;
   return value.some(toolPolicyEntryTargetsOcuClaw);
 }
 
-export function classifyToolPolicyExposure(tools) {
+export function classifyToolPolicyExposure(tools     ) {
   if (tools === undefined || tools === null) {
     return {
       profile: null,
@@ -143,7 +145,7 @@ export const OCUCLAW_SETUP_OPERATIONS = Object.freeze([
   "journey",
 ]);
 
-export function classifySetupRegistration(registrationMode) {
+export function classifySetupRegistration(registrationMode     ) {
   if (registrationMode === "full") {
     return {
       pluginStatus: "loaded",
@@ -168,7 +170,7 @@ export function classifySetupRegistration(registrationMode) {
   };
 }
 
-function liveRelayTokenSecretState(api) {
+function liveRelayTokenSecretState(api     ) {
   const configApi = api && api.runtime && api.runtime.config;
   if (!configApi || typeof configApi.current !== "function") return null;
   let live;
@@ -190,7 +192,26 @@ function liveRelayTokenSecretState(api) {
       };
 }
 
-function relayCredentialLoadState(service) {
+function loadedRelayCredentials(options     ) {
+  const found           = [];
+  const add = (value     ) => { if (typeof value === "string" && value && !found.includes(value)) found.push(value); };
+  try { add(options?.service?.getRuntimeConfig?.()?.relayToken); } catch (_) {  }
+  try { add(options?.api?.runtime?.config?.current?.()?.plugins?.entries?.ocuclaw?.config?.relayToken); } catch (_) {  }
+  return found;
+}
+
+function relayTokenSecretState(api     , config     , load     ) {
+  const live = liveRelayTokenSecretState(api);
+  if (live && live.presence === SECRET_PRESENCE.ABSENT && load && load.adoptedInProcess === true) {
+    return {
+      presence: SECRET_PRESENCE.PRESENT,
+      validation: SECRET_VALIDATION.NOT_CHECKED,
+    };
+  }
+  return live ?? secretState(config.relayToken);
+}
+
+function relayCredentialLoadState(service     ) {
   if (!service || typeof service.getRelayCredentialLoadState !== "function") return null;
   try {
     const state = service.getRelayCredentialLoadState();
@@ -210,7 +231,7 @@ function relayCredentialLoadState(service) {
   }
 }
 
-function classifyBindAddress(value) {
+function classifyBindAddress(value     ) {
   const address = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!address) return "unset";
   if (
@@ -239,7 +260,7 @@ function classifyBindAddress(value) {
   return "other";
 }
 
-function boundedVersion(value) {
+function boundedVersion(value     ) {
   if (typeof value !== "string") return "unknown";
   const trimmed = value.trim();
   return /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(trimmed)
@@ -249,7 +270,7 @@ function boundedVersion(value) {
 
 const MANAGED_INSTALL_SOURCES = ["archive", "clawhub", "npm", "path", "git"];
 
-function installProvenance(installs) {
+function installProvenance(installs     ) {
   if (!installs || typeof installs !== "object" || Array.isArray(installs)) {
     return {
       recorded: null,
@@ -287,12 +308,12 @@ function installProvenance(installs) {
   };
 }
 
-function calendarVersion(value) {
+function calendarVersion(value     ) {
   const match = /(\d{4})\.(\d+)\.(\d+)/.exec(String(value ?? ""));
   return match ? match.slice(1, 4).map(Number) : null;
 }
 
-function compareCalendarVersion(left, right) {
+function compareCalendarVersion(left     , right     ) {
   for (let index = 0; index < 3; index += 1) {
     if (left[index] > right[index]) return 1;
     if (left[index] < right[index]) return -1;
@@ -300,14 +321,14 @@ function compareCalendarVersion(left, right) {
   return 0;
 }
 
-export function compatibilityStatus(hostVersion) {
+export function compatibilityStatus(hostVersion     ) {
   const numeric = calendarVersion(/^\d{4}\.\d+\.\d+/.exec(hostVersion) ? hostVersion : null);
   const tokens = String(OPENCLAW_PLUGIN_API_COMPATIBILITY).trim().split(/\s+/);
-  const floorToken = tokens.find((token) => token.startsWith(">=")) ?? tokens[0];
+  const floorToken = tokens.find((token     ) => token.startsWith(">=")) ?? tokens[0];
   const floor = calendarVersion(floorToken);
   if (!numeric || !floor) return "unknown";
   if (compareCalendarVersion(numeric, floor) < 0) return "incompatible";
-  const ceilingToken = tokens.find((token) => token.startsWith("<"));
+  const ceilingToken = tokens.find((token     ) => token.startsWith("<"));
   if (!ceilingToken) return "compatible";
   const ceiling = calendarVersion(ceilingToken);
   if (!ceiling) return "unknown";
@@ -316,7 +337,7 @@ export function compatibilityStatus(hostVersion) {
   return (inclusive ? cmp <= 0 : cmp < 0) ? "compatible" : "incompatible";
 }
 
-function configurationState(api, config) {
+function configurationState(api     , config     ) {
   const raw = api && api.pluginConfig && typeof api.pluginConfig === "object"
     ? api.pluginConfig
     : {};
@@ -513,13 +534,13 @@ const FINDING_TEXT = Object.freeze({
   ],
 });
 
-function finding(id, evidence) {
-  const findingText = FINDING_TEXT;
+function finding(id     , evidence     ) {
+  const findingText      = FINDING_TEXT;
   const [severity, explanation] = findingText[id];
   return { id, severity, explanation, evidence };
 }
 
-function findingsFor(state) {
+function findingsFor(state     ) {
   const findings = [];
   if (state.plugin && state.plugin.capabilityConsent && state.plugin.capabilityConsent.status === "required") {
     findings.push(finding("plugin.capability-consent-required", state.plugin.capabilityConsent.evidence));
@@ -654,9 +675,9 @@ const REMEDIATIONS = Object.freeze({
   },
 });
 
-function planFor(findings, host = null) {
-  const remediations = REMEDIATIONS;
-  return findings.flatMap((item) => {
+function planFor(findings     , host      = null) {
+  const remediations      = REMEDIATIONS;
+  return findings.flatMap((item     ) => {
     const remediation = remediations[item.id];
     if (!remediation) return [];
 
@@ -664,14 +685,14 @@ function planFor(findings, host = null) {
       ? gatewayRestartAdvice(remediation.action, host)
       : remediation.action;
     const risks = Array.isArray(remediation.risks)
-      ? remediation.risks.map((risk) => gatewayRestartRisk(risk, host))
+      ? remediation.risks.map((risk     ) => gatewayRestartRisk(risk, host))
       : remediation.risks;
     return [{ ...remediation, action, risks, findingId: item.id }];
   });
 }
 
-function verificationFor(state) {
-  const status = (condition, unknown = false) =>
+function verificationFor(state     ) {
+  const status = (condition     , unknown = false) =>
     unknown ? "unknown" : condition ? "passed" : "failed";
   const invariants = [
     {
@@ -760,13 +781,13 @@ function defaultEnvironmentProbe() {
   };
 }
 
-function environmentReport(probe) {
+function environmentReport(probe     ) {
   try {
     const report = (typeof probe === "function" ? probe : defaultEnvironmentProbe)();
     return {
       os: typeof report.os === "string" ? report.os : "unknown",
       containerMarkers: Array.isArray(report.containerMarkers)
-        ? report.containerMarkers.filter((m) => typeof m === "string")
+        ? report.containerMarkers.filter((m     ) => typeof m === "string")
         : [],
       systemdPresent:
         typeof report.systemdPresent === "boolean" ? report.systemdPresent : null,
@@ -782,7 +803,7 @@ function environmentReport(probe) {
   }
 }
 
-export function resolveSetupStateDir(api) {
+export function resolveSetupStateDir(api     ) {
   try {
     const stateApi = api && api.runtime && api.runtime.state;
     if (!stateApi || typeof stateApi.resolveStateDir !== "function") return null;
@@ -795,11 +816,11 @@ export function resolveSetupStateDir(api) {
   }
 }
 
-function relayHandleRunning(relay) {
+function relayHandleRunning(relay     ) {
   return !!relay && relay.relayLifecycle !== "starting";
 }
 
-function resolveReportedPortOrigin(api, relay) {
+function resolveReportedPortOrigin(api     , relay     ) {
   const view = api && api.pluginConfig;
   if (!hasExplicitWsPort(view)) return "plugin-managed-default";
   if (view.wsPort !== OPENCLAW_BUNDLE_DEFAULT_WS_PORT) return "explicit-config";
@@ -808,7 +829,7 @@ function resolveReportedPortOrigin(api, relay) {
   return "unverified-pre-start";
 }
 
-function createSetupStateReader(options) {
+function createSetupStateReader(options     ) {
 
   const {
     api,
@@ -827,7 +848,7 @@ function createSetupStateReader(options) {
     throw new Error("createSetupController requires the OcuClaw relay service");
   }
 
-  const readSetupState = function readSetupState(context = {}) {
+  const readSetupState = function readSetupState(context      = {}) {
     const config = typeof service.getSetupConfig === "function"
       ? service.getSetupConfig()
       : service.getRuntimeConfig();
@@ -845,6 +866,7 @@ function createSetupStateReader(options) {
       return bounded === "unknown" ? null : bounded;
     })();
     const invokedAsTool = context.surface === "tool";
+    const relayCredentialLoad = relayCredentialLoadState(service);
     const hostVersion = boundedVersion(api && api.runtime && api.runtime.version);
     const install = installProvenance(
       api && api.config && api.config.plugins && api.config.plugins.installs,
@@ -944,21 +966,21 @@ function createSetupStateReader(options) {
         ...classifyToolPolicyExposure(api && api.config ? api.config.tools : undefined),
       },
       secrets: {
-        relayToken: liveRelayTokenSecretState(api) ?? secretState(config.relayToken),
+        relayToken: relayTokenSecretState(api, config, relayCredentialLoad),
         gatewayToken: secretState(config.gatewayToken),
         sonioxApiKey: secretState(config.sonioxApiKey),
         cartesiaApiKey: secretState(config.cartesiaApiKey),
         evenAiToken: secretState(config.evenAiToken),
       },
 
-      relayCredentialLoad: relayCredentialLoadState(service),
+      relayCredentialLoad,
     };
     return state;
   };
   return readSetupState;
 }
 
-function readHostSummary(options) {
+function readHostSummary(options     ) {
   try {
     if (options && typeof options.hostSummary === "function") return options.hostSummary();
     if (options && options.hostSummary && typeof options.hostSummary === "object") return options.hostSummary;
@@ -968,7 +990,7 @@ function readHostSummary(options) {
   }
 }
 
-function readCapabilityConsentState(options) {
+function readCapabilityConsentState(options     ) {
   try {
     if (options && options.capabilityConsent && typeof options.capabilityConsent === "object") return options.capabilityConsent;
     return readCapabilityConsent({ stateDir: resolveSetupStateDir(options && options.api) });
@@ -977,7 +999,7 @@ function readCapabilityConsentState(options) {
   }
 }
 
-function readAssistantSkill(options) {
+function readAssistantSkill(options     ) {
   try {
     if (options && typeof options.assistantSkill === "function") {
       return Promise.resolve(options.assistantSkill()).catch(() => unknownAssistantSkill());
@@ -991,18 +1013,18 @@ function readAssistantSkill(options) {
   }
 }
 
-function withAssistantSkill(options, result, context) {
+function withAssistantSkill(options     , result     , context     ) {
 
   if (context.surface === "phone") return Promise.resolve(result);
   return Promise.all([Promise.resolve(result), readAssistantSkill(options)]).then(
-    ([value, assistantSkill]) =>
+    ([value, assistantSkill]     ) =>
       value && typeof value === "object" ? { ...value, assistantSkill } : value,
   );
 }
 
-export function createSetupController(options) {
+export function createSetupController(options     ) {
   const readState = createSetupStateReader(options);
-  return function resolveSetupOperation(operation, context = {}) {
+  return function resolveSetupOperation(operation     , context      = {}) {
     const state = readState(context);
     const capabilities = {
       readOperations: [...OCUCLAW_SETUP_OPERATIONS],
@@ -1021,11 +1043,11 @@ export function createSetupController(options) {
     const reportedState = { ...state, capabilities };
     if (operation === "journey" || (options.runtimeStatus === "unknown" && typeof options.readLiveJourney === "function")) {
       const installation = setupInstallation(resolveSetupStateDir(options.api));
-      let firstUse;
+      let firstUse     ;
       try { firstUse = createFirstUseStore(resolveSetupStateDir(options.api)).read(); }
       catch (_) { firstUse = { status: "unavailable", reason: "setup-state-unreadable-or-foreign" }; }
 
-      let runErrored = null;
+      let runErrored      = null;
       try { runErrored = options.service?.getRelay?.()?.setupFirstUse?.("run_errored", { installationId: installation.id }) ?? null; }
       catch (_) { runErrored = null; }
       const local = setupJourney(reportedState, installation, null, firstUse, null, runErrored);
@@ -1042,14 +1064,22 @@ export function createSetupController(options) {
             warnings: toolPolicyWarnings(state.toolPolicy),
             capabilities: { ...(verified ? owner.capabilities : capabilities), ...effectiveCapabilities } }, context);
           const effectiveState = { ...reportedState, capabilities: { ...capabilities, ...effectiveCapabilities } };
-          return operation === "overview" ? effectiveState : completeSetupOperation(effectiveState, operation);
+          return operation === "overview"
+            ? effectiveState
+            : completeSetupOperation(effectiveState, operation, doctorNotes(options.api, state));
         });
       }
       if (typeof options.readPrivateRoute === "function" && state.runtime.status === "running") {
 
+        const phoneAddress = configuredPhoneAddress(options.api);
         const routeContext = {
           installation,
           hostStateDir: typeof options.hostStateDir === "string" ? options.hostStateDir : undefined,
+          ...(phoneAddress !== null ? {
+            phoneAddress,
+            host: state.host ?? null,
+            relayCredential: loadedRelayCredentials(options),
+          } : {}),
         };
 
         const readDaemon = typeof options.readTailnetDaemon === "function"
@@ -1058,17 +1088,32 @@ export function createSetupController(options) {
         return Promise.all([
           Promise.resolve(options.readPrivateRoute(state.relay.port, routeContext)),
           readDaemon,
-        ]).then(([route, tailnetDaemon]) =>
+        ]).then(([route, tailnetDaemon]     ) =>
           withAssistantSkill(options, setupJourney(reportedState, installation, route, firstUse, tailnetDaemon, runErrored), context));
       }
       return withAssistantSkill(options, local, context);
     }
     if (operation === "overview") return reportedState;
-    return completeSetupOperation(reportedState, operation);
+    return completeSetupOperation(reportedState, operation, doctorNotes(options.api, state));
   };
 }
 
-function completeSetupOperation(state, operation) {
+function doctorNotes(api     , state     ) {
+  let config      = null;
+  try {
+    const runtimeConfig = api && api.runtime ? api.runtime.config : null;
+    config = runtimeConfig && typeof runtimeConfig.current === "function"
+      ? runtimeConfig.current()
+      : api && api.config;
+  } catch (_) {
+    config = api && api.config;
+  }
+  const hostVersion = state && state.compatibility ? state.compatibility.hostOpenClaw : null;
+  const note = codexLiveReasoningNote(config, hostVersion === "unknown" ? null : hostVersion);
+  return note ? [note] : [];
+}
+
+function completeSetupOperation(state     , operation     , notes        = []) {
   const findings = findingsFor({ ...state, operation });
   const health = findings.some((item) => item.severity === "error")
     ? "blocked"
@@ -1081,7 +1126,7 @@ function completeSetupOperation(state, operation) {
         ? "needs-attention"
       : "healthy";
   const operationState = { ...state, operation };
-  if (operation === "doctor") return { ...operationState, health, findings };
+  if (operation === "doctor") return { ...operationState, health, findings, notes };
   if (operation === "plan") {
     return {
       ...operationState,
@@ -1094,7 +1139,7 @@ function completeSetupOperation(state, operation) {
   if (operation === "verify") {
     return { ...operationState, ...verificationFor(operationState) };
   }
-  const err = new Error("invalid_input: unsupported setup operation");
+  const err      = new Error("invalid_input: unsupported setup operation");
   err.code = "invalid_input";
   throw err;
 }

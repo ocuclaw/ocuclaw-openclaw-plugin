@@ -99,6 +99,8 @@ export function createSetupWelcome(store     , readPhone     , getRenderer     ,
         const outcome = await renderer.runDynamicUi({
           sessionKey: record.sessionKey, depth: 1, signal: pending.abort.signal,
           settleOnSupersede: true,
+
+          origin: "task",
           spec: { ...surface, timeoutMs: input.timeoutMs ?? surface.timeoutMs },
           onOpened({ surfaceId, declarationId }     ) {
             pending.surfaceId = surfaceId;

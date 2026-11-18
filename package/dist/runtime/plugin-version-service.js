@@ -1,7 +1,10 @@
 import { PLUGIN_VERSION, REQUIRES_CLIENT_VERSION, BUILD_INPUT_HASH } from "../version.js";
 import { readOpenClawHostVersion } from "./openclaw-host-version.js";
 
-function createPluginVersionService() {
+function createPluginVersionService(deps      = {}) {
+
+  const runtimeVersion = deps && deps.openclawRuntimeVersion;
+
   function getPluginVersion() {
     return typeof PLUGIN_VERSION === "string" && PLUGIN_VERSION.length > 0
       ? PLUGIN_VERSION
@@ -15,7 +18,8 @@ function createPluginVersionService() {
   }
 
   function getOpenClawHostVersion() {
-    return readOpenClawHostVersion();
+
+    return readOpenClawHostVersion(undefined, runtimeVersion);
   }
 
   function getDistHash() {

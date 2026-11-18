@@ -9,10 +9,11 @@ import {
 
 } from "./noise-suite.js";
 import { buildPairingPrologue } from "./pairing-prologue.js";
+import { fromBase64Url, toBase64Url } from "./base64url.js";
 import { canonicalizeRelayAddressV1 } from "./relay-address.js";
 import { deriveSafetyPhrase, formatSafetyPhrase } from "./safety-phrase.js";
 
-export const EXCHANGE_LIFETIME_MS = 120_000;
+export const EXCHANGE_LIFETIME_MS = 300_000;
 
 export const MAX_PHONE_SUBMISSIONS = 3;
 
@@ -31,11 +32,12 @@ const MAX_RAW_PHONE_LABEL_LENGTH = 512;
 
 const CONSUMED_ID_MEMORY = 64;
 
-const EXCHANGE_ID_PATTERN = /^[0-9a-f]{32}$/;
+export const EXCHANGE_ID_PATTERN = /^[0-9a-f]{32}$/;
 
 const MAX_RAW_PAIRING_CODE_LENGTH = 64;
 
 const FAILURE_MESSAGES                                       = {
+  phone_key_mismatch: "Pairing stopped. Start pairing again.",
 
   "secure-pairing-unavailable":
     "Secure pairing could not be started on this computer, so nothing was sent.",
@@ -46,7 +48,7 @@ const FAILURE_MESSAGES                                       = {
     "This computer could not read the settings OcuClaw pairs with, so nothing was sent.",
 
   expired:
-    "Pairing took longer than the two-minute window. Start pairing again.",
+    "Pairing took longer than the five-minute window. Start pairing again.",
   "exchange-not-found":
     "That pairing request is no longer active. Start pairing again.",
   "exchange-already-used":
@@ -157,21 +159,6 @@ export function sanitizePhoneLabel(input         )         {
   }
   out = out.replace(/\s+/g, " ").trim();
   return out.length > 0 ? out : "Unknown device";
-}
-
-function toBase64Url(bytes            )         {
-  return Buffer.from(bytes).toString("base64url");
-}
-
-function fromBase64Url(value         , maxEncodedLength        )                    {
-  if (typeof value !== "string" || value.length === 0) return null;
-  if (value.length > maxEncodedLength) return null;
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-  try {
-    return new Uint8Array(Buffer.from(value, "base64url"));
-  } catch {
-    return null;
-  }
 }
 
 const MAX_ENCODED_HANDSHAKE_MESSAGE_LENGTH = 68;
@@ -367,6 +354,7 @@ export function createPairingExchangeHost(
     address        ,
 
     dualRoute = false,
+    phonePin                                                                                                                        ,
   )
 
     {
@@ -437,6 +425,8 @@ export function createPairingExchangeHost(
       submittedMessages: new Set        (),
       session: null,
       safetyPhrase: null,
+      phoneKeyCommitment: phonePin?.expected ?? null,
+      verifyPhoneKeyCommitment: phonePin?.verify ?? null,
       phoneLabel: null,
       approved: false,
       completion: null,
@@ -597,6 +587,16 @@ export function createPairingExchangeHost(
 
     const phoneEphemeralPublicKey = phoneMessage.slice(0, NOISE_PUBLIC_KEY_LENGTH);
 
+    if (target.phoneKeyCommitment) {
+      let matches = false;
+      try {
+        matches = await target.verifyPhoneKeyCommitment?.(phoneEphemeralPublicKey, target.phoneKeyCommitment) === true;
+      } catch {  }
+      evaluateDeadlines();
+      if (isStale(target)) return;
+      if (!matches) { failClosed(target, "phone_key_mismatch"); return; }
+    }
+
     const ephemeral = target.ephemeral;
     if (!ephemeral || !noiseSuite) {
       failClosed(target, "secure-pairing-unavailable");
@@ -662,7 +662,11 @@ export function createPairingExchangeHost(
     target.phoneLabel = sanitizePhoneLabel(frame.clientName);
     target.state = "awaiting-local-approval";
 
-    await sendOrFail(target, { type: "pairing.awaiting-approval", exchangeId: target.id });
+    await sendOrFail(target, {
+      type: "pairing.awaiting-approval",
+      exchangeId: target.id,
+      expiresInSeconds: Math.max(0, Math.round((target.expiresAt - now()) / 1000)),
+    });
   }
 
   async function handleCompletion(target                , frame              )                {
@@ -748,7 +752,7 @@ export function createPairingExchangeHost(
 
     if (!isManualRequest) {
       if (frameExchangeId === null) {
-        failClosed(exchange, "malformed-message");
+
         return;
       }
       if (frameExchangeId !== exchange.id) {
@@ -822,9 +826,16 @@ export function createPairingExchangeHost(
       };
     },
 
-    async beginBootstrapInitiation({ address }) {
+    async beginBootstrapInitiation({ address, phoneKeyCommitment, verifyPhoneKeyCommitment }) {
 
-      const started = await beginExchange("qr", address, true);
+      let phonePin                                                                                                                 ;
+      if (phoneKeyCommitment !== undefined) {
+        if (!(phoneKeyCommitment instanceof Uint8Array) || phoneKeyCommitment.length !== 32 || typeof verifyPhoneKeyCommitment !== "function") {
+          return { ok: false, ...failure("secure-pairing-unavailable") };
+        }
+        phonePin = { expected: new Uint8Array(phoneKeyCommitment), verify: verifyPhoneKeyCommitment };
+      }
+      const started = await beginExchange("qr", address, true, phonePin);
       if (!started.ok) return started;
       const target = started.exchange;
       return {

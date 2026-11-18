@@ -14,17 +14,17 @@ export const LIVEUI_EXECUTOR_REGISTRY_HEARTBEAT_MS = 60_000;
 
 const REGISTRY_AGENT_KEYS = new Set(["agentId", "name", "emoji"]);
 
-function isPlainObject(value) {
+function isPlainObject(value     ) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
-function isHost(value) {
+function isHost(value     ) {
   return LIVEUI_EXECUTOR_REGISTRY_HOSTS.includes(value);
 }
 
-function validRegistryAgent(value) {
+function validRegistryAgent(value     ) {
   return !!(
     isPlainObject(value) &&
     Object.keys(value).every((key) => REGISTRY_AGENT_KEYS.has(key)) &&
@@ -36,9 +36,9 @@ function validRegistryAgent(value) {
   );
 }
 
-function normalizePublishedAgents(input) {
+function normalizePublishedAgents(input     ) {
   if (!Array.isArray(input)) throw new Error("executor registry agents must be an array");
-  const agents = [];
+  const agents      = [];
   const seen = new Set();
   for (const raw of input) {
     if (!isPlainObject(raw)) throw new Error("executor registry agent must be an object");
@@ -56,7 +56,7 @@ function normalizePublishedAgents(input) {
   return agents;
 }
 
-function registryRecords(registry) {
+function registryRecords(registry     ) {
   if (Array.isArray(registry)) return registry;
   if (registry && Array.isArray(registry.records)) return registry.records;
   if (registry && typeof registry === "object") {
@@ -67,7 +67,7 @@ function registryRecords(registry) {
   return [];
 }
 
-function normalizedLiveAgentIdentity(value) {
+function normalizedLiveAgentIdentity(value     ) {
   if (typeof value === "string") {
     const id = value.trim();
     return id ? [id.toLowerCase()] : [];
@@ -81,7 +81,7 @@ function normalizedLiveAgentIdentity(value) {
   return identities;
 }
 
-export function projectTaskExecutorState(input = {}) {
+export function projectTaskExecutorState(input      = {}) {
   const executor = input.executor;
   const thisHost = input.thisHost;
   if (input.context === "current_session") {
@@ -105,7 +105,7 @@ export function projectTaskExecutorState(input = {}) {
   }
 
   const localRegistry = registryRecords(input.registry).find(
-    (record) => record && record.host === thisHost,
+    (record     ) => record && record.host === thisHost,
   );
   if (localRegistry) {
     if (localRegistry.schema !== LIVEUI_EXECUTOR_REGISTRY_SCHEMA) {
@@ -116,7 +116,7 @@ export function projectTaskExecutorState(input = {}) {
     }
     const needle = executor.agentId.trim().toLowerCase();
     const registryMatch = localRegistry.agents.find(
-      (agent) =>
+      (agent     ) =>
         agent &&
         typeof agent.agentId === "string" &&
         agent.agentId.trim().toLowerCase() === needle,
@@ -128,14 +128,14 @@ export function projectTaskExecutorState(input = {}) {
 
   const needle = executor.agentId.trim().toLowerCase();
   const available = Array.isArray(input.liveAgents) && input.liveAgents.some(
-    (agent) => normalizedLiveAgentIdentity(agent).includes(needle),
+    (agent     ) => normalizedLiveAgentIdentity(agent).includes(needle),
   );
   return available
     ? { state: "ready" }
     : { state: "needs_setup", reason: "executor_missing" };
 }
 
-export function resolveLiveuiExecutorRegistryRoot(options = {}) {
+export function resolveLiveuiExecutorRegistryRoot(options      = {}) {
   if (typeof options.libraryDir === "string" && options.libraryDir.trim()) {
     return resolveLiveuiLibraryRoot(options.libraryDir);
   }
@@ -145,7 +145,7 @@ export function resolveLiveuiExecutorRegistryRoot(options = {}) {
   return resolveLiveuiLibraryRoot(undefined);
 }
 
-export function createLiveuiExecutorRegistry(options = {}) {
+export function createLiveuiExecutorRegistry(options      = {}) {
   const fs = options.fs && typeof options.fs === "object" ? options.fs : nodeFs;
   const libraryDir = resolveLiveuiExecutorRegistryRoot(options);
   const registryDir = path.join(libraryDir, LIVEUI_EXECUTOR_REGISTRY_DIRNAME);
@@ -155,15 +155,15 @@ export function createLiveuiExecutorRegistry(options = {}) {
     : LIVEUI_EXECUTOR_REGISTRY_HEARTBEAT_MS;
   const schedule = typeof options.setInterval === "function" ? options.setInterval : setInterval;
   const unschedule = typeof options.clearInterval === "function" ? options.clearInterval : clearInterval;
-  let heartbeatTimer = null;
-  let heartbeatPublication = null;
+  let heartbeatTimer      = null;
+  let heartbeatPublication      = null;
 
-  function filePath(host) {
+  function filePath(host     ) {
     if (!isHost(host)) throw new Error("executor registry host must be openclaw or hermes");
     return path.join(registryDir, `${host}.json`);
   }
 
-  function publish(input = {}) {
+  function publish(input      = {}) {
     if (!isHost(input.host)) {
       throw new Error("executor registry host must be openclaw or hermes");
     }
@@ -196,7 +196,7 @@ export function createLiveuiExecutorRegistry(options = {}) {
     return record;
   }
 
-  function readHost(host) {
+  function readHost(host     ) {
     const target = filePath(host);
     try {
       const stat = fs.lstatSync(target);
@@ -206,7 +206,7 @@ export function createLiveuiExecutorRegistry(options = {}) {
         return { schema: null, host, updatedAt: 0, online: false, agents: [] };
       }
       return record;
-    } catch (err) {
+    } catch (err     ) {
       if (err && err.code === "ENOENT") return null;
       return { schema: null, host, updatedAt: 0, online: false, agents: [] };
     }
@@ -218,7 +218,7 @@ export function createLiveuiExecutorRegistry(options = {}) {
       .filter((record) => record !== null);
   }
 
-  function startHeartbeat(input = {}) {
+  function startHeartbeat(input      = {}) {
     const first = publish({ ...input, online: true });
     if (!heartbeatTimer) {
       heartbeatTimer = schedule(() => {
@@ -231,7 +231,7 @@ export function createLiveuiExecutorRegistry(options = {}) {
     return first;
   }
 
-  function updateHeartbeat(input = {}) {
+  function updateHeartbeat(input      = {}) {
     const next = {
       host: input.host,
       online: input.online !== false,

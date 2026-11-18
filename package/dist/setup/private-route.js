@@ -1,11 +1,11 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as tls from "node:tls";
-import { dialTailnet, parseSocks5 } from "./tailnet-dial.js";
+import { DIAL_TAILSCALE_NC, dialTailnet, parseSocks5 } from "./tailnet-dial.js";
+import { runHostCommand } from "../tools/host-process.js";
 
 export const OPENCLAW_SERVE_PORT = 8444;
 export const LOOPBACK = "127.0.0.1";
@@ -81,6 +81,11 @@ export const ROUTE_STATUS_OFFLINE = "offline";
 export const ROUTE_STATUS_UNKNOWN = "unknown";
 
 const READ_TIMEOUT_MS = 2000;
+
+const READ_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+
+export const NODE_STATUS_ARGS = Object.freeze(["status", "--json", "--peers=false"]);
+export const PEER_STATUS_ARGS = Object.freeze(["status", "--json"]);
 const TARGET_PROBE_TIMEOUT_MS = 1500;
 const FRONT_DOOR_PROBE_TIMEOUT_MS = 2500;
 const LOCK_WAIT_MS = 5000;
@@ -134,24 +139,13 @@ export function teardownCommand(port      = null, cliArgv      = null) {
   return `${tailscaleCommandPrefix(cliArgv)} serve --tls-terminated-tcp=${servePort(port)} off`;
 }
 
-export function defaultRunTailscale(args     , cliArgv      = null) {
+export async function defaultRunTailscale(args     , cliArgv      = null) {
   const argv = Array.isArray(cliArgv) && cliArgv.length > 0 ? cliArgv : DEFAULT_TAILSCALE_ARGV;
-  return new Promise((resolve) => {
-    execFile(
-      argv[0],
-      argv.slice(1).concat(args),
-      { timeout: READ_TIMEOUT_MS, maxBuffer: 256 * 1024, encoding: "utf8" },
-      (error     , stdout     ) => {
-        if (error) {
-          if (error.code === "ENOENT") { resolve({ code: READ_CLI_ABSENT, stdout: "" }); return; }
-          if (error.killed || error.signal === "SIGTERM") { resolve({ code: READ_TIMEOUT, stdout: "" }); return; }
-          resolve({ code: READ_FAILED, stdout: typeof stdout === "string" ? stdout : "" });
-          return;
-        }
-        resolve({ code: READ_OK, stdout: typeof stdout === "string" ? stdout : "" });
-      },
-    );
-  });
+  const r = await runHostCommand(argv.concat(args), { timeoutMs: READ_TIMEOUT_MS, maxOutputBytes: READ_MAX_OUTPUT_BYTES });
+  if (r.missing) return { code: READ_CLI_ABSENT, stdout: "" };
+  if (r.timedOut) return { code: READ_TIMEOUT, stdout: "" };
+  if (r.code !== 0 || r.truncated) return { code: READ_FAILED, stdout: r.stdout };
+  return { code: READ_OK, stdout: r.stdout };
 }
 
 async function runJson(run     , args     ) {
@@ -179,7 +173,7 @@ export async function readServeStatus(run     ) {
 }
 
 export async function readNodeState(run     ) {
-  const { document, code } = await runJson(run, ["status", "--json"]);
+  const { document, code } = await runJson(run, [...NODE_STATUS_ARGS]);
   if (!document) return { dnsName: null, network: "unknown", code };
   const backend = document.BackendState;
   const self = isRecord(document.Self) ? document.Self : null;
@@ -194,10 +188,23 @@ export async function readNodeState(run     ) {
   return { dnsName, network: online ? "online" : "offline", code: dnsName ? READ_OK : READ_UNPARSABLE };
 }
 
+const TAILSCALE_SIGNED_OUT_STATES = ["NeedsLogin", "NoState", "Stopped"];
+
+export function tailscaleProblem(code     , document     ) {
+  if (code === READ_CLI_ABSENT) return "not_installed";
+  if (code === READ_TIMEOUT || code === READ_FAILED) return "offline";
+  if (code !== READ_OK || !isRecord(document) || typeof document.BackendState !== "string") return null;
+  if (TAILSCALE_SIGNED_OUT_STATES.includes(document.BackendState)) return "signed_out";
+  const self = isRecord(document.Self) ? document.Self : null;
+  const up = document.BackendState === "Running" && self?.Online === true
+    && typeof self.ID === "string" && !!self.ID && !!normalizeDnsName(self.DNSName);
+  return up ? null : "offline";
+}
+
 export const PHONE_OPERATING_SYSTEMS = ["ios", "android"];
 
 export async function readPhonePresence(run     ) {
-  const { document, code } = await runJson(run, ["status", "--json"]);
+  const { document, code } = await runJson(run, [...PEER_STATUS_ARGS]);
   if (!document || typeof document.BackendState !== "string") {
     return { found: false, readable: false, code: document ? READ_UNPARSABLE : code };
   }
@@ -211,6 +218,29 @@ export async function readPhonePresence(run     ) {
     }
   }
   return { found: false, readable: true, code: READ_OK };
+}
+
+export const CERT_DOMAINS_AVAILABLE = "available";
+export const CERT_DOMAINS_UNAVAILABLE = "unavailable";
+export const CERT_DOMAINS_UNKNOWN = "unknown";
+
+export function certDomainsOutcome(document     , dnsName     ) {
+  if (!isRecord(document) || !Object.prototype.hasOwnProperty.call(document, "CertDomains")) {
+    return CERT_DOMAINS_UNKNOWN;
+  }
+  const domains = document.CertDomains;
+  if (domains === null || (Array.isArray(domains) && domains.length === 0)) return CERT_DOMAINS_UNAVAILABLE;
+  if (!Array.isArray(domains)) return CERT_DOMAINS_UNKNOWN;
+  const wanted = (normalizeDnsName(dnsName) || "").toLowerCase();
+  const names = new Set(domains.map((name     ) => (normalizeDnsName(name) || "").toLowerCase()));
+  return wanted && names.has(wanted) ? CERT_DOMAINS_AVAILABLE : CERT_DOMAINS_UNKNOWN;
+}
+
+export async function readCertDomains(run     ) {
+  const { document } = await runJson(run, [...NODE_STATUS_ARGS]);
+  if (!document) return CERT_DOMAINS_UNKNOWN;
+  const self = isRecord(document.Self) ? document.Self : null;
+  return certDomainsOutcome(document, self ? self.DNSName : null);
 }
 
 function tcpTable(document     ) {
@@ -343,7 +373,7 @@ export function defaultProbeLoopbackTarget(port     ) {
   });
 }
 
-export function defaultProbeFrontDoor(dnsName     , port     , socks5      = null) {
+export function defaultProbeFrontDoor(dnsName     , port     , socks5      = null, ncArgv      = null) {
   return new Promise((resolve) => {
     let settled = false;
     let socket      = null;
@@ -376,8 +406,9 @@ export function defaultProbeFrontDoor(dnsName     , port     , socks5      = nul
     };
     const proxy = parseSocks5(socks5) || (socks5 && typeof socks5 === "object" ? socks5 : null);
     try {
-      if (!proxy) { handshake(null); return; }
-      dialTailnet({ host: dnsName, port, socks5: proxy, timeoutMs: FRONT_DOOR_PROBE_TIMEOUT_MS })
+      const nc = !proxy && Array.isArray(ncArgv) && ncArgv.length > 0 ? ncArgv : null;
+      if (!proxy && !nc) { handshake(null); return; }
+      dialTailnet({ host: dnsName, port, socks5: proxy, ncArgv: nc, timeoutMs: FRONT_DOOR_PROBE_TIMEOUT_MS })
         .then((raw     ) => {
           if (settled) { try { raw.destroy(); } catch (_) {  } return; }
           carrier = raw;
@@ -432,9 +463,12 @@ export function readTailscaleCliReceipt(hostStateDir     ) {
   if (!raw) return null;
   const argv = raw.filter((part     ) => typeof part === "string" && part.trim()).map((part     ) => String(part));
   if (argv.length === 0 || !path.isAbsolute(argv[0])) return null;
+  const socks5 = parseSocks5(record.socks5);
   return {
     argv,
-    socks5: parseSocks5(record.socks5),
+    socks5,
+
+    dial: !socks5 && record.dial === DIAL_TAILSCALE_NC ? DIAL_TAILSCALE_NC : null,
     provisioner: typeof record.provisioner === "string" ? record.provisioner : "unknown",
   };
 }
@@ -449,10 +483,15 @@ export function buildTailscaleCliBody(input      = {}) {
   if (socks5 !== null && !parseSocks5(socks5)) {
     throw new Error("socks5 must be a loopback host:port");
   }
+  const dial = input.dial === undefined || input.dial === null ? null : input.dial;
+  if (dial !== null && (dial !== DIAL_TAILSCALE_NC || socks5 !== null)) {
+    throw new Error(`dial must be ${DIAL_TAILSCALE_NC}, and only without socks5`);
+  }
   return {
     schemaVersion: TAILSCALE_CLI_SCHEMA_VERSION,
     argv,
     socks5,
+    ...(dial ? { dial } : {}),
     provisioner: String(input.provisioner || "unknown"),
     writtenAt: input.writtenAt || nowIso(),
   };
@@ -533,11 +572,11 @@ export function claimJsonReceipt(filePath     , body     ) {
   fsyncDirectory(directory);
 }
 
-async function withReceiptLock(directory     , fn     ) {
+async function withReceiptLock(directory     , fn     , waitMs         = LOCK_WAIT_MS) {
   const lockPath = path.join(directory, OPENCLAW_ROUTE_RECEIPT_LOCK_FILENAME);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   hardenPath(directory, true);
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   let acquired = false;
   while (!acquired) {
     try {
@@ -658,6 +697,8 @@ export function createPrivateRouteReader(deps      = {}) {
   const injectedFrontDoor = typeof deps.probeFrontDoor === "function" ? deps.probeFrontDoor : null;
   const clock = typeof deps.now === "function" ? deps.now : nowIso;
 
+  const lockWaitMs = Number.isFinite(deps.lockWaitMs) && deps.lockWaitMs >= 0 ? deps.lockWaitMs : LOCK_WAIT_MS;
+
   return async function readPrivateRoute(relayPort     , context      = {}) {
     const port = servePort(context.servePort);
     const installationId = context && context.installation && typeof context.installation.id === "string"
@@ -669,7 +710,12 @@ export function createPrivateRouteReader(deps      = {}) {
     const cliArgv = cli ? cli.argv : null;
     const run = injectedRun || ((args     ) => defaultRunTailscale(args, cliArgv));
     const probeFrontDoor = injectedFrontDoor
-      || ((dnsName     , portNumber     ) => defaultProbeFrontDoor(dnsName, portNumber, cli ? cli.socks5 : null));
+      || ((dnsName     , portNumber     ) => defaultProbeFrontDoor(
+        dnsName,
+        portNumber,
+        cli ? cli.socks5 : null,
+        cli && cli.dial === DIAL_TAILSCALE_NC ? cli.argv : null,
+      ));
     const observedAt = clock();
     const base      = {
       schemaVersion: 1,
@@ -770,7 +816,7 @@ export function createPrivateRouteReader(deps      = {}) {
           if (current.status === "missing") claimJsonReceipt(filePath, body);
           else writeJsonReceiptDurable(filePath, body);
           return RECORD_PROPOSED;
-        });
+        }, lockWaitMs);
         base.ownership.receipt = outcome.locked ? outcome.value : RECORD_UNAVAILABLE;
       } catch (error     ) {
         base.ownership.receipt = error && error.code === "already_claimed" ? RECORD_FOREIGN_OWNER : RECORD_UNAVAILABLE;
@@ -837,7 +883,7 @@ export function createPrivateRouteReader(deps      = {}) {
           if (current.status === "missing") claimJsonReceipt(filePath, body);
           else writeJsonReceiptDurable(filePath, body);
           return { code: RECORD_WRITTEN, body };
-        });
+        }, lockWaitMs);
         if (!outcome.locked) { base.ownership.receipt = RECORD_UNAVAILABLE; return null; }
         base.ownership.receipt = outcome.value.code;
         return outcome.value.body;

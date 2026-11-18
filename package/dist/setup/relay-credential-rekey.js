@@ -11,7 +11,7 @@ export const REKEY_CONFIRMATION_WORD = "reset";
 
 export const REKEY_WARNING =
   "A new key immediately disconnects every paired phone. The old key stops " +
-  "working for good, and each phone must pair again by QR or Manual.";
+  "working for good, and each phone must pair again with a new phone code.";
 
 export const REKEY_AFTER_WRITE = Object.freeze({
   mode: "restart",
@@ -26,29 +26,29 @@ const REKEY_RELAY_SWAP_INTERVAL_MS = 1_000;
 const RELAY_ADMISSION_GRACE_MS = 400;
 const RELAY_CONNECT_TIMEOUT_MS = 2_000;
 
-function rekeyError(code, message) {
-  const err = new Error(`${code}: ${message}`);
+function rekeyError(code     , message     ) {
+  const err      = new Error(`${code}: ${message}`);
   err.code = code;
   return err;
 }
 
-function readOnlyHostError(target) {
+function readOnlyHostError(target     ) {
   return rekeyError(
     "read_only_host",
     `this OpenClaw configuration is externally managed and not writable by this process (${target}); the key was not changed.`,
   );
 }
 
-function ensurePluginConfig(draft) {
+function ensurePluginConfig(draft     ) {
   return draft.plugins.entries.ocuclaw.config;
 }
 
-export function createRelayCredentialRekey(api, deps = {}) {
+export function createRelayCredentialRekey(api     , deps      = {}) {
   const runtimeConfig = api?.runtime?.config;
   const generate = typeof deps.generate === "function"
     ? deps.generate
     : () => randomBytes(CREDENTIAL_BYTES).toString("base64url");
-  return async function rekeyRelayCredential(params = {}) {
+  return async function rekeyRelayCredential(params      = {}) {
     const previous = typeof params?.previous === "string" ? params.previous : "";
     if (!previous) {
       throw rekeyError("credential_missing", "there is no present relay credential to replace; the key was not changed.");
@@ -69,11 +69,11 @@ export function createRelayCredentialRekey(api, deps = {}) {
       throw rekeyError("generation_failed", "a strong new key could not be generated; the key was not changed.");
     }
 
-    let mutation;
+    let mutation     ;
     try {
       mutation = await runtimeConfig.mutateConfigFile({
         afterWrite: { ...REKEY_AFTER_WRITE },
-        mutate(draft, context) {
+        mutate(draft     , context     ) {
           const snapshotPath = context?.snapshot?.path;
           if (typeof snapshotPath === "string" && snapshotPath.length > 0) {
             const snapshotWritable = probeConfigWritable(snapshotPath);
@@ -94,7 +94,7 @@ export function createRelayCredentialRekey(api, deps = {}) {
           return { rekeyed: true };
         },
       });
-    } catch (err) {
+    } catch (err     ) {
       if (err?.code === "stale_precondition" || err?.code === "read_only_host") throw err;
       if (err?.name === "ConfigMutationConflictError" || err?.code === "CONFIG_MUTATION_CONFLICT") {
         throw rekeyError("config_conflict", "the OpenClaw configuration changed during the write; the key was not changed. Run the command again.");
@@ -120,7 +120,7 @@ export function createRelayCredentialRekey(api, deps = {}) {
   };
 }
 
-export function verifyRelayCredential(port, credential, options = {}) {
+export function verifyRelayCredential(port     , credential     , options      = {}) {
   const graceMs = Number.isFinite(options.graceMs) ? options.graceMs : RELAY_ADMISSION_GRACE_MS;
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : RELAY_CONNECT_TIMEOUT_MS;
   return new Promise((resolve) => {
@@ -128,10 +128,10 @@ export function verifyRelayCredential(port, credential, options = {}) {
       resolve("unreachable");
       return;
     }
-    let ws = null;
+    let ws      = null;
     let settled = false;
-    let grace = null;
-    const settle = (outcome) => {
+    let grace      = null;
+    const settle = (outcome     ) => {
       if (settled) return;
       settled = true;
       clearTimeout(connectTimer);
@@ -152,18 +152,18 @@ export function verifyRelayCredential(port, credential, options = {}) {
       clearTimeout(connectTimer);
       grace = setTimeout(() => settle("accepted"), graceMs);
     });
-    ws.once("close", (code) => settle(code === 4001 ? "rejected" : "unreachable"));
+    ws.once("close", (code     ) => settle(code === 4001 ? "rejected" : "unreachable"));
     ws.once("error", () => settle("unreachable"));
     ws.once("unexpected-response", () => settle("unreachable"));
   });
 }
 
-export async function awaitRelayCredentialSwap(params, deps = {}) {
+export async function awaitRelayCredentialSwap(params     , deps      = {}) {
   const verify = typeof deps.verify === "function" ? deps.verify : verifyRelayCredential;
   const now = typeof deps.now === "function" ? deps.now : () => Date.now();
   const sleep = typeof deps.sleep === "function"
     ? deps.sleep
-    : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    : (ms     ) => new Promise((resolve) => setTimeout(resolve, ms));
   const deadlineMs = Number.isFinite(params?.deadlineMs) ? params.deadlineMs : REKEY_RELAY_SWAP_DEADLINE_MS;
   const intervalMs = Number.isFinite(params?.intervalMs) ? params.intervalMs : REKEY_RELAY_SWAP_INTERVAL_MS;
   const deadline = now() + deadlineMs;

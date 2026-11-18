@@ -1,7 +1,5 @@
 import { runCloudwaysVerb } from "./cloudways-command.js";
-import { terminalAllowsColor, terminalText } from "./terminal-text.js";
-
-import { spawn } from "node:child_process";
+import { terminalText } from "./terminal-text.js";
 import {
   cliArgv,
   defaultRunCommand,
@@ -12,21 +10,20 @@ import {
   STATE_NEEDS_AUTH,
   STATE_RUNNING,
 } from "./cloudways.js";
-import { localeAllowsUnicode } from "./pairing-terminal.js";
-import { renderQrTextToTerminal, renderQrTextToTerminalColour } from "../domain/pairing/qr-terminal.js";
-import {
-  QR_REDRAW_APPROVAL_LEAD,
-  qrFitsWindow,
-  qrRedrawHintLines,
-  zoomKeyFor,
-} from "../domain/pairing/pairing-bootstrap-presenter.js";
 import { PLUGIN_VERSION } from "../version.js";
 import {
   applyCommand,
+  CERT_DOMAINS_AVAILABLE,
+  CERT_DOMAINS_UNAVAILABLE,
+  CERT_DOMAINS_UNKNOWN,
   defaultRunTailscale,
   LOOPBACK,
+  readCertDomains,
   readNodeState,
   readPhonePresence,
+  ROUTE_STATUS_CONFLICTING,
+  ROUTE_STATUS_EXPOSED,
+  ROUTE_STATUS_FOREIGN,
   ROUTE_STATUS_HEALTHY,
   servePort,
 } from "./private-route.js";
@@ -34,12 +31,20 @@ import {
   ISSUANCE_AVAILABLE,
   ISSUANCE_UNAVAILABLE,
   ISSUANCE_UNKNOWN,
+  queryHttpsEnableLink,
   startCertificateIssuance,
 } from "./certificate-issuance.js";
 import { readPrivateRoute } from "./setup-live.js";
+import { configuredPhoneAddress } from "./custom-route.js";
 import { setupInstallation } from "./setup-journey.js";
 import { resolveSetupStateDir } from "./setup-controller.js";
-import { createRelayCredentialProvision, PROVISION_RELAY_CREDENTIAL_OPERATION } from "./relay-credential-provision.js";
+import { createRelayCredentialProvision, PROVISION_RELAY_CREDENTIAL_OPERATION, readCodexConfigTomlsSafely } from "./relay-credential-provision.js";
+import { applyCodexReasoningSummary, planCodexReasoningSummary } from "./codex-reasoning-summary.js";
+import {
+  applyConversationAccessGrant,
+  CONVERSATION_ACCESS_CONFIG_PATH,
+  conversationAccessGranted,
+} from "./conversation-access.js";
 import { createFirstUseCommand, runSetupWelcome, setupFirstUseRequest } from "./first-use-command.js";
 import {
   awaitFirstUseReply,
@@ -53,7 +58,6 @@ import {
   GATEWAY_UNRESPONSIVE_REASON,
 } from "./first-use-wait.js";
 import { createRuntimeConfigOverview } from "../config/runtime-config.js";
-
 import process from "node:process";
 
 export const SETUP_STEP_COUNT = 8;
@@ -69,12 +73,15 @@ export const CONSENT_ANSWERS = Object.freeze([CONSENT_ANSWER, "y"]);
 
 export const CONSENT_QUESTION_STRICT = `Apply route? Type the full word ${CONSENT_ANSWER}; anything else stops: `;
 
-export function consentGiven(answer, strict = false) {
+export function consentGiven(answer     , strict      = false) {
   const typed = String(answer).trim().toLowerCase();
   return strict === true ? typed === CONSENT_ANSWER : CONSENT_ANSWERS.indexOf(typed) !== -1;
 }
 
-export const CONVERSATION_ACCESS_KEY = "plugins.entries.ocuclaw.hooks.allowConversationAccess";
+export const EMPTY_ANSWER_ASKS = 3;
+export const EMPTY_ANSWER_MESSAGE = "I didn't catch that. Type it again.";
+
+export { CONVERSATION_ACCESS_CONFIG_PATH, conversationAccessGranted };
 
 export const NOT_CLOUDWAYS_MESSAGE =
   "This command is for Cloudways Managed AI Agents.\nUse the ordinary OcuClaw setup for this machine.";
@@ -85,18 +92,20 @@ export const TTY_REQUIRED_MESSAGE =
 export const RESUME_MESSAGE =
   "Stopped. Earlier changes are kept. Run the same setup command to resume.";
 
+export const DROPPED_TERMINAL_MESSAGE = "If your terminal drops, run the same command again.";
+
 export const COLD_CERTIFICATE_MESSAGE =
   "Waiting for the certificate. This usually takes a minute or two.";
 
-export function certificateProgressMessage(elapsedS) {
+export function certificateProgressMessage(elapsedS     ) {
   return `Still waiting for the certificate (${waitedFor(elapsedS)} so far).`;
 }
 
-export function waitedFor(elapsedS) {
+export function waitedFor(elapsedS     ) {
   const total = Math.max(0, Math.floor(Number(elapsedS) || 0));
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
-  const parts = [];
+  const parts      = [];
   if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
   if (seconds > 0 || minutes === 0) parts.push(`${seconds} seconds`);
   return parts.join(" ");
@@ -106,18 +115,21 @@ export const PROGRESS_SIGN_IN_MESSAGE = "Checking the model sign-in...";
 export const PROGRESS_LOADED_MESSAGE = "Checking that OcuClaw is loaded...";
 export const PROGRESS_TAILSCALE_MESSAGE = "Checking Tailscale...";
 export const PROGRESS_TAILSCALE_INSTALL_MESSAGE = "Installing Tailscale...";
+
+export const TAILSCALE_MOVE_MESSAGE =
+  "Switching to the Tailscale this server ships. Same node and sign-in, nothing to approve.";
 export const PROGRESS_ENROLL_MESSAGE = "Getting the approval link from Tailscale...";
 export const PROGRESS_ROUTE_MESSAGE = "Checking the private route...";
 export const PROGRESS_PHONE_MESSAGE = "Checking for your phone...";
 
-export function firstUseWaitingProgress(elapsedS) {
+export function firstUseWaitingProgress(elapsedS     ) {
   return `Waiting for the phone reply (${waitedFor(elapsedS)} so far).`;
 }
 
-function commandWords(text) {
-  const words = [];
+function commandWords(text     ) {
+  const words      = [];
   let word = "";
-  let quote = null;
+  let quote      = null;
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (quote) {
@@ -140,7 +152,7 @@ function commandWords(text) {
   return words;
 }
 
-export function wrapCommandLines(command, columns = 0, indent = "    ", continuation = "      ") {
+export function wrapCommandLines(command     , columns      = 0, indent = "    ", continuation = "      ") {
   const text = String(command);
   const width = Number(columns) > 0 ? Math.floor(Number(columns)) : 0;
   const whole = `${indent}${text}`;
@@ -148,7 +160,7 @@ export function wrapCommandLines(command, columns = 0, indent = "    ", continua
   if (width === 0 || whole.length < width) return [whole];
   const words = commandWords(text);
   if (words.length < 2) return [whole];
-  const lines = [];
+  const lines      = [];
   let current = `${indent}${words[0]}`;
   for (let i = 1; i < words.length; i += 1) {
     const last = i === words.length - 1;
@@ -168,8 +180,27 @@ export function wrapCommandLines(command, columns = 0, indent = "    ", continua
 export const CERTIFICATE_TIMEOUT_MESSAGE =
   "The certificate is not ready yet. Run the same command again; setup picks up here.";
 
+export const CERTIFICATE_REFUSED_MESSAGE =
+  "Tailscale cannot issue this server's certificate. Check that HTTPS is on for your Tailscale account at https://console.tailscale.com/admin/dns, then run the same command again; setup picks up here.";
+
+export const HTTPS_OFF_MESSAGE =
+  "Your Tailscale account has HTTPS turned off. Your phone's private route needs it.";
+export const HTTPS_ENABLE_LINK_LINE = "Open this link, sign in to Tailscale and turn on HTTPS:";
+export const HTTPS_ADMIN_PAGE_LINE =
+  "Open this page, sign in to Tailscale and turn on MagicDNS and HTTPS Certificates:";
+export const HTTPS_ADMIN_PAGE_URL = "https://console.tailscale.com/admin/dns";
+export const HTTPS_CARRIES_ON_MESSAGE = "Setup carries on by itself once it is on.";
+export const HTTPS_WAITING_MESSAGE = "Waiting for HTTPS to be turned on.";
+export const HTTPS_ON_MESSAGE = "HTTPS is on.";
+export const HTTPS_TIMEOUT_MESSAGE =
+  "HTTPS is still off, so setup stopped here. Turn it on, then run the same command again; setup picks up here.";
+
 export const PAIR_RETRY_NO_ANSWER_MESSAGE =
   "No answer, so setup stopped here. Run the same command again to get a new code.";
+
+export const ROUTE_NOT_OURS_STATUSES = Object.freeze([ROUTE_STATUS_FOREIGN, ROUTE_STATUS_CONFLICTING, ROUTE_STATUS_EXPOSED]);
+export const ROUTE_NOT_OURS_MESSAGE =
+  "Something else already uses OcuClaw's private route port on this machine, so setup won't replace it. Remove that route, then run this setup again.";
 
 export const STUCK_HELP_MESSAGE = "Stuck? Ask us on Discord: https://discord.ocuclaw.com";
 
@@ -178,7 +209,7 @@ export const OCUCLAW_LOADED_MESSAGE = "OcuClaw is loaded and ready.";
 export const OCUCLAW_NOT_LOADED_MESSAGE =
   "OcuClaw is installed but your agent has not loaded it yet.";
 
-export function ocuclawOldVersionMessage(loaded, installed) {
+export function ocuclawOldVersionMessage(loaded     , installed     ) {
   return `Your agent is still running OcuClaw ${loaded}. OcuClaw ${installed} is installed.`;
 }
 
@@ -209,56 +240,95 @@ export const OCUCLAW_DASHBOARD_RESTART_LINES = [
   `  ${CLOUDWAYS_RESTART_WARNING_LINES[0]}`,
 ];
 
-export function ocuclawRestartLines(state = {}) {
-  if (state.gatewayRunning === false) return OCUCLAW_DASHBOARD_RESTART_LINES.slice();
+export const WEB_TERMINAL_RESTART_LINE =
+  "This restarts your agent and closes this terminal. In about a minute, open /terminal again.";
+export const OCUCLAW_WEB_TERMINAL_RESTART_LINES = OCUCLAW_RESTART_LINES.map((line) => {
+  if (line === `  ${CLOUDWAYS_RESTART_WARNING_LINES[0]}`) return `  ${WEB_TERMINAL_RESTART_LINE}`;
+  if (line === "  After you reconnect, type this again:") return "  Then type this again:";
+  return line;
+});
+export const OCUCLAW_WEB_TERMINAL_DASHBOARD_RESTART_LINES = [
+  `  ${CLOUDWAYS_DASHBOARD_RESTART_MESSAGE}`,
+  `  ${WEB_TERMINAL_RESTART_LINE}`,
+];
+
+export function ocuclawRestartLines(state      = {}) {
+  const web = state.webTerminal === true;
+  if (state.gatewayRunning === false) {
+    return (web ? OCUCLAW_WEB_TERMINAL_DASHBOARD_RESTART_LINES : OCUCLAW_DASHBOARD_RESTART_LINES).slice();
+  }
   const phoneLine = `  ${CLOUDWAYS_RESTART_WARNING_LINES[1]}`;
+  const lines = web ? OCUCLAW_WEB_TERMINAL_RESTART_LINES : OCUCLAW_RESTART_LINES;
   return state.phonePaired === true
-    ? OCUCLAW_RESTART_LINES.slice()
-    : OCUCLAW_RESTART_LINES.filter((line) => line !== phoneLine);
+    ? lines.slice()
+    : lines.filter((line) => line !== phoneLine);
 }
 
-export const LOADED_CHECK_WAIT_MS = 180000;
+export const LOADED_CHECK_WAIT_MS = 480000;
 const LOADED_CHECK_RETRY_MS = 5000;
 
-export const PROGRESS_LOADED_WAIT_MESSAGE = "Still checking. This can take up to 3 minutes.";
+export const PROGRESS_LOADED_WAIT_MESSAGE = "Still checking. This can take up to 8 minutes.";
 
-export const MODEL_SIGN_IN_CODEX_ARGV = Object.freeze([
-  "openclaw", "models", "auth", "login", "--provider", "openai", "--device-code", "--set-default",
-]);
-export const MODEL_SIGN_IN_API_KEY_ARGV = Object.freeze([
-  "openclaw", "models", "auth", "login", "--set-default",
-]);
+export const LOADED_PROGRESS_EVERY_MS = 60000;
+export function loadedProgressMessage(elapsedS     ) {
+  return `Still checking that OcuClaw is loaded (${waitedFor(elapsedS)} so far).`;
+}
+
 export const MODEL_STATUS_ARGV = Object.freeze(["openclaw", "models", "status", "--json"]);
-export const MODEL_NOT_SIGNED_IN_MESSAGE = "No model is signed in yet. Which account will this agent use?";
-export const MODEL_SIGN_IN_CHOICES = [
-  "    1  ChatGPT subscription",
-  "    2  An API key",
-  "    3  I'll set it up myself",
-];
-export const MODEL_SIGN_IN_QUESTION = "Choose 1–3:";
-export const MODEL_SIGNED_IN_MESSAGE = "Model signed in.";
-export const MODEL_SIGN_IN_UNFINISHED_MESSAGE = "Sign-in did not finish. No model is signed in yet.";
+export const MODEL_PANEL_PATH = "LLM & Channels → OAuth → OpenAI → Connect";
 
-export const MODEL_NOT_SIGNED_IN_NOTICE = "No model is signed in yet. Sign in before the first message.";
-export const MODEL_SIGN_IN_SELF_LINES = [
-  "  For a ChatGPT subscription, type:",
-  `    ${MODEL_SIGN_IN_CODEX_ARGV.join(" ")}`,
-  "  For an API key, type:",
-  `    ${MODEL_SIGN_IN_API_KEY_ARGV.join(" ")}`,
-];
-export const MODEL_SIGN_IN_RESUME_LINES = [
-  "  Then type this again:",
-  `    ${SETUP_COMMAND}`,
-];
+export const MODEL_PANEL_SIGN_IN_LINES = Object.freeze([
+  "  No model is signed in yet. Sign in to OpenAI in the Cloudways panel:",
+  `    ${MODEL_PANEL_PATH}`,
+  "  Using ChatGPT? First turn on device code sign-in in ChatGPT: Settings → Security and login.",
+  "  Your agent restarts after that. It can take a few minutes.",
+  "  When it is back, run this again:",
+]);
 
-export function modelSignedIn(document) {
+export function modelPanelSignInLines(command      = SETUP_COMMAND) {
+  return [...MODEL_PANEL_SIGN_IN_LINES, `    ${command}`];
+}
+
+export function modelSignedIn(document     ) {
   if (!isRecord(document)) return null;
-  const model = [document.resolvedDefault, document.defaultModel]
-    .find((value) => typeof value === "string" && value.trim() !== "");
-  if (!model) return false;
+  const models = [document.resolvedDefault, document.defaultModel]
+    .filter((value     ) => typeof value === "string" && value.trim() !== "")
+    .map((value        ) => value.trim());
+  if (models.length === 0) return false;
   const auth = isRecord(document.auth) ? document.auth : null;
   if (!auth || !Array.isArray(auth.missingProvidersInUse)) return null;
-  return auth.missingProvidersInUse.length === 0;
+  if (auth.missingProvidersInUse.length > 0) return false;
+  const issues = Array.isArray(auth.modelRouteIssues)
+    ? auth.modelRouteIssues.filter((issue     ) => isRecord(issue) && routeIssueNamesModel(issue, models))
+    : [];
+  if (issues.some((issue     ) => issue.kind === "missing-auth")) return false;
+  if (issues.some((issue     ) => issue.kind === "indeterminate") && modelAuthHoldsNoCredential(auth) === true) {
+    return false;
+  }
+  return true;
+}
+
+function routeIssueNamesModel(issue     , models          ) {
+  const provider = typeof issue.provider === "string" ? issue.provider.trim() : "";
+  const model = typeof issue.model === "string" ? issue.model.trim() : "";
+  if (!provider || !model) return true;
+  const ref = `${provider}/${model}`;
+  return models.some((value) => value === ref || value === model);
+}
+
+function modelAuthHoldsNoCredential(auth     ) {
+  const oauth = isRecord(auth.oauth) ? auth.oauth : null;
+  if (!Array.isArray(auth.providersWithOAuth) || !oauth || !Array.isArray(oauth.profiles)) return null;
+  if (!Array.isArray(auth.providers)) return null;
+  if (auth.providersWithOAuth.length > 0 || oauth.profiles.length > 0) return false;
+  const holdsKey = auth.providers.some((entry     ) => {
+    if (!isRecord(entry)) return false;
+    const profiles = isRecord(entry.profiles) ? entry.profiles : {};
+    const counted = ["apiKey", "oauth", "token"]
+      .some((key) => typeof profiles[key] === "number" && profiles[key] > 0);
+    return counted || isRecord(entry.env) || isRecord(entry.modelsJson);
+  });
+  return !holdsKey;
 }
 
 export const ENROLL_ON_PHONE_LINES = [
@@ -266,8 +336,26 @@ export const ENROLL_ON_PHONE_LINES = [
 ];
 export const ENROLL_INSTALL_TAILSCALE_LINE =
   "  No Tailscale on your phone? Install it from the App Store or Google Play and sign in first.";
-export const ENROLL_QR_PROMPT = "  Point your phone's camera at this code to approve this server:";
-export const ENROLL_OR_OPEN_PREFIX = "  Or open: ";
+
+export const ENROLL_WEB_LINK_LINE = "  Open this link and sign in to Tailscale to approve this server:";
+export const ENROLL_WEB_ACCOUNT_LINES = [
+  "  Use the Tailscale account your phone uses.",
+  "  No Tailscale on your phone? Install it from the App Store or Google Play.",
+];
+
+export function tailnetNameSuffix(daemon     )                {
+  if (!daemon || typeof daemon !== "object") return null;
+  const asked = typeof daemon.nodeName === "string" ? daemon.nodeName.trim().toLowerCase() : "";
+  const dnsName = typeof daemon.dnsName === "string" ? daemon.dnsName.trim().toLowerCase() : "";
+  const given = dnsName.split(".")[0];
+  if (!asked || !given.startsWith(`${asked}-`)) return null;
+  const suffix = given.slice(asked.length);
+  return /^-[0-9]+$/.test(suffix) ? suffix : null;
+}
+
+export function tailnetSuffixLine(suffix        )         {
+  return `  Tailscale added ${suffix} because old devices with this name are still in your tailnet.`;
+}
 
 export const PHONE_PRESENT_MESSAGE = "Phone found on your Tailscale network.";
 
@@ -292,9 +380,11 @@ export const PHONE_CARRY_ON_MESSAGE = "Phone check skipped. No phone was found o
 export const PHONE_WAIT_TIMEOUT_MESSAGE =
   "No phone found before the check timed out.\nTurn on Tailscale on your phone, then run setup again.";
 
+export const PAIR_OPEN_APP_MESSAGE = "Open Even > OcuClaw on your phone.";
+
 export const PAIR_READY_LINES = [
-  "Open Even > OcuClaw on your phone and tap the Pair button, then press Enter to show the code.",
-  "The next pairing code expires in 2 minutes.",
+  "In OcuClaw tap Pair with your agent > Pair manually, then press Enter to show the code.",
+  "The next pairing code expires in 5 minutes.",
 ];
 
 export const PAIR_RETRY_PROMPT_MESSAGE =
@@ -313,9 +403,9 @@ export const PAIR_SCREEN_NOT_OPEN_MESSAGE = "If the pair screen wasn't open yet,
 
 export const PAIR_NOBODY_ENTERED_MESSAGE = "Code expired before a phone joined.";
 
-export const PAIR_WINDOW_EXPIRED_MESSAGE = "Pairing took longer than the two-minute window.";
+export const PAIR_WINDOW_EXPIRED_MESSAGE = "Pairing took longer than the five-minute window.";
 
-export function pairingExpiryMessage(phase, reason = null) {
+export function pairingExpiryMessage(phase     , reason      = null) {
   if (phase === "waiting-for-phone") return PAIR_NOBODY_ENTERED_MESSAGE;
   if (reason === "expired" && (phase === "awaiting-approval" || phase === "awaiting-phone-connection")) {
     return PAIR_WINDOW_EXPIRED_MESSAGE;
@@ -330,6 +420,8 @@ export {
   FIRST_USE_ALREADY_COMPLETE_MESSAGE,
   FIRST_USE_WAITING_MESSAGE,
   FIRST_USE_REARMED_MESSAGE,
+  FIRST_USE_RECONNECTED_MESSAGE,
+  FIRST_USE_RECONNECT_REARMS,
   FIRST_USE_REPLY_MESSAGE,
   FIRST_USE_OPEN_APP_NOTICE,
   FIRST_USE_RESUME_COMMAND,
@@ -340,7 +432,35 @@ export const FIRST_USE_SKIPPED_MESSAGE =
   "First-message check skipped.\nWhen ready, run openclaw ocuclaw first-use.";
 
 export const FIRST_USE_RECOVERY_LINE =
-  `Then run ${FIRST_USE_DEFAULT_RESUME_COMMAND} and send a fresh message.`;
+  `To try again, run ${FIRST_USE_DEFAULT_RESUME_COMMAND} and send a fresh message.`;
+
+export const FIRST_USE_STOP_SENTENCES                                   = Object.freeze({
+
+  "setup-session-mismatch": "Your phone switched to a different chat.",
+
+  "setup-phone-binding-changed": "Your phone's connection to this server changed.",
+
+  "setup-attempt-required": "No saved check was found on this server.",
+
+  "setup-session-required": "Setup could not tell which chat to watch.",
+
+  "setup-phone-session-ambiguous-or-disconnected": "No phone is connected, or more than one is.",
+
+  "setup-phone-session-unavailable": "Your phone is connected but has no chat open.",
+  "setup-state-unavailable": "Setup could not find its saved progress.",
+  "setup-state-unreadable-or-foreign": "Setup could not read its saved progress.",
+  "setup-state-locked": "Setup's saved progress was locked.",
+  "installation-mismatch": "OpenClaw is running a different OcuClaw install.",
+  "runtime-unavailable": "OcuClaw is not running in OpenClaw right now.",
+  "setup-first-use-unavailable": "OpenClaw could not run the check right now.",
+});
+export const FIRST_USE_STOP_FALLBACK = "Something went wrong on this server.";
+
+export function firstUseStopSentence(reason     ) {
+  return Object.prototype.hasOwnProperty.call(FIRST_USE_STOP_SENTENCES, reason)
+    ? FIRST_USE_STOP_SENTENCES[reason]
+    : FIRST_USE_STOP_FALLBACK;
+}
 
 export const FIRST_USE_PHONE_SETTLE_MS = 30000;
 
@@ -374,11 +494,13 @@ const DEFAULT_PHONE_POLL_MS = 3000;
 
 const ENTER_SETTLE_MS = 150;
 
-const PAIR_READY_WAIT_MS = 600000;
+const ANSWER_WAIT_MS = 600000;
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_NOTICE_MS = 30000;
 
 const DEFAULT_CERTIFICATE_WAIT_MS = 300000;
+
+const DEFAULT_HTTPS_WAIT_MS = 600000;
 const CERTIFICATE_PROGRESS_MS = 30000;
 
 const CERTIFICATE_RETRY_MS = 30000;
@@ -387,11 +509,85 @@ const CERTIFICATE_MAX_CALLS = 3;
 
 const CERTIFICATE_QUICK_FAIL_MS = 2000;
 
-function isRecord(value) {
+function isRecord(value     ) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-export function serveApplyArgv(relayPort, port = null, tailscaleArgv = null) {
+export const CERTIFICATE_WAIT_HEALTHY = "healthy";
+export const CERTIFICATE_WAIT_REFUSED = "refused";
+export const CERTIFICATE_WAIT_TIMEOUT = "timeout";
+
+export async function awaitRouteCertificate(input     ) {
+  const relayPort = input.relayPort;
+  const readRoute = input.readRoute;
+  const startCertificate = typeof input.startCertificate === "function" ? input.startCertificate : null;
+  const now = typeof input.now === "function" ? input.now : () => Date.now();
+  const sleep = typeof input.sleep === "function"
+    ? input.sleep
+    : (ms     ) => new Promise((resolve     ) => setTimeout(resolve, ms));
+  const pollMs = Number(input.pollMs) > 0 ? Number(input.pollMs) : DEFAULT_POLL_MS;
+  const certificateWaitMs = Number(input.certificateWaitMs) > 0
+    ? Number(input.certificateWaitMs)
+    : DEFAULT_CERTIFICATE_WAIT_MS;
+  const onProgress = typeof input.onProgress === "function" ? input.onProgress : () => {};
+  let route      = input.route === undefined ? null : input.route;
+  const started = now();
+  const deadline = started + certificateWaitMs;
+  let nextProgress = started + CERTIFICATE_PROGRESS_MS;
+  let healthy = false;
+  let issuance      = null;
+  let certificateAskable = startCertificate !== null;
+  let issued = false;
+  let calls = 0;
+  let lastStart      = null;
+  let refused = false;
+  try {
+    for (;;) {
+      if (issuance) {
+        const outcome = issuance.poll();
+        if (outcome !== null) {
+          const ranMs = typeof issuance.ranMs === "function" ? issuance.ranMs() : null;
+          issuance.stop();
+          issuance = null;
+          if (outcome === ISSUANCE_AVAILABLE) issued = true;
+
+          else if (outcome === ISSUANCE_UNAVAILABLE) { refused = true; break; }
+
+          else if (outcome === ISSUANCE_UNKNOWN && ranMs !== null && ranMs < CERTIFICATE_QUICK_FAIL_MS) certificateAskable = false;
+        }
+      }
+      if (certificateAskable && !issued && !issuance && calls >= CERTIFICATE_MAX_CALLS) certificateAskable = false;
+      if (certificateAskable && !issued && !issuance
+        && (lastStart === null || now() - lastStart >= CERTIFICATE_RETRY_MS)) {
+        lastStart = now();
+        calls += 1;
+        try {
+          issuance = await startCertificate (Math.max(1000, deadline - lastStart));
+        } catch (_) {
+          issuance = null;
+        }
+        if (!issuance) certificateAskable = false;
+      }
+      if (issued || !certificateAskable) {
+        route = await readRoute(relayPort);
+        if (route && route.status === ROUTE_STATUS_HEALTHY) { healthy = true; break; }
+      }
+      if (now() >= deadline) break;
+      if (now() >= nextProgress) {
+        const periods = Math.floor((now() - started) / CERTIFICATE_PROGRESS_MS);
+        onProgress((periods * CERTIFICATE_PROGRESS_MS) / 1000);
+        nextProgress = started + (periods + 1) * CERTIFICATE_PROGRESS_MS;
+      }
+      await sleep(Math.max(0, Math.min(pollMs, deadline - now())));
+    }
+  } finally {
+    if (issuance) issuance.stop();
+  }
+  const outcome = refused ? CERTIFICATE_WAIT_REFUSED : healthy ? CERTIFICATE_WAIT_HEALTHY : CERTIFICATE_WAIT_TIMEOUT;
+  return { outcome, route };
+}
+
+export function serveApplyArgv(relayPort     , port      = null, tailscaleArgv      = null) {
   const prefix = Array.isArray(tailscaleArgv) && tailscaleArgv.length > 0
     ? tailscaleArgv.slice()
     : ["tailscale"];
@@ -403,18 +599,13 @@ export function serveApplyArgv(relayPort, port = null, tailscaleArgv = null) {
   ]);
 }
 
-export function conversationAccessGranted(config) {
-  const entry = isRecord(config) && isRecord(config.plugins) && isRecord(config.plugins.entries)
-    ? config.plugins.entries.ocuclaw
-    : null;
-  const hooks = isRecord(entry) && isRecord(entry.hooks) ? entry.hooks : null;
-  return !!hooks && hooks.allowConversationAccess === true;
-}
-
 export const CONVERSATION_ACCESS_DETAILS_HINT =
   "  Run again with --details to see the exact setting.";
 
-export function conversationAccessConsentLines(details = false) {
+export const CODEX_REASONING_SUMMARY_MESSAGE =
+  "Codex reasoning summaries turned on. Your glasses show them live once OpenClaw passes them on.";
+
+export function conversationAccessConsentLines(details      = false) {
   const lines = [
     "  OcuClaw needs to read and write the attached conversation",
     "  for glasses replies and voice input.",
@@ -427,11 +618,11 @@ export function conversationAccessConsentLines(details = false) {
     "  own into it. That is what puts your replies on the glasses and your spoken",
     "  words into the conversation. It does not give the plugin your credentials and",
     "  it does not reach conversations you have not attached it to.",
-    `  Change: ${CONVERSATION_ACCESS_KEY} = true`,
+    `  Change: ${CONVERSATION_ACCESS_CONFIG_PATH} = true`,
   ]);
 }
 
-export function serveConsentLines(command, details = false, columns = 0) {
+export function serveConsentLines(command     , details      = false, columns      = 0) {
   const lines = [
     "  Allow access from your tailnet only. Never public; never Tailscale Funnel.",
   ];
@@ -450,56 +641,78 @@ export function serveConsentLines(command, details = false, columns = 0) {
   ]);
 }
 
-function defaultConfirm(io) {
+function defaultConfirm(io     ) {
   const input = (io && io.input) || process.stdin;
   const output = (io && io.output) || process.stdout;
 
-  return function confirm(lines, strict = false) {
+  return function confirm(lines     , strict      = false) {
     for (const line of lines) output.write(`${terminalText(line,
       line === CONVERSATION_ACCESS_DETAILS_HINT ? "detail" : "body", output, io.env)}\n`);
-    output.write(terminalText(strict === true ? CONSENT_QUESTION_STRICT : CONSENT_QUESTION, "action", output, io.env));
-    return new Promise((resolve) => {
-      let settled = false;
-      const settle = (answer) => {
-        if (settled) return;
-        settled = true;
-        try { input.pause(); } catch (_) {  }
-        output.write("\n");
-        resolve(consentGiven(answer, strict));
+    const question = strict === true ? CONSENT_QUESTION_STRICT : CONSENT_QUESTION;
+    return new Promise((resolve     ) => {
+      let asked = 0;
+      const askOnce = () => {
+        asked += 1;
+        output.write(terminalText(question, "action", output, io.env));
+        let settled = false;
+
+        const settle = (answer     , typed         ) => {
+          if (settled) return;
+          settled = true;
+          try { input.removeListener("data", onData); input.removeListener("end", onEnd); } catch (_) {  }
+          try { input.pause(); } catch (_) {  }
+          output.write("\n");
+          if (typed && String(answer).trim() === "" && asked < EMPTY_ANSWER_ASKS) {
+            output.write(`${terminalText(`  ${EMPTY_ANSWER_MESSAGE}`, "body", output, io.env)}\n`);
+            askOnce();
+            return;
+          }
+          resolve(consentGiven(answer, strict));
+        };
+        const onData = (answer     ) => settle(answer, true);
+        const onEnd = () => settle("", false);
+        try {
+          input.setEncoding("utf8");
+          input.once("data", onData);
+          input.once("end", onEnd);
+          input.resume();
+        } catch (_) {
+          settle("", false);
+        }
       };
-      try {
-        input.setEncoding("utf8");
-        input.once("data", settle);
-        input.once("end", () => settle(""));
-        input.resume();
-      } catch (_) {
-        settle("");
-      }
+      askOnce();
     });
   };
 }
 
-function defaultStartCertificate(layout) {
-  return async function startCertificate(budgetMs) {
+function defaultStartCertificate(layout     ) {
+  return async function startCertificate(budgetMs     ) {
     const argv = cliArgv(layout);
-    const node = await readNodeState((args) => defaultRunTailscale(args, argv));
+    const node      = await readNodeState((args     ) => defaultRunTailscale(args, argv));
     if (!node || !node.dnsName) return null;
     return startCertificateIssuance(argv, node.dnsName, budgetMs);
   };
 }
 
-function defaultReadPhonePresence(layout) {
+function defaultReadPhonePresence(layout     ) {
   return function phonePresence() {
     const argv = cliArgv(layout);
-    return readPhonePresence((args) => defaultRunTailscale(args, argv));
+    return readPhonePresence((args     ) => defaultRunTailscale(args, argv));
   };
 }
 
-function defaultWatchEnter(io) {
-  const input = (io && io.input) || process.stdin;
-  return function watchEnter(onPress) {
+function defaultReadCertDomains(layout     ) {
+  return function certDomains() {
+    const argv = cliArgv(layout);
+    return readCertDomains((args     ) => defaultRunTailscale(args, argv));
+  };
+}
 
-    const handler = (chunk) => { onPress(chunk); };
+function defaultWatchEnter(io     ) {
+  const input = (io && io.input) || process.stdin;
+  return function watchEnter(onPress     ) {
+
+    const handler = (chunk     ) => { onPress(chunk); };
     try {
       input.setEncoding("utf8");
       input.on("data", handler);
@@ -517,13 +730,13 @@ function defaultWatchEnter(io) {
   };
 }
 
-function defaultIsTty(io) {
+function defaultIsTty(io     ) {
   const input = (io && io.input) || process.stdin;
   const output = (io && io.output) || process.stdout;
   return () => input.isTTY === true && output.isTTY === true;
 }
 
-function defaultGrantConversationAccess(api) {
+export function defaultGrantConversationAccess(api     ) {
   const runtimeConfig = api && api.runtime ? api.runtime.config : null;
   return async function grantConversationAccess() {
     if (
@@ -531,38 +744,46 @@ function defaultGrantConversationAccess(api) {
       typeof runtimeConfig.mutateConfigFile !== "function"
     ) {
       throw new Error(
-        `this OpenClaw host does not expose the config mutation contract; set ${CONVERSATION_ACCESS_KEY} true yourself and run this command again`,
+        `this OpenClaw host does not expose the config mutation contract; set ${CONVERSATION_ACCESS_CONFIG_PATH} true yourself and run this command again`,
       );
     }
 
+    let current      = null;
+    try { current = typeof runtimeConfig.current === "function" ? runtimeConfig.current() : null; } catch (_) { current = null; }
+    const codexConfigTomls = readCodexConfigTomlsSafely(api, current);
+    let codexReasoningSummary      = null;
     await runtimeConfig.mutateConfigFile({
       afterWrite: { mode: "none", reason: "OcuClaw conversation access granted" },
-      mutate(draft) {
-        if (!isRecord(draft.plugins)) draft.plugins = {};
-        if (!isRecord(draft.plugins.entries)) draft.plugins.entries = {};
-        if (!isRecord(draft.plugins.entries.ocuclaw)) draft.plugins.entries.ocuclaw = {};
-        if (!isRecord(draft.plugins.entries.ocuclaw.hooks)) draft.plugins.entries.ocuclaw.hooks = {};
-        draft.plugins.entries.ocuclaw.hooks.allowConversationAccess = true;
+      mutate(draft     ) {
+        applyConversationAccessGrant(draft);
+        try {
+          codexReasoningSummary = applyCodexReasoningSummary(draft, { codexConfigTomls });
+        } catch (_) {
+          codexReasoningSummary = null;
+        }
         return { granted: true };
       },
     });
-    return { granted: true };
+    return {
+      granted: true,
+      codexReasoningSummary: codexReasoningSummary ? codexReasoningSummary.status : null,
+    };
   };
 }
 
-function defaultReadRoute(api, options) {
+export function defaultReadRoute(api     , options     ) {
   const installation = setupInstallation(resolveSetupStateDir(api));
-  return (relayPort) =>
+  return (relayPort     ) =>
     readPrivateRoute(relayPort, { installation, servePort: options && options.servePort });
 }
 
-function defaultPairingComplete(controller) {
+function defaultPairingComplete(controller     ) {
   return async function pairingComplete() {
     if (typeof controller !== "function") return false;
     try {
-      const journey = await controller("journey", { surface: "cli" });
+      const journey      = await controller("journey", { surface: "cli" });
       const checkpoints = journey && Array.isArray(journey.checkpoints) ? journey.checkpoints : [];
-      const checkpoint = checkpoints.find((entry) => entry && entry.id === "pair-phone");
+      const checkpoint = checkpoints.find((entry     ) => entry && entry.id === "pair-phone");
       return !!checkpoint && checkpoint.status === "complete";
     } catch (_) {
       return false;
@@ -570,24 +791,24 @@ function defaultPairingComplete(controller) {
   };
 }
 
-function defaultFirstUseCall(api) {
-  return async function firstUseCall(params) {
+function defaultFirstUseCall(api     ) {
+  return async function firstUseCall(params     ) {
     const installation = setupInstallation(resolveSetupStateDir(api));
     return setupFirstUseRequest({ ...params, installationId: installation.id });
   };
 }
 
-export function firstUseFailureReason(error) {
+export function firstUseFailureReason(error     ) {
   const message = error && error.message ? String(error.message) : String(error ?? "");
   const match = /\b(setup-[a-z-]+|installation-mismatch|runtime-unavailable)\b/.exec(message);
   return match ? match[1] : "unavailable";
 }
 
-function defaultRelayPort(api, controller) {
+export function defaultRelayPort(api     , controller     ) {
   return async function relayPort() {
     if (typeof controller === "function") {
       try {
-        const journey = await controller("journey", { surface: "cli" });
+        const journey      = await controller("journey", { surface: "cli" });
         const live = journey && journey.currentHealth && journey.currentHealth.privateRoute
           ? journey.currentHealth.privateRoute.relay
           : null;
@@ -605,10 +826,10 @@ function defaultRelayPort(api, controller) {
   };
 }
 
-function defaultReadLoadedPlugin(controller) {
+function defaultReadLoadedPlugin(controller     ) {
   return async function readLoadedPlugin() {
     if (typeof controller !== "function") return null;
-    const journey = await controller("journey", { surface: "cli" });
+    const journey      = await controller("journey", { surface: "cli" });
     const runtime = journey && isRecord(journey.runtimePlugin) ? journey.runtimePlugin : null;
     return runtime && typeof runtime.version === "string" && runtime.version
       ? { version: runtime.version }
@@ -616,91 +837,48 @@ function defaultReadLoadedPlugin(controller) {
   };
 }
 
-async function defaultReadModelStatus() {
-  const result = await defaultRunCommand(MODEL_STATUS_ARGV.slice(), { timeoutMs: 60000 });
-  if (!result || result.code !== 0) return null;
-  const text = String(result.stdout || "");
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
+export async function readModelSignedIn(run      = defaultRunCommand) {
   try {
+    const result      = await run(MODEL_STATUS_ARGV.slice(), { timeoutMs: 60000 });
+    if (!result || result.code !== 0) return null;
+    const text = String(result.stdout || "");
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
     return modelSignedIn(JSON.parse(text.slice(start, end + 1)));
   } catch (_) {
     return null;
   }
 }
 
-function defaultRunSignIn(argv) {
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(argv[0], argv.slice(1), { stdio: "inherit" });
-    } catch (_) {
-      resolve({ code: null, spawnFailed: true });
-      return;
-    }
-    child.once("error", () => resolve({ code: null, spawnFailed: true }));
-    child.once("exit", (code) => resolve({ code: Number.isInteger(code) ? code : null, spawnFailed: false }));
-  });
-}
-
-function defaultQrTerminal(io) {
+function defaultTerminalWindow(io     ) {
   const output = (io && io.output) || process.stdout;
-  const env = (io && io.env) || process.env;
   return () => ({
     tty: output.isTTY === true,
-    unicode: localeAllowsUnicode(env.LC_ALL || env.LC_CTYPE || env.LANG || ""),
-    color: terminalAllowsColor(output, env),
-    zoom: zoomKeyFor(env, process.platform),
     columns: Number(output.columns) > 0 ? Number(output.columns) : 0,
     rows: Number(output.rows) > 0 ? Number(output.rows) : 0,
   });
 }
 
-export function approvalLinkQrCode(url, terminal, lightTerminal = false) {
-  if (!terminal || terminal.tty !== true || terminal.unicode !== true) return null;
-  if (typeof url !== "string" || !url) return null;
+export const CLOUDWAYS_PHONE_ADDRESS_REFUSAL = Object.freeze([
+  "This Cloudways host has a phone address set (phoneAddress).",
+  "Cloudways reaches your phone only through its own Tailscale, so a phone address cannot work here.",
+  "Remove it, then run this setup again:",
+  "  openclaw config unset plugins.entries.ocuclaw.config.phoneAddress",
+]);
 
-  try {
-    if (terminal.color === true) return renderQrTextToTerminalColour(url);
-    const text = renderQrTextToTerminal(url, { invert: lightTerminal !== true });
-    const lines = text.split("\n");
-    return { text, columns: lines[0].length, rows: lines.length };
-  } catch (_) {
-    return null;
-  }
-}
-
-export function approvalLinkQr(url, terminal, lightTerminal = false, prefix = [], suffix = []) {
-  const drawn = approvalLinkQrCode(url, terminal, lightTerminal);
-  if (!drawn) return null;
-  const code = drawn.text;
-  const width = drawn.columns;
-  const rows = drawn.rows;
-  const columns = Number(terminal.columns) > 0 ? Number(terminal.columns) : 0;
-  if (columns > 0 && width > columns) return null;
-  const height = Number(terminal.rows) > 0 ? Number(terminal.rows) : 0;
-  if (height > 0) {
-    const wrap = columns > 0 ? columns : 80;
-    const textRows = [...prefix, ...suffix]
-      .reduce((total, line) => total + Math.max(1, Math.ceil(String(line).length / wrap)), 0);
-    if (textRows + rows + 1 > height) return null;
-  }
-  return code;
-}
-
-export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
+export async function runCloudwaysSetup(options      = {}, deps      = {}, io      = {}) {
   const output = io.output || process.stdout;
-  const lines = [];
-  const steps = [];
+  const lines      = [];
+  const steps      = [];
 
   const liveTty = output.isTTY === true;
-  let live = null;
+  let live      = null;
   let liveIndex = -1;
   const endLive = () => {
     live = null;
   };
-  const sayLive = (key, line, role = "body") => {
+  const sayLive = (key     , line     , role      = "body") => {
     if (live === key) {
       if (!liveTty) return;
       lines[liveIndex] = line;
@@ -712,7 +890,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     live = key;
     output.write(`${terminalText(line, role, output, io.env)}\n`);
   };
-  const say = (line, role = "body") => {
+  const say = (line     , role      = "body") => {
     endLive();
     lines.push(line);
 
@@ -720,19 +898,26 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     const shown = indent ? String(line).replace(/\n(?=.)/g, `\n${indent}`) : line;
     output.write(`${terminalText(shown, role, output, io.env)}\n`);
   };
-  const step = (index, text) => {
+  const step = (index     , text     ) => {
     if (index > 1) say("");
     say(`[${index}/${SETUP_STEP_COUNT}] ${text}`, "heading");
   };
-  const record = (id, status, detail = null) => {
+  const record = (id     , status     , detail      = null) => {
     steps.push({ id, status, detail });
   };
 
-  const finish = (exitCode, help = exitCode === SETUP_EXIT_PROBLEM) => {
+  const finish = (exitCode     , help      = exitCode === SETUP_EXIT_PROBLEM) => {
     if (help) say(`  ${STUCK_HELP_MESSAGE}`);
     endLive();
     return { exitCode, lines, steps };
   };
+
+  const webTerminal = (io.env || process.env).OPENCLAW_TERMINAL === "1";
+
+  const streamsIo      = {};
+  for (const key of ["input", "output", "error"]) if (io[key]) streamsIo[key] = io[key];
+
+  const pairIo = { driven: true, ...streamsIo, ...(io.env ? { env: io.env } : {}) };
 
   const api = deps.api || null;
   const layout = deps.layout || resolveLayout(options);
@@ -742,7 +927,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const confirm = typeof deps.confirm === "function" ? deps.confirm : defaultConfirm(io);
   const sleep = typeof deps.sleep === "function"
     ? deps.sleep
-    : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    : (ms     ) => new Promise((resolve     ) => setTimeout(resolve, ms));
   const now = typeof deps.now === "function" ? deps.now : () => Date.now();
   const readConfig = typeof deps.readConfig === "function"
     ? deps.readConfig
@@ -752,17 +937,37 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const grantConversationAccess = typeof deps.grantConversationAccess === "function"
     ? deps.grantConversationAccess
     : defaultGrantConversationAccess(api);
+
+  const codexReasoningSummaryOwed = typeof deps.codexReasoningSummaryOwed === "function"
+    ? deps.codexReasoningSummaryOwed
+    : (config     ) => {
+      if (!api) return false;
+      try {
+        return planCodexReasoningSummary(config, {
+          codexConfigTomls: readCodexConfigTomlsSafely(api, config),
+        }).status === "write";
+      } catch (_) {
+        return false;
+      }
+    };
   const provisionRelayCredential = typeof deps.provisionRelayCredential === "function"
     ? deps.provisionRelayCredential
     : createRelayCredentialProvision(api);
   const readRoute = typeof deps.readRoute === "function" ? deps.readRoute : defaultReadRoute(api, options);
   const runServeApply = typeof deps.runServeApply === "function"
     ? deps.runServeApply
-    : (argv) => defaultRunCommand(argv, { timeoutMs: 30000 });
+    : (argv     ) => defaultRunCommand(argv, { timeoutMs: 30000 });
 
   const startCertificate = typeof deps.startCertificate === "function"
     ? deps.startCertificate
     : (typeof deps.readRoute === "function" ? null : defaultStartCertificate(layout));
+
+  const readHttps = typeof deps.readCertDomains === "function"
+    ? deps.readCertDomains
+    : (typeof deps.readRoute === "function" ? null : defaultReadCertDomains(layout));
+  const queryEnableLink = typeof deps.queryEnableLink === "function"
+    ? deps.queryEnableLink
+    : () => queryHttpsEnableLink(layout.socketPath);
   const pair = typeof deps.pair === "function" ? deps.pair : null;
   const pairingComplete = typeof deps.pairingComplete === "function"
     ? deps.pairingComplete
@@ -786,7 +991,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const phonePollMs = Number(deps.phonePollMs) > 0 ? Number(deps.phonePollMs) : DEFAULT_PHONE_POLL_MS;
   const pollMs = Number(deps.pollMs) > 0 ? Number(deps.pollMs) : DEFAULT_POLL_MS;
   const noticeMs = Number(deps.noticeMs) > 0 ? Number(deps.noticeMs) : DEFAULT_NOTICE_MS;
-  const answerWaitMs = Number(deps.answerWaitMs) > 0 ? Number(deps.answerWaitMs) : PAIR_READY_WAIT_MS;
+  const answerWaitMs = Number(deps.answerWaitMs) > 0 ? Number(deps.answerWaitMs) : ANSWER_WAIT_MS;
   const certificateWaitMs = Number(deps.certificateWaitMs) > 0
     ? Number(deps.certificateWaitMs)
     : DEFAULT_CERTIFICATE_WAIT_MS;
@@ -802,15 +1007,21 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     ? deps.gatewayRunning
     : () => gatewayProcessRunning();
 
-  const readModelStatus = typeof deps.readModelStatus === "function" ? deps.readModelStatus : defaultReadModelStatus;
-  const runSignIn = typeof deps.runSignIn === "function" ? deps.runSignIn : defaultRunSignIn;
+  const readModelStatus = typeof deps.readModelStatus === "function" ? deps.readModelStatus : () => readModelSignedIn();
 
-  const qrTerminal = typeof deps.qrTerminal === "function" ? deps.qrTerminal : defaultQrTerminal(io);
-
+  const terminalWindow = typeof deps.terminalWindow === "function" ? deps.terminalWindow : defaultTerminalWindow(io);
   const terminalColumns = () => {
-    const window = qrTerminal();
+    const window = terminalWindow();
     return window && window.tty === true && Number(window.columns) > 0 ? Number(window.columns) : 0;
   };
+
+  let configuredForCustomRoute = false;
+  try { configuredForCustomRoute = configuredPhoneAddress({ runtime: { config: { current: readConfig } } }) !== null; }
+  catch (_) { configuredForCustomRoute = false; }
+  if (configuredForCustomRoute) {
+    for (const line of CLOUDWAYS_PHONE_ADDRESS_REFUSAL) say(line);
+    return finish(SETUP_EXIT_STOPPED, false);
+  }
 
   const assumeYes = options.yes === true;
 
@@ -821,7 +1032,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     ? Number(options.firstUseWait)
     : DEFAULT_FIRST_USE_WAIT_S;
 
-  const ask = async (consentLines, strict = false) => {
+  const ask = async (consentLines     , strict      = false) => {
     if (assumeYes) {
       for (const line of consentLines) say(line);
       say(`  Approved by --yes.`, "detail");
@@ -832,92 +1043,49 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     return (await confirm(consentLines, strict)) === true;
   };
 
-  const awaitTypedLine = (timeoutMs = answerWaitMs) => {
+  const awaitTypedLine = (timeoutMs      = answerWaitMs) => {
     const armedAt = now();
-    let cancel = null;
+    let cancel      = null;
     let answered = false;
-    let timer = null;
-    const typed = new Promise((resolve) => {
+    let timer      = null;
+    const typed = new Promise((resolve     ) => {
 
       timer = setTimeout(() => { if (!answered) { answered = true; resolve(null); } }, timeoutMs);
       if (timer && typeof timer.unref === "function") timer.unref();
-      cancel = watchAnswer((chunk) => {
+      cancel = watchAnswer((chunk     ) => {
         if (answered) return;
         if (now() - armedAt < ENTER_SETTLE_MS) return;
         answered = true;
         resolve(typeof chunk === "string" ? chunk : "");
       });
     });
-    return typed.then((chunk) => {
+    return typed.then((chunk     ) => {
       if (timer) clearTimeout(timer);
       if (typeof cancel === "function") cancel();
       return chunk;
     });
   };
 
-  let signInFailed = false;
-  const ensureModelSignIn = async () => {
-    const readSignedIn = async () => {
-      try {
-        const answer = await readModelStatus();
-        return answer === true || answer === false ? answer : null;
-      } catch (_) {
-        return null;
-      }
-    };
+  const checkModelSignIn = async () => {
     say(`  ${PROGRESS_SIGN_IN_MESSAGE}`, "detail");
-    const signedIn = await readSignedIn();
+    let signedIn      = null;
+    try { signedIn = await readModelStatus(); } catch (_) { signedIn = null; }
     if (signedIn !== false) {
       record("model-sign-in", "skipped", signedIn === true ? "signed in" : "unreadable");
       return false;
     }
-    if (assumeYes || !isTty()) {
-      say(`  ${MODEL_NOT_SIGNED_IN_NOTICE}`);
-      for (const line of MODEL_SIGN_IN_SELF_LINES) say(line);
-      record("model-sign-in", "skipped", assumeYes ? "--yes" : "no terminal");
-      return false;
-    }
-    say(`  ${MODEL_NOT_SIGNED_IN_MESSAGE}`);
-    for (const line of MODEL_SIGN_IN_CHOICES) say(line);
-    let choice = null;
-    for (let asked = 0; asked < 3 && choice === null; asked += 1) {
-      say(`  ${MODEL_SIGN_IN_QUESTION}`, "action");
-      const typed = await awaitTypedLine();
-
-      if (typed === null) { choice = "3"; break; }
-      const answer = String(typed).trim();
-      if (answer === "1" || answer === "2" || answer === "3") choice = answer;
-    }
-    if (choice === null || choice === "3") {
-      for (const line of MODEL_SIGN_IN_SELF_LINES) say(line);
-      for (const line of MODEL_SIGN_IN_RESUME_LINES) say(line);
-      record("model-sign-in", "declined", "set up by the person");
-      return true;
-    }
-    const argv = (choice === "1" ? MODEL_SIGN_IN_CODEX_ARGV : MODEL_SIGN_IN_API_KEY_ARGV).slice();
-    say(`  Running: ${argv.join(" ")}`);
-
-    let ran = null;
-    try { ran = await runSignIn(argv); } catch (_) { ran = null; }
-    const after = await readSignedIn();
-    if (after === true || (after === null && ran && ran.code === 0)) {
-      say(`  ${MODEL_SIGNED_IN_MESSAGE}`);
-      record("model-sign-in", "done", choice === "1" ? "chatgpt" : "api-key");
-      return false;
-    }
-    say(`  ${MODEL_SIGN_IN_UNFINISHED_MESSAGE}`);
-    for (const line of MODEL_SIGN_IN_SELF_LINES) say(line);
-    for (const line of MODEL_SIGN_IN_RESUME_LINES) say(line);
-    record("model-sign-in", "failed", ran && ran.spawnFailed ? "command did not start" : "not signed in");
-    signInFailed = true;
+    for (const line of modelPanelSignInLines()) say(line);
+    record("model-sign-in", "refused", "no model signed in");
     return true;
   };
 
+  say(DROPPED_TERMINAL_MESSAGE, "detail");
+  say("");
   step(1, "Cloudways host");
-  let detected;
+  let detected     ;
   try {
     detected = await runVerb("detect", {}, verbDeps);
-  } catch (err) {
+  } catch (err     ) {
     say(`  Could not read this host: ${err && err.message ? err.message : err}`);
     record("detect", "failed", "detect threw");
     return finish(SETUP_EXIT_PROBLEM);
@@ -935,37 +1103,42 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     record("tty", "refused", "no terminal");
     return finish(SETUP_EXIT_PROBLEM);
   }
-  if (await ensureModelSignIn()) return finish(SETUP_EXIT_STOPPED, signInFailed);
+  if (await checkModelSignIn()) return finish(SETUP_EXIT_STOPPED, false);
 
   step(2, "Conversation access");
-  if (conversationAccessGranted(readConfig())) {
+  const step2Config = readConfig();
+  if (conversationAccessGranted(step2Config)) {
     say("  Settings already applied.");
     if (details) for (const line of conversationAccessConsentLines(true)) say(line);
     record("conversation-access", "skipped", "already granted");
-  } else {
-    const granted = await ask(conversationAccessConsentLines(details));
-    if (!granted) {
-      say(RESUME_MESSAGE);
-      record("conversation-access", "declined", null);
-      return finish(SETUP_EXIT_STOPPED);
+    if (codexReasoningSummaryOwed(step2Config)) {
+
+      try {
+        const grant = await grantConversationAccess();
+        if (grant && grant.codexReasoningSummary === "set") say(`  ${CODEX_REASONING_SUMMARY_MESSAGE}`);
+      } catch (_) {  }
     }
+  } else {
+    if (details) for (const line of conversationAccessConsentLines(true)) say(line);
+    let grant     ;
     try {
-      await grantConversationAccess();
-    } catch (err) {
+      grant = await grantConversationAccess();
+    } catch (err     ) {
       say(`  Could not record the grant: ${err && err.message ? err.message : err}`);
       record("conversation-access", "failed", "write refused");
       return finish(SETUP_EXIT_PROBLEM);
     }
     say("  Conversation access granted.");
+    if (grant && grant.codexReasoningSummary === "set") say(`  ${CODEX_REASONING_SUMMARY_MESSAGE}`);
     record("conversation-access", "done", null);
   }
 
   step(3, "OcuClaw");
   say(`  ${PROGRESS_LOADED_MESSAGE}`, "detail");
-  let credential;
+  let credential     ;
   try {
     credential = await provisionRelayCredential({ operation: PROVISION_RELAY_CREDENTIAL_OPERATION });
-  } catch (err) {
+  } catch (err     ) {
     say(`  ${OCUCLAW_NOT_LOADED_MESSAGE}`);
     for (const line of OCUCLAW_NOT_LOADED_HELP_LINES) say(line);
     record("relay-credential", "failed", err && err.code ? err.code : "error");
@@ -975,8 +1148,10 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     credential && credential.status === "preserved" ? "skipped" : "done",
     credential && credential.status === "preserved" ? "preserved" : "provisioned");
 
-  let loaded = null;
-  const loadedDeadline = now() + LOADED_CHECK_WAIT_MS;
+  let loaded      = null;
+  const loadedStarted = now();
+  const loadedDeadline = loadedStarted + LOADED_CHECK_WAIT_MS;
+  let loadedProgressAt = loadedStarted + LOADED_PROGRESS_EVERY_MS;
   for (let attempt = 0; ; attempt += 1) {
     if (attempt > 0) {
       if (now() + LOADED_CHECK_RETRY_MS > loadedDeadline) break;
@@ -986,6 +1161,10 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     if (loaded && typeof loaded.version === "string" && loaded.version) break;
     loaded = null;
     if (attempt === 0) say(`  ${PROGRESS_LOADED_WAIT_MESSAGE}`, "detail");
+    else if (now() >= loadedProgressAt) {
+      say(`  ${loadedProgressMessage((now() - loadedStarted) / 1000)}`, "detail");
+      loadedProgressAt += LOADED_PROGRESS_EVERY_MS;
+    }
   }
   const loadedVersion = loaded ? loaded.version : null;
   if (loadedVersion === null || (installedVersion && loadedVersion !== installedVersion)) {
@@ -993,11 +1172,11 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
       ? `  ${OCUCLAW_NOT_LOADED_MESSAGE}`
       : `  ${ocuclawOldVersionMessage(loadedVersion, installedVersion)}`);
 
-    let gatewayRunning = null;
+    let gatewayRunning      = null;
     try { gatewayRunning = await readGatewayRunning(); } catch (_) { gatewayRunning = null; }
     let phonePaired = false;
     try { phonePaired = (await pairingComplete()) === true; } catch (_) { phonePaired = false; }
-    for (const line of ocuclawRestartLines({ gatewayRunning, phonePaired })) {
+    for (const line of ocuclawRestartLines({ gatewayRunning, phonePaired, webTerminal })) {
       say(line, line.startsWith("    ") ? "action" : "body");
     }
     record("plugin-loaded", "failed", loadedVersion === null ? "not loaded" : "version mismatch");
@@ -1011,19 +1190,22 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   say(`  ${PROGRESS_TAILSCALE_MESSAGE}`, "detail");
   let state = await runVerb("status", {}, verbDeps);
   let report = state.report || {};
-  const installed = !!(report.binaries && report.binaries.present) && !!report.receipt;
+  const movePending = !!(report.binaries && report.binaries.movePending);
+  const installed = !!(report.binaries && report.binaries.present) && !!report.receipt && !movePending;
+  if (movePending) say(`  ${TAILSCALE_MOVE_MESSAGE}`);
   if (installed) {
     say("  Tailscale is already installed.");
     record("install", "skipped", "installed");
   } else {
-    say(`  ${PROGRESS_TAILSCALE_INSTALL_MESSAGE}`, "detail");
+    if (!movePending) say(`  ${PROGRESS_TAILSCALE_INSTALL_MESSAGE}`, "detail");
     const installResult = await runVerb("install", {}, verbDeps);
     if (!installResult.report || installResult.report.ok !== true) {
       for (const line of installResult.lines || []) say(`  ${line}`);
       record("install", "failed", installResult.report ? installResult.report.error : "install failed");
       return finish(SETUP_EXIT_PROBLEM);
     }
-    say("  Tailscale installed.");
+
+    say("  Tailscale is ready.");
     record("install", "done", installResult.report.version || null);
     state = await runVerb("status", {}, verbDeps);
     report = state.report || {};
@@ -1071,59 +1253,31 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
       record("enroll", "failed", enrollReport.error || "no authorization link");
       return finish(SETUP_EXIT_PROBLEM);
     } else {
+      if (webTerminal) {
 
-      say(ENROLL_INSTALL_TAILSCALE_LINE);
-      const orOpen = `${ENROLL_OR_OPEN_PREFIX}${enrollReport.authUrl}`;
-      const qr = approvalLinkQr(enrollReport.authUrl, qrTerminal(), options.lightTerminal === true,
-        [`[5/${SETUP_STEP_COUNT}] Connect to Tailscale`, `  ${PROGRESS_ENROLL_MESSAGE}`,
-          ENROLL_INSTALL_TAILSCALE_LINE, ENROLL_QR_PROMPT],
-        [orOpen, "  Waiting for server approval."]);
-
-      let redraw = null;
-      let sizedFor = null;
-      if (qr) {
-        say(ENROLL_QR_PROMPT, "action");
-
-        for (const row of qr.split("\n")) say(row);
-        say(orOpen);
+        say(ENROLL_WEB_LINK_LINE, "action");
+        say(`    ${enrollReport.authUrl}`);
+        for (const line of ENROLL_WEB_ACCOUNT_LINES) say(line);
       } else {
-        const window = qrTerminal();
-        sizedFor = window;
-        redraw = approvalLinkQrCode(enrollReport.authUrl, window, options.lightTerminal === true);
-        if (redraw) {
-          for (const line of qrRedrawHintLines(redraw, window, window.zoom)) say(`  ${line}`, "action");
-        }
+
+        say(ENROLL_INSTALL_TAILSCALE_LINE);
         for (const line of ENROLL_ON_PHONE_LINES) say(line, "action");
         say(`    ${enrollReport.authUrl}`);
       }
-      const tryRedraw = () => {
-
-        if (!redraw || !qrFitsWindow(redraw, qrTerminal(), sizedFor)) return;
-        say(`  ${QR_REDRAW_APPROVAL_LEAD}`, "action");
-        for (const row of redraw.text.split("\n")) say(row);
-        redraw = null;
-      };
       const deadline = now() + enrollWaitS * 1000;
       let lastNotice = now();
       let running = false;
+      let approvedDaemon      = null;
       for (;;) {
         const polled = await runVerb("status", {}, verbDeps);
         const polledState = polled.report && polled.report.daemon ? polled.report.daemon.state : null;
-        if (polledState === STATE_RUNNING) { running = true; break; }
+        if (polledState === STATE_RUNNING) { running = true; approvedDaemon = polled.report.daemon; break; }
         if (now() >= deadline) break;
         if (now() - lastNotice >= noticeMs) {
           lastNotice = now();
           say("  Waiting for server approval.");
         }
-        if (!redraw) {
-          await sleep(pollMs);
-          continue;
-        }
-
-        for (let left = pollMs; left > 0 && redraw; left -= 500) {
-          await sleep(Math.min(left, 500));
-          tryRedraw();
-        }
+        await sleep(pollMs);
       }
       if (!running) {
         say("  Server approval timed out. Run setup again to resume.");
@@ -1131,6 +1285,8 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
         return finish(SETUP_EXIT_PROBLEM);
       }
       say("  Server approved.");
+      const suffix = tailnetNameSuffix(approvedDaemon);
+      if (suffix) say(tailnetSuffixLine(suffix));
       record("enroll", "done", null);
     }
   }
@@ -1141,10 +1297,47 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     ? deps.relayPort
     : await defaultRelayPort(api, deps.controller)();
   let route = await readRoute(relayPort);
+
+  if (route && ROUTE_NOT_OURS_STATUSES.includes(route.status)) {
+    say(`  ${ROUTE_NOT_OURS_MESSAGE}`);
+    record("serve", "refused", route.status);
+    return finish(SETUP_EXIT_PROBLEM);
+  }
   if (route && route.status === ROUTE_STATUS_HEALTHY) {
     say("  Private route is already configured.");
     record("serve", "skipped", ROUTE_STATUS_HEALTHY);
   } else {
+
+    const httpsState = async () => {
+      try { return await readHttps(); } catch (_) { return CERT_DOMAINS_UNKNOWN; }
+    };
+    if (readHttps && (await httpsState()) === CERT_DOMAINS_UNAVAILABLE) {
+      let link      = null;
+      try { link = await queryEnableLink(); } catch (_) { link = null; }
+      if (typeof link !== "string" || !link) link = null;
+      say(`  ${HTTPS_OFF_MESSAGE}`);
+      say(`  ${link ? HTTPS_ENABLE_LINK_LINE : HTTPS_ADMIN_PAGE_LINE}`, "action");
+      say(`    ${link || HTTPS_ADMIN_PAGE_URL}`);
+      say(`  ${HTTPS_CARRIES_ON_MESSAGE}`);
+
+      const deadline = now() + DEFAULT_HTTPS_WAIT_MS;
+      let lastNotice = now();
+      let on = false;
+      while (now() < deadline) {
+        if (now() - lastNotice >= noticeMs) {
+          lastNotice = now();
+          say(`  ${HTTPS_WAITING_MESSAGE}`);
+        }
+        await sleep(Math.min(pollMs, deadline - now()));
+        if ((await httpsState()) === CERT_DOMAINS_AVAILABLE) { on = true; break; }
+      }
+      if (!on) {
+        say(`  ${HTTPS_TIMEOUT_MESSAGE}`);
+        record("serve", "failed", "https-off");
+        return finish(SETUP_EXIT_PROBLEM);
+      }
+      say(`  ${HTTPS_ON_MESSAGE}`);
+    }
     const port = servePort(options.servePort);
     const tailscaleArgv = cliArgv(layout);
     const command = applyCommand(relayPort, port, tailscaleArgv);
@@ -1166,57 +1359,17 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
 
     say(`  ${COLD_CERTIFICATE_MESSAGE}`);
 
-    const started = now();
-    const deadline = started + certificateWaitMs;
-    let nextProgress = started + CERTIFICATE_PROGRESS_MS;
-    let healthy = false;
-    let issuance = null;
-    let certificateAskable = startCertificate !== null;
-    let issued = false;
-    let calls = 0;
-    let lastStart = null;
-    try {
-      for (;;) {
-        if (issuance) {
-          const outcome = issuance.poll();
-          if (outcome !== null) {
-            const ranMs = typeof issuance.ranMs === "function" ? issuance.ranMs() : null;
-            issuance.stop();
-            issuance = null;
-            if (outcome === ISSUANCE_AVAILABLE) issued = true;
-            else if (outcome === ISSUANCE_UNAVAILABLE) certificateAskable = false;
-
-            else if (outcome === ISSUANCE_UNKNOWN && ranMs !== null && ranMs < CERTIFICATE_QUICK_FAIL_MS) certificateAskable = false;
-          }
-        }
-        if (certificateAskable && !issued && !issuance && calls >= CERTIFICATE_MAX_CALLS) certificateAskable = false;
-        if (certificateAskable && !issued && !issuance
-          && (lastStart === null || now() - lastStart >= CERTIFICATE_RETRY_MS)) {
-          lastStart = now();
-          calls += 1;
-          try {
-            issuance = await startCertificate(Math.max(1000, deadline - lastStart));
-          } catch (_) {
-            issuance = null;
-          }
-          if (!issuance) certificateAskable = false;
-        }
-        if (issued || !certificateAskable) {
-          route = await readRoute(relayPort);
-          if (route && route.status === ROUTE_STATUS_HEALTHY) { healthy = true; break; }
-        }
-        if (now() >= deadline) break;
-        if (now() >= nextProgress) {
-          const periods = Math.floor((now() - started) / CERTIFICATE_PROGRESS_MS);
-          say(`  ${certificateProgressMessage((periods * CERTIFICATE_PROGRESS_MS) / 1000)}`);
-          nextProgress = started + (periods + 1) * CERTIFICATE_PROGRESS_MS;
-        }
-        await sleep(Math.max(0, Math.min(pollMs, deadline - now())));
-      }
-    } finally {
-      if (issuance) issuance.stop();
+    const waited = await awaitRouteCertificate({
+      relayPort, route, readRoute, startCertificate, now, sleep, pollMs, certificateWaitMs,
+      onProgress: (elapsedS     ) => say(`  ${certificateProgressMessage(elapsedS)}`),
+    });
+    route = waited.route;
+    if (waited.outcome === CERTIFICATE_WAIT_REFUSED) {
+      say(`  ${CERTIFICATE_REFUSED_MESSAGE}`);
+      record("serve", "failed", "certificate-unavailable");
+      return finish(SETUP_EXIT_PROBLEM);
     }
-    if (!healthy) {
+    if (waited.outcome !== CERTIFICATE_WAIT_HEALTHY) {
       say(`  ${CERTIFICATE_TIMEOUT_MESSAGE}`);
       record("serve", "failed", route ? route.status : "unknown");
       return finish(SETUP_EXIT_PROBLEM);
@@ -1227,7 +1380,7 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
 
   const awaitPhoneOnTailnet = async () => {
     const look = async () => {
-      let answer = null;
+      let answer      = null;
       try {
         answer = await phonePresence();
       } catch (_) {
@@ -1313,14 +1466,13 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
       return finish(SETUP_EXIT_STOPPED);
     }
 
+    say(PAIR_OPEN_APP_MESSAGE, "action");
+
     const interactive = !assumeYes && isTty();
-    if (interactive) {
-      for (const line of PAIR_READY_LINES) say(line, "action");
-      await awaitTypedLine();
-    }
     let attempts = 0;
     for (;;) {
-      const paired = await pair({ lightTerminal: options.lightTerminal === true }, { driven: true });
+      const ceremonyIo = interactive && attempts === 0 ? { ...pairIo, readyLines: PAIR_READY_LINES } : pairIo;
+      const paired = await pair({ lightTerminal: options.lightTerminal === true }, ceremonyIo);
       attempts += 1;
       const exitCode = paired && Number.isInteger(paired.exitCode) ? paired.exitCode : SETUP_EXIT_PROBLEM;
       const outcome = paired ? paired.outcome || null : null;
@@ -1375,11 +1527,11 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
     return finish(SETUP_EXIT_PROBLEM);
   }
 
-  const rider = createGatewayFreezeRider({ now, sleep, say: (text) => say(`  ${text}`) });
-  let lostGateway = null;
-  const callFirstUse = async (params) => {
+  const rider = createGatewayFreezeRider({ now, sleep, say: (text     ) => say(`  ${text}`) });
+  let lostGateway      = null;
+  const callFirstUse = async (params     ) => {
     try { return { ok: true, record: recordOf(await rider.call(() => firstUseCall(params))) }; }
-    catch (err) {
+    catch (err     ) {
       if (isGatewayUnresponsive(err)) { lostGateway = err; return { ok: false, reason: GATEWAY_UNRESPONSIVE_REASON }; }
       return { ok: false, reason: firstUseFailureReason(err) };
     }
@@ -1401,8 +1553,9 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   const armed = await callFirstUse({ operation: "begin" });
   if (armed.reason === GATEWAY_UNRESPONSIVE_REASON) return gatewayLost();
   if (!armed.ok || !armed.record) {
-    say(`  Could not start the first-message check: ${armed.reason || "unavailable"}.`);
+    say(`  Could not start the first-message check. ${firstUseStopSentence(armed.reason || "unavailable")}`);
     say(`  ${FIRST_USE_RECOVERY_LINE}`, "action");
+    say(`  Code: ${armed.reason || "unavailable"}`, "detail");
     record("first-use", "failed", armed.reason || "unavailable");
     return finish(SETUP_EXIT_PROBLEM);
   }
@@ -1414,9 +1567,9 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
 
   const waited = await awaitFirstUseReply({
     call: callFirstUse,
-    say: (text, kind = null) => say(`  ${text}`, kind),
+    say: (text     , kind      = null) => say(`  ${text}`, kind),
 
-    waiting: (elapsedMs) => sayLive("first-use-wait", `  ${firstUseWaitingProgress(elapsedMs / 1000)}`),
+    waiting: (elapsedMs     ) => sayLive("first-use-wait", `  ${firstUseWaitingProgress(elapsedMs / 1000)}`),
     now, sleep,
     waitMs: firstUseWaitS * 1000,
     pollMs, noticeMs,
@@ -1426,8 +1579,9 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   if (waited.outcome === "unavailable" && waited.reason === GATEWAY_UNRESPONSIVE_REASON) return gatewayLost();
   if (waited.outcome === "unavailable") {
     const reason = waited.reason || "unavailable";
-    say(`  Could not check the first message: ${reason}.`);
+    say(`  Could not check the first message. ${firstUseStopSentence(reason)}`);
     say(`  ${FIRST_USE_RECOVERY_LINE}`, "action");
+    say(`  Code: ${reason}`, "detail");
     record("first-use", "failed", reason);
     return finish(SETUP_EXIT_PROBLEM);
   }
@@ -1445,9 +1599,11 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   }
   say(`  ${FIRST_USE_REPLY_VALUE}`);
 
+  const ceremonyIo = io.input && io.input.speckLook === true ? streamsIo : undefined;
+
   const ceremony = await firstUse(options.testInput === true
     ? { testInput: true, waitForReply: false }
-    : { waitForReply: false });
+    : { waitForReply: false }, ceremonyIo);
   const ceremonyExit = ceremony && Number.isInteger(ceremony.exitCode)
     ? ceremony.exitCode
     : SETUP_EXIT_PROBLEM;
@@ -1477,12 +1633,12 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
       return finish(SETUP_EXIT_OK);
     }
 
-    const mirror = { write: (chunk) => {
+    const mirror = { write: (chunk     ) => {
       for (const line of String(chunk).split("\n")) if (line) lines.push(line);
       return output.write(chunk);
     } };
     const nextOperations = Array.isArray(settled.record.nextOperations) ? settled.record.nextOperations : [];
-    const shown = await welcome(api, {
+    const shown      = await welcome(api, {
       binding: settled.record.binding,
       retry: nextOperations.includes("first_use_welcome_retry"),
     }, { output: mirror, now, sleep });
@@ -1505,6 +1661,6 @@ export async function runCloudwaysSetup(options = {}, deps = {}, io = {}) {
   return finish(SETUP_EXIT_OK);
 }
 
-function recordOf(result) {
+function recordOf(result     ) {
   return result && isRecord(result.record) ? result.record : null;
 }

@@ -2,7 +2,7 @@ export const HERMES_SESSION_KEY_PREFIX = "hermes:";
 
 export const DEFAULT_HERMES_NAMESPACE = "main";
 
-export function hermesProfileIdForNamespace(namespace) {
+export function hermesProfileIdForNamespace(namespace     ) {
   const normalized = normalizeSegment(namespace);
   return normalized === DEFAULT_HERMES_NAMESPACE ? "default" : normalized;
 }
@@ -36,12 +36,21 @@ export const ADOPTABLE_FOREIGN_SOURCES = Object.freeze(["desktop", "cli", "tui"]
 export function isAdoptableHermesSessionKey(key) {
   if (!isForeignHermesSessionKey(key)) return false;
   const segments = key.trim().toLowerCase().split(":");
+  if (segments.length === 6) {
+    return (
+      segments[3] === LOCAL_ROUTE_FOREIGN_SOURCE &&
+      segments[4] === "dm" &&
+      segments[5].length > 0
+    );
+  }
   return (
     segments.length === 5 &&
     ADOPTABLE_FOREIGN_SOURCES.includes(segments[3]) &&
     segments[4].length > 0
   );
 }
+
+export const LOCAL_ROUTE_FOREIGN_SOURCE = "local";
 
 export const ADOPT_CHAT_ID_PREFIX = "adopt-";
 

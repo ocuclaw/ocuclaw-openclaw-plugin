@@ -22,7 +22,7 @@ export function composeReadabilitySystemPrompt(
   return `${SMALL_SCREEN_READABILITY_BASE_SYSTEM_PROMPT}\n\n${normalizedUserPrompt}`;
 }
 
-export function splitReadabilitySystemPrompt(content) {
+export function splitReadabilitySystemPrompt(content     ) {
   const normalized = normalizeUserPrompt(content);
   const base = SMALL_SCREEN_READABILITY_BASE_SYSTEM_PROMPT;
   if (!normalized) return { readability: "" };

@@ -3,7 +3,7 @@ import { isHermesSessionKey } from "./hermes-session-keys.js";
 const OPENCLAW_GATEWAY_DEFAULT_AGENT_ID = "main";
 const AGENT_SCOPED_SESSION_KEY_RE = /^agent:([^:]+):(.+)$/i;
 
-export function gatewaySessionKeyFor(sessionKey, agentId) {
+export function gatewaySessionKeyFor(sessionKey     , agentId     ) {
   const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
   if (!key) return key;
 
@@ -20,14 +20,14 @@ export function gatewaySessionKeyFor(sessionKey, agentId) {
   return `agent:${selectedAgent}:${key}`;
 }
 
-export function isAgentSelectionRequiredError(err) {
+export function isAgentSelectionRequiredError(err     ) {
   if (!err) return false;
   if (err.code === "AGENT_SELECTION_REQUIRED") return true;
   const message = typeof err.message === "string" ? err.message : String(err);
   return /Multiple agents are configured, but .* has no explicit owner/i.test(message);
 }
 
-function isSessionScopedMethod(method) {
+function isSessionScopedMethod(method     ) {
   return (
     typeof method === "string" &&
     (method === "agent" ||
@@ -38,13 +38,17 @@ function isSessionScopedMethod(method) {
 }
 
 export function scopeOpenClawRequestSessionParams(
-  method,
-  params,
-  opts = {},
+  method     ,
+  params     ,
+  opts      = {},
 ) {
   if (!params || typeof params !== "object") return params;
+  const nonDefaultOnly = opts.nonDefaultOnly === true;
+  const defaultAgent =
+    (typeof opts.defaultAgentId === "string" && opts.defaultAgentId.trim()) ||
+    OPENCLAW_GATEWAY_DEFAULT_AGENT_ID;
 
-  if (method === "commands.list" || (method === "agent.identity.get" && !params.sessionKey)) {
+  if (!nonDefaultOnly && (method === "commands.list" || (method === "agent.identity.get" && !params.sessionKey))) {
     const defaultAgentId =
       typeof opts.defaultAgentId === "string" ? opts.defaultAgentId.trim() : "";
     if (params.sessionKey || params.agentId || !defaultAgentId) return params;
@@ -67,7 +71,9 @@ export function scopeOpenClawRequestSessionParams(
         agentId = "";
       }
     }
-    if (!agentId && typeof opts.defaultAgentId === "string") {
+    if (nonDefaultOnly) {
+      if (!agentId || agentId.toLowerCase() === defaultAgent.toLowerCase()) continue;
+    } else if (!agentId && typeof opts.defaultAgentId === "string") {
       agentId = opts.defaultAgentId.trim();
     }
     if (!agentId) continue;
@@ -77,7 +83,7 @@ export function scopeOpenClawRequestSessionParams(
   return next;
 }
 
-export function relaySessionKeyFor(sessionKey) {
+export function relaySessionKeyFor(sessionKey     ) {
   const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
   if (!key) return key;
   const match = AGENT_SCOPED_SESSION_KEY_RE.exec(key);

@@ -13,7 +13,10 @@ export const LIVEUI_TASK_RUN_RECORD_DIRNAME = "task-runs-v1";
 export const LIVEUI_TASK_RUN_RECORD_MAX = 10;
 export const LIVEUI_TASK_RUN_RECORD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export function projectTaskRunRecord(input = {}) {
+export const LIVEUI_TASK_RUN_RECORD_BY = Object.freeze(["card", "open", "agent"]);
+const TASK_RUN_RECORD_BY = new Set        (LIVEUI_TASK_RUN_RECORD_BY);
+
+export function projectTaskRunRecord(input      = {}) {
   const executor = input && input.executor && typeof input.executor === "object"
     ? input.executor
     : {};
@@ -32,42 +35,44 @@ export function projectTaskRunRecord(input = {}) {
     startedAt: input.startedAt,
     endedAt: input.endedAt,
     toolNames: Array.isArray(input.toolNames)
-      ? input.toolNames.filter((name) => typeof name === "string")
+      ? input.toolNames.filter((name     ) => typeof name === "string")
       : [],
     approvals: approvals
-      .filter((approval) => approval && typeof approval === "object")
-      .map((approval) => ({
+      .filter((approval     ) => approval && typeof approval === "object")
+      .map((approval     ) => ({
         toolName: approval.toolName,
         outcome: approval.outcome,
       })),
     outcome: input.outcome !== undefined ? input.outcome : input.endedReason,
     delivery: input.delivery,
+
+    ...(TASK_RUN_RECORD_BY.has(input.by) ? { by: input.by } : {}),
   };
 }
 
-export function pruneTaskRunRecords(records, nowMs) {
+export function pruneTaskRunRecords(records     , nowMs     ) {
   const cutoff = nowMs - LIVEUI_TASK_RUN_RECORD_TTL_MS;
   return (Array.isArray(records) ? records : [])
-    .filter((record) => record && Number.isFinite(record.endedAt) && record.endedAt >= cutoff)
-    .sort((left, right) => right.endedAt - left.endedAt)
+    .filter((record     ) => record && Number.isFinite(record.endedAt) && record.endedAt >= cutoff)
+    .sort((left     , right     ) => right.endedAt - left.endedAt)
     .slice(0, LIVEUI_TASK_RUN_RECORD_MAX)
-    .map((record) => projectTaskRunRecord(record));
+    .map((record     ) => projectTaskRunRecord(record));
 }
 
-export function createLiveuiTaskRunRecordStore(opts = {}) {
+export function createLiveuiTaskRunRecordStore(opts      = {}) {
   const fs = opts.fs && typeof opts.fs === "object" ? opts.fs : nodeFs;
   const rootDir = resolveLiveuiLibraryRoot(opts.rootDir);
   const now = typeof opts.now === "function" ? opts.now : Date.now;
   const recordsDir = path.join(rootDir, LIVEUI_TASK_RUN_RECORD_DIRNAME);
 
-  function taskPath(taskId) {
+  function taskPath(taskId     ) {
     if (!isValidLiveuiLibraryItemId(taskId)) {
       throw new Error("LiveUI Task Run Record taskId is invalid");
     }
     return path.join(recordsDir, `${taskId}.json`);
   }
 
-  function loadDocument(taskId) {
+  function loadDocument(taskId     ) {
     const targetPath = taskPath(taskId);
     try {
       const parsed = JSON.parse(fs.readFileSync(targetPath, "utf8"));
@@ -79,7 +84,7 @@ export function createLiveuiTaskRunRecordStore(opts = {}) {
         !Array.isArray(parsed.records)
       ) return { targetPath, records: [] };
       return { targetPath, records: parsed.records };
-    } catch (err) {
+    } catch (err     ) {
       if (err && (err.code === "ENOENT" || err.name === "SyntaxError")) {
         return { targetPath, records: [] };
       }
@@ -87,7 +92,7 @@ export function createLiveuiTaskRunRecordStore(opts = {}) {
     }
   }
 
-  function write(targetPath, records) {
+  function write(targetPath     , records     ) {
     atomicWriteLiveuiLibraryRecord({
       fs,
       libraryDir: rootDir,
@@ -99,14 +104,14 @@ export function createLiveuiTaskRunRecordStore(opts = {}) {
   return {
     rootDir,
     recordsDir,
-    append(record) {
+    append(record     ) {
       const projected = projectTaskRunRecord(record);
       const loaded = loadDocument(projected.taskId);
       const records = pruneTaskRunRecords([projected, ...loaded.records], now());
       write(loaded.targetPath, records);
       return projected;
     },
-    list(taskId) {
+    list(taskId     ) {
       const loaded = loadDocument(taskId);
       const records = pruneTaskRunRecords(loaded.records, now());
       if (canonicalSerialize(records) !== canonicalSerialize(loaded.records)) {
@@ -114,11 +119,11 @@ export function createLiveuiTaskRunRecordStore(opts = {}) {
       }
       return records;
     },
-    deleteForTask(taskId) {
+    deleteForTask(taskId     ) {
       const targetPath = taskPath(taskId);
       try {
         fs.unlinkSync(targetPath);
-      } catch (err) {
+      } catch (err     ) {
         if (!err || err.code !== "ENOENT") throw err;
       }
       return { status: "deleted", taskId };

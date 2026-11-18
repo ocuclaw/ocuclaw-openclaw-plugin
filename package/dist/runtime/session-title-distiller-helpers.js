@@ -13,7 +13,7 @@ export function isDistillerSessionKey(sessionKey) {
 export const TITLE_DISTILLER_RUN_ID_PREFIX = "ocuclaw-title-";
 const TITLE_DISTILLER_SESSION_MARKER = ":title-distiller:";
 
-export function isTitleDistillerRun(runId, sessionKey) {
+export function isTitleDistillerRun(runId     , sessionKey     ) {
   if (typeof runId === "string" && runId.trim().startsWith(TITLE_DISTILLER_RUN_ID_PREFIX)) {
     return true;
   }
@@ -81,17 +81,20 @@ export function extractAssistantTitleFromMessages(messages) {
 export function buildExcerpt(messages, opts = {}) {
   const maxMessages = Number.isFinite(opts.maxMessages) ? opts.maxMessages : 6;
   const per = Number.isFinite(opts.perMessageChars) ? opts.perMessageChars : 280;
-  const recent = (Array.isArray(messages) ? messages : []).slice(-maxMessages);
-  return recent
-    .map((m) => {
-      const role = m && m.role === "assistant" ? "assistant" : "user";
-      let text = extractText(m && m.content);
 
-      text = text.split(EXCERPT_FENCE).join(" ").split(EXCERPT_FENCE_END).join(" ");
-      text = text.replace(/\s+/g, " ").trim();
-      if (text.length > per) text = text.slice(0, per);
-      return `${role}: ${text}`;
-    })
+  const rows = [];
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (!m || (m.role !== "user" && m.role !== "assistant")) continue;
+    let text = extractText(m.content);
+
+    text = text.split(EXCERPT_FENCE).join(" ").split(EXCERPT_FENCE_END).join(" ");
+    text = text.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    rows.push({ role: m.role, text });
+  }
+  return rows
+    .slice(-maxMessages)
+    .map(({ role, text }) => `${role}: ${text.length > per ? text.slice(0, per) : text}`)
     .join("\n");
 }
 

@@ -15,6 +15,7 @@ import {
   SILENT_INPUT_OPEN_LIMITS,
   normalizeOpenRequest,
   normalizeWholeReply,
+  replyScript,
   openReplyResult,
 } from "./silent-input-open-reply.js";
 
@@ -31,18 +32,18 @@ export const LINK_INPUT_PREDICTION_GRACE_MS = 500;
 
 const UNSUPPORTED_REASON = "hermes parent exposes no input.prediction.* handlers";
 
-function isMethodNotFound(err) {
+function isMethodNotFound(err     ) {
   if (!err) return false;
   if (err.code === METHOD_NOT_FOUND_CODE) return true;
   const message = typeof err.message === "string" ? err.message : "";
   return /method not found|unknown method|unsupported method/i.test(message);
 }
 
-function cleanString(value) {
+function cleanString(value     ) {
   return typeof value === "string" ? value : "";
 }
 
-export function resolveTestTimeoutMs(value) {
+export function resolveTestTimeoutMs(value     ) {
   if (!Number.isFinite(value)) return INPUT_PREDICTION_LIMITS.timeoutMs;
   const ms = Math.round(value);
   if (ms < 200) return 200;
@@ -50,7 +51,7 @@ export function resolveTestTimeoutMs(value) {
   return ms;
 }
 
-function normalizeLinkResult(raw, fallbackRequestId, req) {
+function normalizeLinkResult(raw     , fallbackRequestId     , req     ) {
   const r = raw && typeof raw === "object" ? raw : {};
   const status = INPUT_PREDICTION_STATUSES.includes(r.status) ? r.status : "error";
 
@@ -75,12 +76,12 @@ function normalizeLinkResult(raw, fallbackRequestId, req) {
   });
 }
 
-function identityEcho(params) {
+function identityEcho(params     ) {
   const p = params && typeof params === "object" ? params : {};
   return { agentId: cleanString(p.agentId).trim(), profileId: cleanString(p.profileId).trim() };
 }
 
-function normalizeOpenReplyRoute(raw) {
+function normalizeOpenReplyRoute(raw     ) {
   if (!raw || typeof raw !== "object") return null;
   const provider = cleanString(raw.provider).trim();
   const model = cleanString(raw.model).trim();
@@ -88,11 +89,11 @@ function normalizeOpenReplyRoute(raw) {
   return { provider, model };
 }
 
-function sanitizeOpenReplies(list) {
+function sanitizeOpenReplies(list     , locale     ) {
   const out = [];
   const seen = new Set();
   for (const raw of Array.isArray(list) ? list : []) {
-    const reply = normalizeWholeReply(raw);
+    const reply = normalizeWholeReply(raw, locale);
     if (!reply) continue;
     const key = reply.toLowerCase();
     if (seen.has(key)) continue;
@@ -102,7 +103,7 @@ function sanitizeOpenReplies(list) {
   return out.slice(0, SILENT_INPUT_OPEN_LIMITS.maxReplies);
 }
 
-function sanitizeOpenWords(list) {
+function sanitizeOpenWords(list     ) {
   const out = [];
   const seen = new Set();
   for (const raw of Array.isArray(list) ? list : []) {
@@ -115,13 +116,13 @@ function sanitizeOpenWords(list) {
   return out.slice(0, SILENT_INPUT_OPEN_LIMITS.maxWords);
 }
 
-export function createHermesInputPredictionTranslators(opts) {
+export function createHermesInputPredictionTranslators(opts     ) {
   const link = opts && opts.link;
   if (!link || typeof link.request !== "function") {
     throw new Error("hermes input prediction translators require a control link with request()");
   }
 
-  async function capabilities(params) {
+  async function capabilities(params     ) {
     const p = params && typeof params === "object" ? params : {};
 
     const payload = {
@@ -184,19 +185,19 @@ export function createHermesInputPredictionTranslators(opts) {
     }
   }
 
-  async function request(params) {
+  async function request(params     ) {
     const normalized = normalizePredictionRequest(params);
     const requestId = params && typeof params.requestId === "string" ? params.requestId : "";
     if (!normalized.ok) {
       return predictionResult(normalized.status, { requestId, reason: normalized.reason });
     }
-    const req = normalized.value;
+    const req      = normalized.value;
     try {
       const raw = await link.request(LINK_INPUT_PREDICTION_METHODS.request, req, {
         timeoutMs: req.timeoutMs + LINK_INPUT_PREDICTION_GRACE_MS,
       });
       return normalizeLinkResult(raw, req.requestId, req);
-    } catch (err) {
+    } catch (err     ) {
       if (isMethodNotFound(err)) {
         return predictionResult("unavailable", { requestId: req.requestId, reason: UNSUPPORTED_REASON, ...identityEcho(req) });
       }
@@ -212,7 +213,7 @@ export function createHermesInputPredictionTranslators(opts) {
     }
   }
 
-  async function open(params) {
+  async function open(params     ) {
     const normalized = normalizeOpenRequest(params);
     if (!normalized.ok) {
       return openReplyResult(normalized.status, {
@@ -221,7 +222,7 @@ export function createHermesInputPredictionTranslators(opts) {
         ...identityEcho(params),
       });
     }
-    const req = normalized.value;
+    const req      = normalized.value;
     try {
       const raw = await link.request(LINK_INPUT_PREDICTION_METHODS.open, req, {
         timeoutMs: req.timeoutMs + LINK_INPUT_PREDICTION_GRACE_MS,
@@ -231,8 +232,9 @@ export function createHermesInputPredictionTranslators(opts) {
       return openReplyResult(status, {
         requestId: cleanString(r.requestId) || req.requestId,
 
-        replies: sanitizeOpenReplies(r.replies),
-        words: sanitizeOpenWords(r.words),
+        replies: sanitizeOpenReplies(r.replies, req.locale),
+
+        words: replyScript(req.locale) === "en" ? sanitizeOpenWords(r.words) : [],
         provider: cleanString(r.provider),
         model: cleanString(r.model),
         elapsedMs: Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0,
@@ -240,7 +242,7 @@ export function createHermesInputPredictionTranslators(opts) {
         reason: cleanString(r.reason) || undefined,
         ...identityEcho(req),
       });
-    } catch (err) {
+    } catch (err     ) {
       const message = err && typeof err.message === "string" ? err.message : String(err);
       if (isMethodNotFound(err)) {
         return openReplyResult("unavailable", { requestId: req.requestId, reason: UNSUPPORTED_REASON, ...identityEcho(req) });
@@ -255,7 +257,7 @@ export function createHermesInputPredictionTranslators(opts) {
     }
   }
 
-  async function cancel(params) {
+  async function cancel(params     ) {
     const p = params && typeof params === "object" ? params : {};
     const payload = {
       requestId: cleanString(p.requestId),
@@ -272,17 +274,17 @@ export function createHermesInputPredictionTranslators(opts) {
         abortProbe: cleanString(r.abortProbe) || "unobserved",
         reason: cleanString(r.reason) || undefined,
       };
-    } catch (err) {
+    } catch (err     ) {
       if (isMethodNotFound(err)) return { accepted: false, abort: false, abortProbe: "unobserved", reason: UNSUPPORTED_REASON };
       return { accepted: false, abort: false, abortProbe: "unobserved", reason: (err && err.message) || String(err) };
     }
   }
 
-  async function test(params) {
+  async function test(params     ) {
     const p = params && typeof params === "object" ? params : {};
 
     const timeoutMs = resolveTestTimeoutMs(p.timeoutMs);
-    const payload = {
+    const payload      = {
       clientId: cleanString(p.clientId),
       connectionId: cleanString(p.connectionId),
       profileId: cleanString(p.profileId),
@@ -304,15 +306,15 @@ export function createHermesInputPredictionTranslators(opts) {
         provider: cleanString(r.provider),
         model: cleanString(r.model),
         elapsedMs: Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0,
-        candidates: Array.isArray(r.candidates) ? r.candidates.filter((c) => typeof c === "string") : [],
+        candidates: Array.isArray(r.candidates) ? r.candidates.filter((c     ) => typeof c === "string") : [],
         usage: normalizeUsage(r.usage),
         reason: cleanString(r.reason) || undefined,
         ...identityEcho(p),
       };
-    } catch (err) {
+    } catch (err     ) {
       const requestId = payload.requestId || "";
       const message = err && typeof err.message === "string" ? err.message : String(err);
-      const failed = (status, reason) => ({
+      const failed = (status     , reason     ) => ({
         requestId, status, provider: "", model: "", elapsedMs: 0, candidates: [], usage: null, reason, ...identityEcho(p),
       });
       if (isMethodNotFound(err)) return failed("unavailable", UNSUPPORTED_REASON);
@@ -326,7 +328,7 @@ export function createHermesInputPredictionTranslators(opts) {
     }
   }
 
-  async function modelAllow(params) {
+  async function modelAllow(params     ) {
     const p = params && typeof params === "object" ? params : {};
     const payload = {
       requestId: cleanString(p.requestId),
@@ -339,7 +341,7 @@ export function createHermesInputPredictionTranslators(opts) {
       const raw = await link.request(LINK_INPUT_PREDICTION_METHODS.modelAllow, payload);
       const r = raw && typeof raw === "object" ? raw : {};
       return modelAllowResult(payload.requestId, r.status, r.activation);
-    } catch (err) {
+    } catch (err     ) {
       if (isMethodNotFound(err)) return modelAllowResult(payload.requestId, "policy-denied");
       return modelAllowResult(payload.requestId, "error");
     }

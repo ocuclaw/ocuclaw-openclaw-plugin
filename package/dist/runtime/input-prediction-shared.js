@@ -25,8 +25,8 @@ export const REPLY_MODEL_FAST_OUTPUT_COST_MAX = 6;
 
 const REPLY_MODEL_PRIORITY_TIER_RE = /-fast(?=$|[-_.:@/])/i;
 
-export function replyModelSpeedFacts(modelId, costOutPerM = null, recommended = false) {
-  const out = {};
+export function replyModelSpeedFacts(modelId     , costOutPerM      = null, recommended      = false) {
+  const out      = {};
   const id = typeof modelId === "string" ? modelId : "";
   const cost = typeof costOutPerM === "number" && Number.isFinite(costOutPerM) && costOutPerM >= 0 ? costOutPerM : null;
   if (cost !== null) out.costOutPerM = Math.round(cost * 1000) / 1000;
@@ -44,7 +44,7 @@ export const INPUT_PREDICTION_MODEL_ALLOW_STATUSES = Object.freeze(["saved", "po
 
 export const INPUT_PREDICTION_MODEL_ALLOW_MODES = Object.freeze(["none", "hot_reload", "restart", "manual"]);
 
-export function modelAllowResult(requestId, status, activation = null) {
+export function modelAllowResult(requestId     , status     , activation      = null) {
   const s = INPUT_PREDICTION_MODEL_ALLOW_STATUSES.includes(status) ? status : "error";
   const a = activation && typeof activation === "object" ? activation : {};
   const mode = INPUT_PREDICTION_MODEL_ALLOW_MODES.includes(a.mode) ? a.mode : (s === "saved" ? "manual" : "none");
@@ -138,7 +138,7 @@ export const INPUT_PREDICTION_UNSUPPORTED_SCHEMA_REASON = "invalid-request: unsu
 
 const APOSTROPHE_CANDIDATE_RE = /^[A-Za-z]+(?:'[A-Za-z]+)*$/;
 
-export function normalizeCandidateSchema(params) {
+export function normalizeCandidateSchema(params     ) {
   const p = params && typeof params === "object" ? params : {};
   if (p.candidateSchema === undefined || p.candidateSchema === null) {
     return { ok: true, schema: INPUT_PREDICTION_CANDIDATE_SCHEMA_ALPHA, named: false };
@@ -150,18 +150,18 @@ export function normalizeCandidateSchema(params) {
   return { ok: true, schema: raw, named: true };
 }
 
-export function isCandidateUnderSchema(text, schema) {
+export function isCandidateUnderSchema(text     , schema     ) {
   if (typeof text !== "string" || text.length < 1 || text.length > INPUT_PREDICTION_LIMITS.maxPatternLength) return false;
   if (schema === INPUT_PREDICTION_CANDIDATE_SCHEMA_ALPHA) return LETTER_RE.test(text);
   if (schema === INPUT_PREDICTION_CANDIDATE_SCHEMA_APOSTROPHE) return APOSTROPHE_CANDIDATE_RE.test(text);
   return false;
 }
 
-export function candidateMatchKey(text) {
+export function candidateMatchKey(text     ) {
   return String(text || "").toLowerCase().replace(/'/g, "");
 }
 
-export function letterGroup(ch, ways) {
+export function letterGroup(ch     , ways     ) {
   const code = String(ch || "").toLowerCase().charCodeAt(0);
   if (!(code >= 97 && code <= 122)) return -1;
   const index = code - 97;
@@ -173,12 +173,12 @@ export function letterGroup(ch, ways) {
   return index <= 12 ? 0 : 1;
 }
 
-export function normalizeWays(raw) {
+export function normalizeWays(raw     ) {
   const n = Math.trunc(Number(raw));
   return n === 3 ? 3 : 2;
 }
 
-export function isPatternDigits(pattern, ways) {
+export function isPatternDigits(pattern     , ways     ) {
   if (typeof pattern !== "string") return false;
   const maxDigit = normalizeWays(ways) === 3 ? "2" : "1";
   for (const ch of pattern) {
@@ -187,7 +187,7 @@ export function isPatternDigits(pattern, ways) {
   return true;
 }
 
-export function patternCompatible(word, pattern, ways) {
+export function patternCompatible(word     , pattern     , ways     ) {
   const w = String(word || "");
   const p = String(pattern || "");
   if (p.length > w.length) return false;
@@ -197,14 +197,14 @@ export function patternCompatible(word, pattern, ways) {
   return true;
 }
 
-export function normalizeCandidateWord(raw, schema = INPUT_PREDICTION_CANDIDATE_SCHEMA_ALPHA) {
+export function normalizeCandidateWord(raw     , schema      = INPUT_PREDICTION_CANDIDATE_SCHEMA_ALPHA) {
   if (typeof raw !== "string") return null;
   const display = raw.trim();
   if (!isCandidateUnderSchema(display, schema)) return null;
   return { display, key: display.toLowerCase(), matchKey: candidateMatchKey(display) };
 }
 
-export function validateCandidates(list, opts) {
+export function validateCandidates(list     , opts     ) {
   const pattern = opts && typeof opts.pattern === "string" ? opts.pattern : "";
   const ways = normalizeWays(opts && opts.ways);
   const schema = opts && typeof opts.candidateSchema === "string"
@@ -212,7 +212,7 @@ export function validateCandidates(list, opts) {
     : INPUT_PREDICTION_CANDIDATE_SCHEMA_ALPHA;
   const cap = clampInt(opts && opts.maxCandidates, 1, INPUT_PREDICTION_LIMITS.maxCandidates, INPUT_PREDICTION_LIMITS.maxCandidates);
   const hidden = new Set(
-    Array.isArray(opts && opts.hiddenKeys) ? opts.hiddenKeys.map((k) => String(k).toLowerCase()) : [],
+    Array.isArray(opts && opts.hiddenKeys) ? opts.hiddenKeys.map((k     ) => String(k).toLowerCase()) : [],
   );
   const seen = new Set();
   const candidates = [];
@@ -231,13 +231,13 @@ export function validateCandidates(list, opts) {
   return { candidates, rejected, received: source.length };
 }
 
-function clampInt(raw, min, max, fallback) {
+function clampInt(raw     , min     , max     , fallback     ) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-export function findForbiddenKey(params, opts = null) {
+export function findForbiddenKey(params     , opts      = null) {
   if (!params || typeof params !== "object") return null;
   const list = opts && opts.phone === true
     ? INPUT_PREDICTION_PHONE_FORBIDDEN_KEYS
@@ -249,7 +249,7 @@ export function findForbiddenKey(params, opts = null) {
   return null;
 }
 
-export function normalizePredictionRequest(params) {
+export function normalizePredictionRequest(params     ) {
   if (!params || typeof params !== "object") {
     return { ok: false, status: "error", reason: "invalid-request: params must be an object" };
   }
@@ -298,25 +298,13 @@ export function normalizePredictionRequest(params) {
       modelChoice,
       timeoutMs,
       hiddenKeys: Array.isArray(params.hiddenKeys)
-        ? params.hiddenKeys.filter((k) => typeof k === "string").slice(0, 64)
+        ? params.hiddenKeys.filter((k     ) => typeof k === "string").slice(0, 64)
         : [],
     },
   };
 }
 
-export const INPUT_PREDICTION_JEV_LIMITS = Object.freeze({
-  maxReplyingToChars: 512,
-});
-
-export function normalizeJevContext(params) {
-  const p = params && typeof params === "object" ? params : {};
-  const replyingTo = typeof p.replyingTo === "string"
-    ? p.replyingTo.slice(0, INPUT_PREDICTION_JEV_LIMITS.maxReplyingToChars)
-    : "";
-  return { replyingTo };
-}
-
-export function predictionResult(status, extra) {
+export function predictionResult(status     , extra     ) {
   const base = {
     status: INPUT_PREDICTION_STATUSES.includes(status) ? status : "error",
     candidates: [],
@@ -328,7 +316,7 @@ export function predictionResult(status, extra) {
   return Object.assign(base, extra && typeof extra === "object" ? extra : {});
 }
 
-export function normalizeUsage(raw) {
+export function normalizeUsage(raw     ) {
   if (!raw || typeof raw !== "object") return null;
   const input = pickNumber([raw.inputTokens, raw.input_tokens, raw.input, raw.promptTokens, raw.prompt_tokens]);
   const output = pickNumber([raw.outputTokens, raw.output_tokens, raw.output, raw.completionTokens, raw.completion_tokens]);
@@ -338,14 +326,14 @@ export function normalizeUsage(raw) {
   return { inputTokens: input, outputTokens: output };
 }
 
-function pickNumber(values) {
+function pickNumber(values     ) {
   for (const v of values) {
     if (typeof v === "number" && Number.isFinite(v)) return v;
   }
   return null;
 }
 
-export function predictionTelemetry(result, extra) {
+export function predictionTelemetry(result     , extra     ) {
   const out = {
     status: result && result.status,
     candidateCount: result && Array.isArray(result.candidates) ? result.candidates.length : 0,
@@ -357,7 +345,7 @@ export function predictionTelemetry(result, extra) {
   return Object.assign(out, extra && typeof extra === "object" ? extra : {});
 }
 
-export function policyRevisionOf(policy) {
+export function policyRevisionOf(policy     ) {
   const text = JSON.stringify(policy || {});
   let h = 2166136261;
   for (let i = 0; i < text.length; i += 1) {

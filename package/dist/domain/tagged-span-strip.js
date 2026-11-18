@@ -1,4 +1,5 @@
 import { computeCodeSpanRegions } from "./code-span-regions.js";
+import { stripSpeckMarkers } from "./speck-marker.js";
 
 const COMPLETE_NEURAL_TAG_SOURCE =
   String.raw`<\/?neural(?:(?::|\s)[^<>\r\n]*)?\s*\/?>`;
@@ -95,4 +96,12 @@ export function stripAllTaggedSpans(text) {
     }
     return "";
   });
+}
+
+export function stripDisplayMarkup(text) {
+  const withoutSpans = stripAllTaggedSpans(text);
+  if (!withoutSpans.includes("<")) return withoutSpans;
+  return stripSpeckMarkers(withoutSpans)
+    .replace(/ ?<beat\/>(?= |$)/g, "")
+    .replaceAll("<beat/>", "");
 }

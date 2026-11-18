@@ -66,6 +66,16 @@ function isBelowFieldModulus(value            )          {
   return false;
 }
 
+export function isCanonicalPublicKey(value            )          {
+  try {
+    requireCanonicalPublicKey(value, "the key");
+    return true;
+  } catch (error) {
+    if (error instanceof PairingPrologueError) return false;
+    throw error;
+  }
+}
+
 function requireCanonicalPublicKey(value            , label        )       {
   if (!(value instanceof Uint8Array) || value.length !== X25519_PUBLIC_KEY_BYTES) {
     throw new PairingPrologueError(

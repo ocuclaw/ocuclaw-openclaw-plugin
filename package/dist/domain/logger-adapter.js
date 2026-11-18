@@ -1,4 +1,4 @@
-export function normalizeLogger(logger) {
+export function normalizeLogger(logger     ) {
   if (!logger || typeof logger !== "object") {
 
     return {

@@ -1,8 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-
+import { runHostCommand } from "../tools/host-process.js";
 import process from "node:process";
 
 export const ASSISTANT_SKILL_NAME = "ocuclaw-assist";
@@ -21,16 +20,16 @@ const PROBE_GUARD_ENV = "OCUCLAW_ASSISTANT_SKILL_PROBE";
 const PROBE_SKIP_ENV = "OCUCLAW_SKIP_ASSISTANT_SKILL_PROBE";
 
 function probeDisabled() {
-  const env = process.env || {};
+  const env      = process.env || {};
   return env[PROBE_GUARD_ENV] === "1" || env[PROBE_SKIP_ENV] === "1";
 }
 
-export function parseGuideVersion(source) {
+export function parseGuideVersion(source     ) {
   const match = /\*\*Guide version:\*\*[ \t]*(.+?)[ \t]*$/m.exec(String(source || ""));
   return match ? match[1] : null;
 }
 
-function readGuideVersionFile(filePath) {
+function readGuideVersionFile(filePath     ) {
   try {
     return parseGuideVersion(fs.readFileSync(String(filePath), "utf8"));
   } catch (_) {
@@ -38,7 +37,7 @@ function readGuideVersionFile(filePath) {
   }
 }
 
-export function bundledGuideVersion(options = {}) {
+export function bundledGuideVersion(options      = {}) {
   if (typeof options.bundledGuideVersion === "string") return options.bundledGuideVersion;
   try {
     const here = path.dirname(fileURLToPath(import.meta.url));
@@ -48,7 +47,7 @@ export function bundledGuideVersion(options = {}) {
   }
 }
 
-export function readSkillListing(options = {}) {
+export function readSkillListing(options      = {}) {
   if (typeof options.readSkillListing === "function") {
     try {
       return Promise.resolve(options.readSkillListing()).catch(() => null);
@@ -59,41 +58,30 @@ export function readSkillListing(options = {}) {
   if (probeDisabled()) return Promise.resolve(null);
   const cli = typeof options.cli === "string" && options.cli ? options.cli : "openclaw";
   const timeout = Number.isInteger(options.timeoutMs) ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
-  return new Promise((resolve) => {
+
+  return runHostCommand([cli, "skills", "info", ASSISTANT_SKILL_NAME, "--json"], {
+    timeoutMs: timeout,
+    maxOutputBytes: 2 * 1024 * 1024,
+    env: { [PROBE_GUARD_ENV]: "1" },
+  }).then((r     ) => {
+    if (r.code !== 0 || r.truncated) return null;
     try {
-      execFile(
-        cli,
-        ["skills", "info", ASSISTANT_SKILL_NAME, "--json"],
-        {
-          encoding: "utf8",
-          timeout,
-          maxBuffer: 2 * 1024 * 1024,
-          env: { ...(process.env || {}), [PROBE_GUARD_ENV]: "1" },
-        },
-        (error, stdout) => {
-          if (error) return resolve(null);
-          try {
-            const parsed = JSON.parse(String(stdout));
-            resolve(parsed && typeof parsed === "object" ? parsed : null);
-          } catch (_) {
-            resolve(null);
-          }
-        },
-      );
+      const parsed = JSON.parse(r.stdout);
+      return parsed && typeof parsed === "object" ? parsed : null;
     } catch (_) {
-      resolve(null);
+      return null;
     }
-  });
+  }, () => null);
 }
 
-function activeGuideVersion(listing, bundled) {
+function activeGuideVersion(listing     , bundled     ) {
   const fromFile = listing.filePath ? readGuideVersionFile(listing.filePath) : null;
   if (fromFile) return fromFile;
 
   return listing.source === BUNDLED_SKILL_SOURCE ? bundled : null;
 }
 
-export function unknownAssistantSkill(bundled = null) {
+export function unknownAssistantSkill(bundled      = null) {
   return {
     name: ASSISTANT_SKILL_NAME,
     activeSource: "unknown",
@@ -105,9 +93,9 @@ export function unknownAssistantSkill(bundled = null) {
   };
 }
 
-export function assistantSkillSummary(options = {}) {
+export function assistantSkillSummary(options      = {}) {
   const bundled = bundledGuideVersion(options);
-  return Promise.resolve(readSkillListing(options)).then((listing) => {
+  return Promise.resolve(readSkillListing(options)).then((listing     ) => {
     if (!listing || typeof listing.source !== "string" || !listing.source) {
       return unknownAssistantSkill(bundled);
     }

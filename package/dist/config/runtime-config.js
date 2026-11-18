@@ -8,6 +8,7 @@ import {
   buildModelAliasIndex,
   resolveConfiguredDefaultModelRef,
 } from "../runtime/upstream-runtime.js";
+import { createBundledUtilityModelLookup } from "../gateway/input-prediction-openclaw.js";
 import { gatewayRestartAdvice } from "../setup/cloudways-host.js";
 export {
   DEFAULT_STAGE_GRACE_MS,
@@ -92,14 +93,14 @@ function pickValue(...values) {
   return undefined;
 }
 
-function gatewayEnvSources(openclawConfig, env) {
+function gatewayEnvSources(openclawConfig     , env     ) {
   return {
     configEnv: isObject(openclawConfig) && isObject(openclawConfig.env) ? openclawConfig.env : {},
     processEnv: isObject(env) ? env : {},
   };
 }
 
-function resolveGatewayPortSource(openclawConfig, env) {
+function resolveGatewayPortSource(openclawConfig     , env     ) {
   const gateway = isObject(openclawConfig) && isObject(openclawConfig.gateway)
     ? openclawConfig.gateway
     : null;
@@ -111,16 +112,32 @@ function resolveGatewayPortSource(openclawConfig, env) {
   );
 }
 
-function resolveGatewayUrlFromOpenClawConfig(openclawConfig, env) {
+function usableRemoteGateway(openclawConfig     )                                        {
+  const gateway = isObject(openclawConfig) && isObject(openclawConfig.gateway)
+    ? openclawConfig.gateway
+    : null;
+  if (!gateway || gateway.mode !== "remote" || !isObject(gateway.remote)) {
+    return null;
+  }
+  const url = pickString(gateway.remote.url);
+  return url ? { url, token: pickString(gateway.remote.token) } : null;
+}
+
+function remoteGatewayFellBackToLoopback(openclawConfig     )          {
+  const gateway = isObject(openclawConfig) && isObject(openclawConfig.gateway)
+    ? openclawConfig.gateway
+    : null;
+  return Boolean(gateway && gateway.mode === "remote" && !usableRemoteGateway(openclawConfig));
+}
+
+function resolveGatewayUrlFromOpenClawConfig(openclawConfig     , env     ) {
   if (!isObject(openclawConfig)) {
     return "";
   }
   const gateway = isObject(openclawConfig.gateway) ? openclawConfig.gateway : null;
-  if (gateway && gateway.mode === "remote" && isObject(gateway.remote)) {
-    const remoteUrl = pickString(gateway.remote.url);
-    if (remoteUrl) {
-      return remoteUrl;
-    }
+  const remote = usableRemoteGateway(openclawConfig);
+  if (remote) {
+    return remote.url;
   }
   const portSource = resolveGatewayPortSource(openclawConfig, env);
 
@@ -132,13 +149,14 @@ function resolveGatewayUrlFromOpenClawConfig(openclawConfig, env) {
   return `${scheme}://127.0.0.1:${port}`;
 }
 
-function resolveGatewayTokenFromOpenClawConfig(openclawConfig, env) {
+function resolveGatewayTokenFromOpenClawConfig(openclawConfig     , env     ) {
   if (!isObject(openclawConfig)) {
     return "";
   }
   const gateway = isObject(openclawConfig.gateway) ? openclawConfig.gateway : null;
-  if (gateway && gateway.mode === "remote" && isObject(gateway.remote)) {
-    return pickString(gateway.remote.token);
+  const remote = usableRemoteGateway(openclawConfig);
+  if (remote) {
+    return remote.token;
   }
   const { configEnv, processEnv } = gatewayEnvSources(openclawConfig, env);
   return pickString(
@@ -148,7 +166,7 @@ function resolveGatewayTokenFromOpenClawConfig(openclawConfig, env) {
   );
 }
 
-export function createRuntimeConfigOverview(opts = {}) {
+export function createRuntimeConfigOverview(opts      = {}) {
   const pluginConfig = isObject(opts.pluginConfig) ? opts.pluginConfig : {};
   const openclawConfig = isObject(opts.openclawConfig) ? opts.openclawConfig : {};
 
@@ -184,7 +202,9 @@ const GLASSES_UI_LIVE_DEFAULT_MODEL = {
   "openai-compat": "gpt-4o-mini",
 };
 
-function configuredDefaultModelIsPresent(openclawConfig) {
+const bundledSmallModel = createBundledUtilityModelLookup();
+
+function configuredDefaultModelIsPresent(openclawConfig     ) {
   const modelConfig =
     openclawConfig && openclawConfig.agents && openclawConfig.agents.defaults
       ? openclawConfig.agents.defaults.model
@@ -198,7 +218,7 @@ function configuredDefaultModelIsPresent(openclawConfig) {
   );
 }
 
-function warnNoTickBackend(logger, provider) {
+function warnNoTickBackend(logger     , provider     ) {
   const message =
     `[ocuclaw] glassesUiLive llm disabled: no tick backend for provider "${provider || "none"}"`;
   if (logger && typeof logger.warn === "function") {
@@ -208,13 +228,18 @@ function warnNoTickBackend(logger, provider) {
   console.warn(message);
 }
 
-function defaultLiveModelForBackend(backend) {
-  return backend === "openai-compat"
-    ? GLASSES_UI_LIVE_DEFAULT_MODEL["openai-compat"]
-    : GLASSES_UI_LIVE_DEFAULT_MODEL["anthropic-api"];
+function defaultLiveModelForBackend(backend     ) {
+  if (backend === "openai-compat") return GLASSES_UI_LIVE_DEFAULT_MODEL["openai-compat"];
+  let hosted = "";
+  try {
+    hosted = pickString(bundledSmallModel("anthropic"));
+  } catch (_e) {
+    hosted = "";
+  }
+  return hosted ? `anthropic/${hosted}` : GLASSES_UI_LIVE_DEFAULT_MODEL["anthropic-api"];
 }
 
-export function resolveGlassesUiLive(value, openclawConfig, logger) {
+export function resolveGlassesUiLive(value     , openclawConfig     , logger     ) {
   const raw = isObject(value) ? value : {};
   const explicitTickBackend = Object.prototype.hasOwnProperty.call(raw, "tickBackend");
   const explicitTickModel = pickString(raw.tickModel) !== "";
@@ -284,38 +309,93 @@ export function resolveGlassesUiLive(value, openclawConfig, logger) {
   };
 }
 
-const MIN_SILENT_INPUT_JEV_BUDGET_MS = 200;
-const MAX_SILENT_INPUT_JEV_BUDGET_MS = 5000;
-const DEFAULT_SILENT_INPUT_JEV_BUDGET_MS = 2500;
+export function resolveLiveuiJev(value     , openclawConfig     , env     , pluginConfig      = {}) {
+  const raw = isObject(value) ? value : {};
 
-export function resolveSilentInputJev(value, openclawConfig, env, pluginConfig = {}) {
+  const { configEnv, processEnv } = gatewayEnvSources(openclawConfig, env);
+
+  const stored = pickString(isObject(pluginConfig) ? pluginConfig.typesafeApiKey : "");
+  return {
+
+    enabled: raw.enabled === true || raw.enabled === "true",
+    apiKey: pickString(raw.apiKey, stored, configEnv.TYPESAFE_API_KEY, processEnv.TYPESAFE_API_KEY),
+
+    budgetMs: clampInt(raw.budgetMs == null ? undefined : raw.budgetMs, 50, 5000, 800),
+  };
+}
+
+export function programCardSwitchEnabled(value     ) {
+  if (value === undefined || value === null) return true;
+  if (!isObject(value)) return false;
+  if (value.enabled === undefined || value.enabled === null || value.enabled === "") return true;
+  return value.enabled === true || value.enabled === "true";
+}
+
+export function resolveProgramCardsJev(value     , openclawConfig     , env     , pluginConfig      = {}) {
   const raw = isObject(value) ? value : {};
   const { configEnv, processEnv } = gatewayEnvSources(openclawConfig, env);
 
   const stored = pickString(isObject(pluginConfig) ? pluginConfig.typesafeApiKey : "");
-  const explicitKey = pickString(raw.apiKey);
-  const explicitEnabled = raw.enabled !== undefined && raw.enabled !== null && raw.enabled !== "";
   return {
 
-    enabled: explicitEnabled ? (raw.enabled === true || raw.enabled === "true") : !!stored,
-    apiKey: pickString(explicitKey, stored, configEnv.TYPESAFE_API_KEY, processEnv.TYPESAFE_API_KEY),
+    enabled: programCardSwitchEnabled(value),
+    apiKey: pickString(raw.apiKey, stored, configEnv.TYPESAFE_API_KEY, processEnv.TYPESAFE_API_KEY),
+  };
+}
 
+export function resolveProgramCardsMcp(value     ) {
+
+  return { enabled: programCardSwitchEnabled(value), ...(hostCommandsSwitchOn(value) ? {} : { hostCommands: false }) };
+}
+
+export function hostCommandsSwitchOn(value     ) {
+  if (value === undefined || value === null) return true;
+
+  if (!isObject(value)) return true;
+  const flag = value.hostCommands;
+  if (flag === undefined || flag === null || flag === "") return true;
+  return flag === true || flag === "true";
+}
+
+const MIN_BOT_SCREEN_JEV_BUDGET_MS = 1000;
+const MAX_BOT_SCREEN_JEV_BUDGET_MS = 10_000;
+const DEFAULT_BOT_SCREEN_JEV_BUDGET_MS = 4000;
+
+export function resolveBotScreenJev(value     , openclawConfig     , env     , pluginConfig      = {}) {
+  const raw = isObject(value) ? value : {};
+  const { configEnv, processEnv } = gatewayEnvSources(openclawConfig, env);
+  const stored = pickString(isObject(pluginConfig) ? pluginConfig.typesafeApiKey : "");
+  return {
+    enabled: raw.enabled === true || raw.enabled === "true",
+    apiKey: pickString(raw.apiKey, stored, configEnv.TYPESAFE_API_KEY, processEnv.TYPESAFE_API_KEY),
     budgetMs: clampInt(
       raw.budgetMs == null ? undefined : raw.budgetMs,
-      MIN_SILENT_INPUT_JEV_BUDGET_MS,
-      MAX_SILENT_INPUT_JEV_BUDGET_MS,
-      DEFAULT_SILENT_INPUT_JEV_BUDGET_MS,
+      MIN_BOT_SCREEN_JEV_BUDGET_MS,
+      MAX_BOT_SCREEN_JEV_BUDGET_MS,
+      DEFAULT_BOT_SCREEN_JEV_BUDGET_MS,
     ),
   };
 }
 
-export function createRuntimeConfig(opts = {}) {
+export function createRuntimeConfig(opts      = {}) {
   const pluginConfig = isObject(opts.pluginConfig) ? opts.pluginConfig : {};
   const openclawConfig = isObject(opts.openclawConfig) ? opts.openclawConfig : {};
   const env = isObject(opts.env) ? opts.env : {};
   const relayToken = pickString(pluginConfig.relayToken);
   const gatewayUrl = pickString(resolveGatewayUrlFromOpenClawConfig(openclawConfig, env));
   const gatewayToken = pickString(resolveGatewayTokenFromOpenClawConfig(openclawConfig, env));
+  if (remoteGatewayFellBackToLoopback(openclawConfig)) {
+
+    const message =
+      "[ocuclaw] gateway.mode is \"remote\" but gateway.remote.url is empty or not a string; " +
+      `dialing the local gateway at ${gatewayUrl || "(none)"} with the local gateway token instead`;
+    const logger = Reflect.get(opts, "logger");
+    if (logger && typeof logger.warn === "function") {
+      logger.warn(message);
+    } else {
+      console.warn(message);
+    }
+  }
 
   if (!relayToken) {
     throw new Error(
@@ -369,12 +449,16 @@ export function createRuntimeConfig(opts = {}) {
     gatewayToken,
     relayToken,
     wsBind: pickString(pluginConfig.wsBind, "127.0.0.1"),
+
+    phoneAddress: pickString(pluginConfig.phoneAddress) || null,
     wsPort: parseIntOrDefault(
       pickValue(pluginConfig.wsPort),
       OPENCLAW_BUNDLE_DEFAULT_WS_PORT,
     ),
     sessionLimit: parseIntOrDefault(pickValue(pluginConfig.sessionLimit), 80),
     sonioxApiKey: pickString(pluginConfig.sonioxApiKey),
+
+    typesafeApiKey: pickString(pluginConfig.typesafeApiKey),
     cartesiaApiKey: pickString(pluginConfig.cartesiaApiKey),
     debugNoisyPolicies: resolveDebugNoisyPolicies(
       pluginConfig.debugNoisyPolicies,
@@ -417,8 +501,37 @@ export function createRuntimeConfig(opts = {}) {
       openclawConfig,
       Reflect.get(opts, "logger"),
     ),
-    silentInputJev: resolveSilentInputJev(pluginConfig.silentInputJev, openclawConfig, env, pluginConfig),
+    liveuiJev: resolveLiveuiJev(pluginConfig.liveuiJev, openclawConfig, env, pluginConfig),
+    programCardsJev: resolveProgramCardsJev(pluginConfig.programCardsJev, openclawConfig, env, pluginConfig),
+    programCardsMcp: resolveProgramCardsMcp(pluginConfig.programCardsMcp),
+    programCardsModel: resolveProgramCardsMcp(pluginConfig.programCardsModel),
     freshnessWindowMs: parseIntOrDefault(pluginConfig.freshnessWindowMs, 5000),
+    tokenEfficiency: resolveTokenEfficiency(pluginConfig.tokenEfficiency),
+    liveuiV2: resolveLiveuiV2(pluginConfig.liveuiV2),
+  };
+}
+
+export function resolveLiveuiV2(value     ) {
+  const raw = isObject(value) ? value : {};
+  const names = (list         ) =>
+    Array.isArray(list)
+      ? [...new Set(list.filter((v) => typeof v === "string").map((v) => v.trim()).filter(Boolean))]
+      : [];
+  return {
+    pictureFolders: Array.isArray(raw.pictureFolders)
+      ? names(raw.pictureFolders).filter((p) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p))
+      : null,
+  };
+}
+
+export function resolveTokenEfficiency(raw     ) {
+  const cfg = isObject(raw) ? raw : {};
+  return {
+    glassesUiSchema: cfg.glassesUiSchema === "full" ? "full" : "flat",
+    glassesUiToolLoading: cfg.glassesUiToolLoading === "direct" ? "direct" : "catalog",
+    stableContextPlacement: cfg.stableContextPlacement === "turn" ? "turn" : "system",
+    liveuiTemplatesSchema: cfg.liveuiTemplatesSchema === "lean" ? "lean" : "full",
+    detailedTelemetry: cfg.detailedTelemetry === true,
   };
 }
 

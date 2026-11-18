@@ -10,38 +10,49 @@ import {
 } from "./cloudways-command.js";
 import { runCloudwaysSetup } from "./cloudways-setup.js";
 import { capabilityConsentLine } from "./capability-consent.js";
-
+import { doctorExitCode, renderDoctorText } from "./doctor-text.js";
+import { withDoctorCards } from "./overview-tool.js";
 import process from "node:process";
 
-export function registerOcuClawSetupCli(api, controller, pair = null) {
+async function openSetupLook(options     ) {
+  try {
+    const { resolveLook } = await import("./speck/model.js");
+    const { openLook } = await import("./speck/live.js");
+    return await openLook(resolveLook(options.look, process.env), process.stdin, process.stdout, { env: process.env });
+  } catch (_) {
+    return null;
+  }
+}
+
+export function registerOcuClawSetupCli(api     , controller     , pair      = null, cardSetup      = null) {
   if (!api || typeof api.registerCli !== "function") return;
   if (typeof controller !== "function") {
     throw new Error("registerOcuClawSetupCli requires the setup controller");
   }
 
   api.registerCli(
-    async ({ program }) => {
+    async ({ program }     ) => {
       const ocuclaw = program
         .command("ocuclaw")
         .description("Inspect OcuClaw setup and runtime state");
       ocuclaw.command("credential <capability>")
         .description("Privately save soniox, even-ai or typesafe credentials in this host terminal")
         .option("--replace", "Deliberately replace this capability's existing credential")
-        .action(async (capability, options) => {
+        .action(async (capability     , options     ) => {
           const result = await createOptionalCredentialCommand(api)(capability, options);
           process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
           process.exitCode = result.exitCode;
         });
       const evenAi = ocuclaw.command("even-ai <action>")
         .description("Inspect, enable, propose a private route, or verify Even AI: status|enable|route|verify")
-        .action(async (action) => {
+        .action(async (action     ) => {
           const result = await createEvenAiSetupCommand(api, controller)(action);
           evenAi.configureOutput().writeOut(`${JSON.stringify(result.report, null, 2)}\n`);
           process.exitCode = result.exitCode;
         });
       const diagnostics = ocuclaw.command("diagnostics [permission] [choice]")
         .description("Inspect diagnostics or change one permission: status|access allow|deny|handoff allow|deny")
-        .action(async (permission, choice) => {
+        .action(async (permission     , choice     ) => {
           const result = await createOptionalDiagnosticsCommand(api)(permission, choice);
           diagnostics.configureOutput().writeOut(`${JSON.stringify(result, null, 2)}\n`);
           process.exitCode = result.exitCode;
@@ -53,7 +64,7 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
 
         .option("--first-use-wait <seconds>", "Seconds to wait for the first phone reply (default 600)")
         .option("--test-input", "Label an automated terminal exercise; never record real wearer acceptance")
-        .action(async (options) => {
+        .action(async (options     ) => {
           const seconds = Number.parseInt(String(options?.firstUseWait ?? ""), 10);
           const result = await createFirstUseCommand(api)({
             ...options,
@@ -62,6 +73,28 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
           process.exitCode = result.exitCode;
         });
       for (const operation of OCUCLAW_SETUP_OPERATIONS) {
+        if (operation === "doctor") {
+
+          const doctorCommand = ocuclaw
+            .command("doctor")
+            .description("Check OcuClaw's setup and say what to fix (--json for the full report)")
+            .option("--json", "Print the full redacted report as JSON instead of text");
+          doctorCommand.action(async function writeDoctorResult(options     ) {
+            const output = doctorCommand.configureOutput();
+            const own = await controller("doctor", { surface: "cli" });
+
+            const report = options?.json ? await withDoctorCards(own, cardSetup) : own;
+            if (options?.json) {
+              output.writeOut(`${JSON.stringify(report, null, 2)}\n`);
+              const consentLine = capabilityConsentLine(report);
+              if (consentLine) output.writeErr(`${consentLine}\n`);
+            } else {
+              output.writeOut(renderDoctorText(report));
+            }
+            process.exitCode = doctorExitCode(report);
+          });
+          continue;
+        }
         const operationCommand = ocuclaw
           .command(operation)
           .description(`Print the redacted OcuClaw ${operation} result as JSON`);
@@ -78,7 +111,7 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
       const cloudways = ocuclaw
         .command("cloudways")
         .description("Manage the userspace Tailscale daemon on a Cloudways managed host");
-      const CLOUDWAYS_DESCRIPTIONS = {
+      const CLOUDWAYS_DESCRIPTIONS      = {
         detect: "Report whether this host is a Cloudways Managed AI Agents container",
         install: "Install the pinned userspace Tailscale binaries, state and host receipt",
         enroll: "Run tailscale up once and print the authorization link",
@@ -104,7 +137,7 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
           verbCommand.option("--yes", "Confirm removal; without it rollback refuses");
           verbCommand.option("--purge-identity", "Also delete the Tailscale identity in ~/.tailscale");
         }
-        verbCommand.action(async (options) => {
+        verbCommand.action(async (options     ) => {
           const result = await runCloudwaysVerb(verb, options || {});
           verbCommand.configureOutput().writeOut(renderCloudwaysOutput(result, options || {}));
           process.exitCode = result.exitCode;
@@ -121,20 +154,27 @@ export function registerOcuClawSetupCli(api, controller, pair = null) {
         .option("--no-pair", "Stop after the private route instead of pairing a phone")
         .option("--no-first-use", "Stop after pairing instead of confirming the first message")
         .option("--test-input", "Label an automated terminal exercise; never record real wearer acceptance")
-        .option("--light-terminal", "Render the pairing QR for a light terminal background")
+        .option("--light-terminal", "Does nothing; kept so older commands still run")
         .option("--hostname <name>", "Enroll a fresh identity under this tailnet node name")
-        .action(async (options) => {
-          const result = await runCloudwaysSetup(options || {}, {
-            api, controller, pair, firstUse: createFirstUseCommand(api),
-          });
+        .option("--look <name>", "How setup draws itself: speck (the default in the dashboard terminal) or plain")
+        .action(async (options     ) => {
+          const deps      = { api, controller, pair, firstUse: createFirstUseCommand(api) };
+
+          const look      = await openSetupLook(options || {});
+          let result      = null;
+          try {
+            result = await runCloudwaysSetup(options || {}, deps, look ? { ...look.io, env: process.env } : {});
+          } finally {
+            if (look) await look.close(result ? result.exitCode : 1);
+          }
           process.exitCode = result.exitCode;
         });
       if (typeof pair === "function") {
         ocuclaw.command("pair")
-          .description("Pair a phone directly in this terminal using QR or Manual and four safety words")
-          .option("--light-terminal", "Render the QR for a light terminal background")
+          .description("Pair a phone directly in this terminal by typing the phone code OcuClaw shows, then four safety words")
+          .option("--light-terminal", "Does nothing; kept so older commands still run")
           .option("--new-key", "Make a new relay key first: every paired phone is disconnected and must pair again")
-          .action(async (options) => {
+          .action(async (options     ) => {
             const result = await pair(options);
             process.exitCode = result.exitCode;
           });

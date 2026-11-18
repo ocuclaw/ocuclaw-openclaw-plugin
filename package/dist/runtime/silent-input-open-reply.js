@@ -3,8 +3,9 @@ import {
   findForbiddenKey,
   normalizeCandidateWord,
 } from "./input-prediction-shared.js";
+import { replyLanguageName } from "../domain/reply-language.js";
 
-export const SILENT_INPUT_OPEN_PROMPT_VERSION = "sio-3";
+export const SILENT_INPUT_OPEN_PROMPT_VERSION = "sio-4";
 
 export const SILENT_INPUT_OPEN_LIMITS = Object.freeze({
 
@@ -43,6 +44,25 @@ const REPLY_RE = /^[A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF0-9 ,.'!?:-]+$/
 const REPLY_LETTER_RE = /[A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF]/;
 const REPLY_RAW_CONTROL_OR_FORMAT_RE = /[\p{Cc}\p{Cf}]/u;
 
+const KO_REPLY_RE = /^[A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF0-9 ,.'!?:~\u3131-\u318E\uAC00-\uD7A3-]+$/;
+const KO_REPLY_LETTER_RE = /[\u3131-\u318E\uAC00-\uD7A3]/;
+const JA_REPLY_RE =
+  /^[A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF0-9 ,.'!?:\u3001\u3002\u3005\u300C\u300D\u3041-\u3096\u30A1-\u30FA\u30FB\u30FC\u4E00-\u9FFF\uFF01\uFF1F\uFF10-\uFF19-]+$/;
+const JA_REPLY_LETTER_RE = /[\u3005\u3041-\u3096\u30A1-\u30FA\u4E00-\u9FFF]/;
+
+export function replyScript(locale     ) {
+  const tag = typeof locale === "string" ? locale : "";
+  if (tag === "ko" || tag.startsWith("ko-")) return "ko";
+  if (tag === "ja" || tag.startsWith("ja-")) return "ja";
+  return "en";
+}
+
+const REPLY_ALPHABETS      = {
+  en: { all: REPLY_RE, letter: REPLY_LETTER_RE },
+  ko: { all: KO_REPLY_RE, letter: KO_REPLY_LETTER_RE },
+  ja: { all: JA_REPLY_RE, letter: JA_REPLY_LETTER_RE },
+};
+
 const OPEN_ASK_KEYS = "exactly two keys";
 const SMALL_ASK_KEYS = "exactly one key";
 const OPEN_ASK_WORDS_CLAUSE =
@@ -53,27 +73,38 @@ const OPEN_ASK_EXAMPLE =
   '"words":["yes","sure","sorry","later","tomorrow","meeting"]}';
 const SMALL_ASK_EXAMPLE = '{"replies":["On my way","Give me ten minutes"]}';
 
-function askShape(ask) {
+const KO_ASK_EXAMPLE = '{"replies":["지금 가는 중이에요","10분만 기다려 주세요"]}';
+const JA_ASK_EXAMPLE = '{"replies":["今向かっています","10分待ってください"]}';
+
+function askShape(ask     ) {
   const a = ask && typeof ask === "object" ? ask : SILENT_INPUT_OPEN_LIMITS;
   const maxReplies = Number.isFinite(a.maxReplies) ? a.maxReplies : SILENT_INPUT_OPEN_LIMITS.maxReplies;
   const promptWords = Number.isFinite(a.promptWords) ? a.promptWords : SILENT_INPUT_OPEN_LIMITS.promptWords;
   return { maxReplies, promptWords };
 }
 
-export function buildOpenReplyMessages(req, ask = SILENT_INPUT_OPEN_LIMITS) {
+export function buildOpenReplyMessages(req     , ask      = SILENT_INPUT_OPEN_LIMITS) {
   const locale = req && typeof req.locale === "string" && req.locale ? req.locale : "en";
   const english = locale === "en" ? "English " : "";
-  const { maxReplies, promptWords } = askShape(ask);
+
+  const script = replyScript(locale);
+  const language = script === "en" ? english : `${replyLanguageName(script)} `;
+  const { maxReplies, promptWords: askedWords } = askShape(ask);
+  const promptWords = script === "en" ? askedWords : 0;
   const keys = promptWords > 0 ? OPEN_ASK_KEYS : SMALL_ASK_KEYS;
   const wordsClause = promptWords > 0
     ? OPEN_ASK_WORDS_CLAUSE.replace("{n}", String(promptWords)).replace("{english}", english)
     : "";
-  const example = promptWords > 0 ? OPEN_ASK_EXAMPLE : SMALL_ASK_EXAMPLE;
+  const example = script === "ko"
+    ? KO_ASK_EXAMPLE
+    : script === "ja"
+      ? JA_ASK_EXAMPLE
+      : promptWords > 0 ? OPEN_ASK_EXAMPLE : SMALL_ASK_EXAMPLE;
   const system =
     "Someone wearing smart glasses is about to answer a short chat message. Typing is slow " +
     "for them: every word costs several gestures. Reply with ONLY a JSON object with " +
     `${keys}.\n` +
-    `"replies": at most ${maxReplies} different short whole ${english}replies they might send, ` +
+    `"replies": at most ${maxReplies} different short whole ${language}replies they might send, ` +
     "most likely first. Each is one plain sentence of at most eight words, no emoji, no " +
     "markdown, no names they have not been given.\n" +
     `${wordsClause}` +
@@ -87,7 +118,7 @@ export function buildOpenReplyMessages(req, ask = SILENT_INPUT_OPEN_LIMITS) {
   ];
 }
 
-function parseObjectText(text) {
+function parseObjectText(text     ) {
   if (typeof text !== "string") return null;
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -109,26 +140,28 @@ function parseObjectText(text) {
   return null;
 }
 
-export function normalizeWholeReply(raw) {
+export function normalizeWholeReply(raw     , locale      = "en") {
   if (typeof raw !== "string") return null;
   if (REPLY_RAW_CONTROL_OR_FORMAT_RE.test(raw)) return null;
   const collapsed = raw.normalize("NFC").replace(/ +/g, " ").replace(/^ +| +$/g, "");
-  if (!collapsed || collapsed.length > SILENT_INPUT_OPEN_LIMITS.maxReplyChars) return null;
-  if (!REPLY_RE.test(collapsed)) return null;
-  if (!REPLY_LETTER_RE.test(collapsed)) return null;
+  if (!collapsed || Array.from(collapsed).length > SILENT_INPUT_OPEN_LIMITS.maxReplyChars) return null;
+  const alphabet = REPLY_ALPHABETS[replyScript(locale)];
+  if (!alphabet.all.test(collapsed)) return null;
+  if (!alphabet.letter.test(collapsed)) return null;
   return collapsed;
 }
 
-export function parseOpenReplyText(text, ask = SILENT_INPUT_OPEN_LIMITS) {
+export function parseOpenReplyText(text     , ask      = SILENT_INPUT_OPEN_LIMITS, locale      = "en") {
   const parsed = parseObjectText(text);
   if (!parsed) return null;
   const { maxReplies } = askShape(ask);
+  const wordsAllowed = replyScript(locale) === "en";
   const replies = [];
   const seenReplies = new Set();
   let rejectedReplies = 0;
   const rawReplies = Array.isArray(parsed.replies) ? parsed.replies : [];
   for (const raw of rawReplies) {
-    const reply = normalizeWholeReply(raw);
+    const reply = normalizeWholeReply(raw, locale);
     if (!reply) { rejectedReplies += 1; continue; }
     const key = reply.toLowerCase();
     if (seenReplies.has(key)) { rejectedReplies += 1; continue; }
@@ -141,7 +174,7 @@ export function parseOpenReplyText(text, ask = SILENT_INPUT_OPEN_LIMITS) {
   let rejectedWords = 0;
   const rawWords = Array.isArray(parsed.words) ? parsed.words : [];
   for (const raw of rawWords) {
-    const word = normalizeCandidateWord(raw);
+    const word = wordsAllowed ? normalizeCandidateWord(raw) : null;
     if (!word) { rejectedWords += 1; continue; }
     if (seenWords.has(word.key)) { rejectedWords += 1; continue; }
     seenWords.add(word.key);
@@ -158,13 +191,13 @@ export function parseOpenReplyText(text, ask = SILENT_INPUT_OPEN_LIMITS) {
   };
 }
 
-function clampInt(raw, min, max, fallback) {
+function clampInt(raw     , min     , max     , fallback     ) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-export function normalizeOpenRequest(params) {
+export function normalizeOpenRequest(params     ) {
   if (!params || typeof params !== "object") {
     return { ok: false, status: "error", reason: "invalid-request: params must be an object" };
   }
@@ -217,7 +250,7 @@ export function normalizeOpenRequest(params) {
 
 export const OPEN_REPLY_MODEL_UNREACHABLE_REASON = "model-unreachable";
 
-const UNREACHABLE_CLASSES = [
+const UNREACHABLE_CLASSES      = [
   ["runtime-only", /agent runtime/i],
   ["unknown-model", /\bunknown model\b|no such model|model[ _]not[ _]found|is not a valid model|model does not exist|the model `[^`]{0,120}` does not exist/i],
   ["no-model", /\bno model\b/i],
@@ -225,9 +258,9 @@ const UNREACHABLE_CLASSES = [
   ["provider", /no llm provider configured|not configured|malformed custom endpoint url/i],
   ["host-refused", /^\s*Plugin LLM completion failed:/i],
 ];
-const MODEL_UNREACHABLE_RE = new RegExp(UNREACHABLE_CLASSES.map((entry) => `(?:${entry[1].source})`).join("|"), "i");
+const MODEL_UNREACHABLE_RE = new RegExp(UNREACHABLE_CLASSES.map((entry     ) => `(?:${entry[1].source})`).join("|"), "i");
 
-export function openReplyFailureClass(err) {
+export function openReplyFailureClass(err     ) {
   const message = err && typeof err.message === "string" ? err.message : String(err || "");
   if (err && (err.name === "AbortError" || err.code === "ABORT_ERR")) return "aborted";
   for (const [name, re] of UNREACHABLE_CLASSES) if (re.test(message)) return name;
@@ -236,7 +269,7 @@ export function openReplyFailureClass(err) {
   return "other";
 }
 
-export function classifyOpenReplyError(err) {
+export function classifyOpenReplyError(err     ) {
   const message = err && typeof err.message === "string" ? err.message : String(err || "");
   if (err && (err.name === "AbortError" || err.code === "ABORT_ERR")) {
     return { status: "cancelled", reason: "aborted" };
@@ -256,7 +289,7 @@ export function classifyOpenReplyError(err) {
   return { status: "error", reason: "upstream-error" };
 }
 
-export function openReplyResult(status, extra) {
+export function openReplyResult(status     , extra     ) {
   const base = {
     status,
     replies: [],
@@ -269,7 +302,7 @@ export function openReplyResult(status, extra) {
   return Object.assign(base, extra && typeof extra === "object" ? extra : {});
 }
 
-export function openReplyTelemetry(result, extra) {
+export function openReplyTelemetry(result     , extra     ) {
   const out = {
     status: result && result.status,
     replyCount: result && Array.isArray(result.replies) ? result.replies.length : 0,

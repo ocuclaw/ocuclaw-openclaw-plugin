@@ -166,7 +166,7 @@ export async function runCloudwaysVerb(verb     , options      = {}, deps      =
   return {
     exitCode: EXIT_REFUSED,
     report: { ok: false, error: `unknown verb: ${verb}` },
-    lines: [`openclaw ocuclaw cloudways verb ${verb}`],
+    lines: [`openclaw ocuclaw cloudways: unknown verb ${verb}`],
   };
 }
 

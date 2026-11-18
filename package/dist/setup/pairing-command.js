@@ -1,5 +1,6 @@
 import { classifyConfiguredRelayCredential } from "./relay-credential-provision.js";
 import { readPrivateRoute } from "./setup-live.js";
+import { configuredPhoneAddress } from "./custom-route.js";
 import { runPairingTerminal } from "./pairing-terminal.js";
 import { compatibilityStatus } from "./setup-controller.js";
 import {
@@ -8,11 +9,10 @@ import {
   REKEY_CONFIRMATION_WORD,
   REKEY_WARNING,
 } from "./relay-credential-rekey.js";
-
 import process from "node:process";
 
 export const TERMINAL_PAIRING_HOST_REQUIREMENT =
-  "an OpenClaw host inside the plugin's declared compatibility window (2026.7.1-2 or newer) with Node 20+; the recommended candidate is OpenClaw 2026.9.4 with Node 24.16+ within 24.x or 26.1+";
+  "an OpenClaw host inside the plugin's declared compatibility window (2026.9.5 or newer) with Node 24.16+ within 24.x or 26.1+";
 
 export const PAIR_PREREQUISITE_MESSAGES = Object.freeze({
   "verify-plugin": "OcuClaw is not loaded by your agent yet.",
@@ -22,6 +22,9 @@ export const PAIR_PREREQUISITE_MESSAGES = Object.freeze({
   "verify-private-route":
     "The private route for your phone is not ready. Tailscale must be installed,\nsigned in and serving the relay on this computer.",
 });
+
+export const PAIR_CUSTOM_ROUTE_MESSAGE =
+  "The private route for your phone is not ready. Check your phone address,\nyour TLS front door and its certificate on this computer.";
 
 export const PAIR_REFUSAL_NEXT_LINES = Object.freeze([
   "Run openclaw ocuclaw journey to see what is missing, then run openclaw ocuclaw pair again.",
@@ -75,11 +78,54 @@ export function terminalPairingCapability(api     ) {
     ? "available" : "unavailable";
 }
 
+export async function pairingPreflight(api     , controller     , deps      = {}, surface         = "cli") {
+  const refused = (reason        , code        ) => ({ ok: false         , reason, code });
+  const journey = await controller("journey", { surface });
+  if (!journey?.installation?.id || journey.capabilities?.pairing !== "available") return refused("The owning installation and pairing capability could not be verified.", journey?.installation?.id ? "pairing_capability" : "installation");
+  const live = api.runtime.config.current();
+
+  const customAddress = configuredPhoneAddress(api);
+  const required = ["verify-plugin", "verify-host", "configure-host", "verify-relay", "verify-private-route"];
+  const missing = required.find((id) => !journey.checkpoints?.some((c     ) => c.id === id && c.status === "complete"));
+  if (missing) {
+    const named      = PAIR_PREREQUISITE_MESSAGES;
+    if (missing === "verify-private-route" && customAddress !== null) return refused(PAIR_CUSTOM_ROUTE_MESSAGE, "custom_route");
+    return refused(named[missing] || "Your agent's OcuClaw setup is not finished yet.", `checkpoint:${missing}`);
+  }
+  let classified = classifyConfiguredRelayCredential(live);
+  let credential                     = classified === "present" ? live.plugins.entries.ocuclaw.config.relayToken : undefined;
+
+  if ((classified === "absent" || classified === "empty") && typeof deps.adoptedRelayCredential === "function") {
+    let adopted      = null;
+    try { adopted = deps.adoptedRelayCredential(); } catch (_) { adopted = null; }
+    if (typeof adopted === "string" && adopted.length > 0) {
+      classified = "present";
+      credential = adopted;
+    }
+  }
+
+  if (classified === "absent" || classified === "empty") return refused("OcuClaw is installed but your agent has not loaded it yet, so there is nothing for a phone to pair with. Make sure it is enabled (openclaw plugins enable ocuclaw) and the gateway has started it, then run openclaw ocuclaw doctor.", "not_loaded");
+  if (classified !== "present") return refused("The current credential is unreadable or ambiguous. Repair plugins.entries.ocuclaw.config.relayToken through an operator-owned OpenClaw surface; nothing was changed.", "credential_unreadable");
+  const port = journey.currentHealth?.privateRoute?.relay?.port;
+  let phoneAddress                    ;
+  const route = await (deps.readPrivateRoute ?? readPrivateRoute)(port, {
+    installation: journey.installation,
+    onVerifiedAddress: (address        ) => { phoneAddress = address; },
+    ...(customAddress !== null ? { phoneAddress: customAddress, host: journey.host ?? null, relayCredential: credential } : {}),
+  });
+  if (customAddress !== null) {
+
+    if (route?.mode !== "custom" || (route.status !== "healthy" && route.status !== "unverified") || !phoneAddress) return refused(PAIR_CUSTOM_ROUTE_MESSAGE, "custom_route");
+  } else if (route?.status !== "healthy" || route?.ownership?.status !== "owned" || !phoneAddress) return refused("The private phone route is not freshly verified and owned by this installation.", `route:${route?.status ?? "none"}:${route?.ownership?.status ?? "none"}:${phoneAddress ? "address" : "no_address"}`);
+  return { ok: true         , journey, port, credential: credential                      , phoneAddress: phoneAddress          , customAddress };
+}
+
 export function createTerminalPairingCommand(api     , controller     , deps      = {}) {
   return async function pair(options      = {}, io      = {}) {
     const input = io.input ?? process.stdin;
     const output = io.output ?? process.stdout;
     const error = io.error ?? process.stderr;
+    const env = io.env ?? process.env;
     const refuse = (reason        ) => {
 
       error.write(`${reason}\n${PAIR_REFUSAL_NEXT_LINES.join("\n")}\n`);
@@ -90,27 +136,11 @@ export function createTerminalPairingCommand(api     , controller     , deps    
     let credential                    ;
     let keyChanged = false;
     try {
-      const journey = await controller("journey", { surface: "cli" });
-      if (!journey?.installation?.id || journey.capabilities?.pairing !== "available") return refuse("The owning installation and pairing capability could not be verified.");
-      const required = ["verify-plugin", "verify-host", "configure-host", "verify-relay", "verify-private-route"];
-      const missing = required.find((id) => !journey.checkpoints?.some((c     ) => c.id === id && c.status === "complete"));
-      if (missing) {
-        const named      = PAIR_PREREQUISITE_MESSAGES;
-        return refuse(named[missing] || "Your agent's OcuClaw setup is not finished yet.");
-      }
-      const live = api.runtime.config.current();
-      const classified = classifyConfiguredRelayCredential(live);
-
-      if (classified === "absent" || classified === "empty") return refuse("OcuClaw is installed but your agent has not loaded it yet, so there is nothing for a phone to pair with. Make sure it is enabled (openclaw plugins enable ocuclaw) and the gateway has started it, then run openclaw ocuclaw doctor.");
-      if (classified !== "present") return refuse("The current credential is unreadable or ambiguous. Repair plugins.entries.ocuclaw.config.relayToken through an operator-owned OpenClaw surface; nothing was changed.");
-      credential = live.plugins.entries.ocuclaw.config.relayToken;
-      const port = journey.currentHealth?.privateRoute?.relay?.port;
-      let phoneAddress                    ;
-      const route = await (deps.readPrivateRoute ?? readPrivateRoute)(port, {
-        installation: journey.installation,
-        onVerifiedAddress: (address        ) => { phoneAddress = address; },
-      });
-      if (route?.status !== "healthy" || route?.ownership?.status !== "owned" || !phoneAddress) return refuse("The private phone route is not freshly verified and owned by this installation.");
+      const checked      = await pairingPreflight(api, controller, deps);
+      if (!checked.ok) return refuse(checked.reason);
+      const { journey, port, phoneAddress, customAddress } = checked;
+      credential = checked.credential;
+      checked.credential = undefined;
       if (options.newKey === true) {
 
         output.write(`\nWARNING: ${REKEY_WARNING}\n\n${REKEY_PROMPT_TEXT}`);
@@ -145,9 +175,13 @@ export function createTerminalPairingCommand(api     , controller     , deps    
         credential = rotated.credential;
         rotated = undefined;
       }
+
+      const dashboard = env.OPENCLAW_TERMINAL === "1" ? { dashboardTerminal: true } : {};
       return await (deps.runTerminal ?? runPairingTerminal)({
         port, relayCredential: credential, phoneAddress,
         installationId: journey.installation.id, lightTerminal: options.lightTerminal === true,
+        ...(customAddress !== null ? { customRoute: true } : {}),
+        ...dashboard,
       }, { ...io, input, output, error });
     } catch (_) {
 

@@ -1,11 +1,10 @@
 import * as crypto from "node:crypto";
-
 import * as fs from "node:fs";
 import { planOptionalSetupActivation } from "./optional-activation-policy.js";
 import { resolveHostConfigPath } from "./relay-credential-provision.js";
-import { optionalPluginConfig, saveOptionalCredential } from "./optional-credential-store.js";
+import { optionalPluginConfig, removeOptionalCredential, saveJevSwitchEnabled, saveOptionalCredential } from "./optional-credential-store.js";
 import { parseOptionalSetupRequest, optionalSetupFailure, optionalSetupResult } from "./optional-setup-protocol.js";
-import { OPENCLAW_BUNDLE_DEFAULT_WS_PORT } from "../config/runtime-config.js";
+import { OPENCLAW_BUNDLE_DEFAULT_WS_PORT, programCardSwitchEnabled, resolveLiveuiJev } from "../config/runtime-config.js";
 import { createOptionalDiagnosticsCommand } from "./optional-diagnostics-command.js";
 import { createOptionalEvenAiRouteService } from "./optional-even-ai-route.js";
 
@@ -19,6 +18,9 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
   const disconnected = new Set();
 
   const fields      = { soniox: "sonioxApiKey", even_ai: "evenAiToken", typesafe: "typesafeApiKey" };
+
+  const jevSwitches      = { liveui_jev: "liveuiJev", program_cards_jev: "programCardsJev",
+    program_cards_mcp: "programCardsMcp", program_cards_model: "programCardsModel" };
   let saving = false;
   const configApi = api?.runtime?.config;
   const routes = createOptionalEvenAiRouteService(api, { ...dependencies.route, now, readJourney: dependencies.readJourney });
@@ -31,6 +33,19 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
       return record.status === "completed" && record.confirmation?.source !== "test-input";
     } catch (_) { return null; }
   }
+
+  function jevSwitchEnabled(config     , name     ) {
+    const block = config?.[name];
+    if (!block || typeof block !== "object" || Array.isArray(block)) return false;
+    return block.enabled === true || block.enabled === "true";
+  }
+
+  function liveuiJevKeyAvailable(document     , config     ) {
+    try {
+      const block = config?.liveuiJev && typeof config.liveuiJev === "object" && !Array.isArray(config.liveuiJev) ? config.liveuiJev : {};
+      return !!resolveLiveuiJev(block, document, dependencies.env || (globalThis       ).process?.env || {}, config).apiKey;
+    } catch (_) { return null; }
+  }
   function revision(document     ) {
     const config = optionalPluginConfig(document);
 
@@ -38,6 +53,10 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
       typesafeApiKey: config.typesafeApiKey || "",
       evenAiEnabled: config.evenAiEnabled === true, relayToken: config.relayToken || "",
       access: config.externalDebugToolsEnabled === true, handoff: config.allowDebugUpload === true,
+      liveuiJev: config.liveuiJev?.enabled === true || config.liveuiJev?.enabled === "true",
+      programCardsJev: programCardSwitchEnabled(config.programCardsJev),
+      programCardsMcp: programCardSwitchEnabled(config.programCardsMcp),
+      programCardsModel: programCardSwitchEnabled(config.programCardsModel),
       wsPort: config.wsPort === undefined ? OPENCLAW_BUNDLE_DEFAULT_WS_PORT : config.wsPort,
       policy: planOptionalSetupActivation(document, api?.runtime?.version) };
     return crypto.createHmac("sha256", salt).update(JSON.stringify(guarded)).digest("hex");
@@ -64,7 +83,7 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
 
       if (hasInclude(document, 0)) return configApi.current();
       const config = optionalPluginConfig(document);
-      for (const field of ["sonioxApiKey", "evenAiToken"]) {
+      for (const field of ["sonioxApiKey", "evenAiToken", "typesafeApiKey"]) {
         const value = config[field];
         if (value !== undefined && (typeof value !== "string" || value.includes("${"))) return configApi.current();
       }
@@ -80,13 +99,25 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
     for (const field of ["sonioxApiKey", "evenAiToken", "typesafeApiKey"]) if (config[field] !== undefined && typeof config[field] !== "string") throw new Error("configuration_unknown");
     if (config.evenAiEnabled !== undefined && typeof config.evenAiEnabled !== "boolean") throw new Error("configuration_unknown");
     for (const field of ["externalDebugToolsEnabled", "allowDebugUpload"]) if (config[field] !== undefined && typeof config[field] !== "boolean") throw new Error("configuration_unknown");
+    const liveuiJev = jevSwitchEnabled(config, "liveuiJev");
+    const programCardsJev = programCardSwitchEnabled(config.programCardsJev);
+    const programCardsMcp = programCardSwitchEnabled(config.programCardsMcp);
+    const programCardsModel = programCardSwitchEnabled(config.programCardsModel);
     const loaded = typeof dependencies.readLoaded === "function" ? dependencies.readLoaded() : null;
+
+    const loadedLiveuiJev = loaded ? loaded.liveuiJev?.enabled === true : null;
+    const activeCards = dependencies.readCardSwitches?.();
+    const loadedProgramCardsJev = typeof activeCards?.jev === "boolean" ? activeCards.jev : null;
+    const loadedProgramCardsMcp = typeof activeCards?.mcp === "boolean" ? activeCards.mcp : null;
+    const loadedProgramCardsModel = typeof activeCards?.model === "boolean" ? activeCards.model : null;
     const currentRevision = revision(document);
     const signature = crypto.createHmac("sha256", salt).update(JSON.stringify({ currentRevision,
       loaded: loaded ? { sonioxApiKey: loaded.sonioxApiKey || "", evenAiToken: loaded.evenAiToken || "",
         typesafeApiKey: loaded.typesafeApiKey || "",
         evenAiEnabled: loaded.evenAiEnabled === true, access: loaded.externalDebugToolsEnabled === true,
-        handoff: loaded.allowDebugUpload === true } : null })).digest("hex");
+        handoff: loaded.allowDebugUpload === true, liveuiJev: loadedLiveuiJev,
+        programCardsJev: loadedProgramCardsJev,
+        programCardsMcp: loadedProgramCardsMcp } : null })).digest("hex");
     if (signature !== observedSignature) { observedSignature = signature; generation = crypto.randomUUID(); }
     const plan = planOptionalSetupActivation(document, api?.runtime?.version);
     const capabilities      = {};
@@ -96,7 +127,16 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
       const active = loaded && loaded[field] === config[field] && (capability !== "even_ai" || (config.evenAiEnabled === true && loaded.evenAiEnabled === true));
       capabilities[capability] = { present, state: !present ? "not_configured" : active ? "available_to_test" : "saved" };
     }
-    const required = Object.values(capabilities).some((row     ) => row.present && row.state !== "available_to_test");
+
+    const removedButLoaded = !!loaded && (Object.keys(fields).some((capability     ) => {
+      const field = fields[capability];
+      return !(typeof config[field] === "string" && config[field].trim()) && typeof loaded[field] === "string" && !!loaded[field].trim();
+    }) || (loaded.evenAiEnabled === true && config.evenAiEnabled !== true));
+    const required = Object.values(capabilities).some((row     ) => row.present && row.state !== "available_to_test")
+      || removedButLoaded || (loadedLiveuiJev !== null && loadedLiveuiJev !== liveuiJev)
+      || (loadedProgramCardsJev !== null && loadedProgramCardsJev !== programCardsJev)
+      || (loadedProgramCardsMcp !== null && loadedProgramCardsMcp !== programCardsMcp)
+      || (loadedProgramCardsModel !== null && loadedProgramCardsModel !== programCardsModel);
 
     let running = plan;
     try { running = planOptionalSetupActivation(configApi.current(), api?.runtime?.version); } catch (_) {  }
@@ -105,7 +145,11 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
       activation: { supported: hot, required, mode: hot ? "hot_reload" : "manual", affectsAllProfiles: false },
       diagnostics: { supported: true, access: config.externalDebugToolsEnabled === true, handoff: config.allowDebugUpload === true,
         activeAccess: loaded ? loaded.externalDebugToolsEnabled === true : null,
-        activeHandoff: loaded ? loaded.allowDebugUpload === true : null } } };
+        activeHandoff: loaded ? loaded.allowDebugUpload === true : null,
+        liveuiJev, activeLiveuiJev: loadedLiveuiJev, liveuiJevKeyAvailable: liveuiJevKeyAvailable(document, config),
+        programCardsJev, activeProgramCardsJev: loadedProgramCardsJev,
+        programCardsMcp, activeProgramCardsMcp: loadedProgramCardsMcp,
+        programCardsModel, activeProgramCardsModel: loadedProgramCardsModel } } };
   }
   function prune() {
     for (const [key, row] of transactions) if (row.expiresAtMs <= now()) transactions.delete(key);
@@ -147,9 +191,26 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
         if (diagnostics.revision !== current.revision) return optionalSetupFailure(request, "configuration_changed");
         saving = true;
         try {
-          const result = await createOptionalDiagnosticsCommand(api, {
-            checkDraft: (draft     ) => !disconnected.has(connectionId) && revision(draft) === diagnostics.revision,
-          })(diagnostics.permission, diagnostics.allowed ? "allow" : "deny");
+          const checkDraft = (draft     ) => !disconnected.has(connectionId) && revision(draft) === diagnostics.revision;
+
+          const block = jevSwitches[diagnostics.permission];
+          const result = block
+            ? await saveJevSwitchEnabled(api, block, diagnostics.allowed, { checkDraft })
+            : await createOptionalDiagnosticsCommand(api, { checkDraft })(diagnostics.permission, diagnostics.allowed ? "allow" : "deny");
+          if (result.status === "saved" && ["programCardsJev", "programCardsMcp", "programCardsModel"].includes(block)) {
+            const field = block === "programCardsJev" ? "jev" : block === "programCardsMcp" ? "mcp" : "model";
+            try {
+              const ack = await dependencies.applyCardSwitches?.({ [field]: diagnostics.allowed });
+              if (ack?.[field] !== diagnostics.allowed) result.status = "outcome_unknown";
+            } catch (_) { result.status = "outcome_unknown"; }
+          }
+
+          if (result.status === "saved" && block === "liveuiJev") {
+            try {
+              const ack = await dependencies.applyLiveuiJev?.({ enabled: diagnostics.allowed });
+              if (ack?.enabled !== diagnostics.allowed) result.status = "outcome_unknown";
+            } catch (_) { result.status = "outcome_unknown"; }
+          }
           diagnostics.state = result.status === "saved" ? "saved" : "unknown";
           return reply({ status: diagnostics.state === "saved" ? "saved" : "outcome_unknown", snapshot: read().snapshot, diagnostics });
         } finally { saving = false; }
@@ -157,20 +218,39 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
       if (request.operation === "credential.begin") {
         if (saving || transactions.size >= 64) return optionalSetupFailure(request, "busy");
         const field = fields[request.capability];
-        if (current.config[field] && request.intent !== "replace") return reply({ status: "preserved", code: "replacement_required", snapshot: current.snapshot });
+
+        const removable = !!current.config[field] || (request.capability === "even_ai" && current.config.evenAiEnabled === true);
+        if (request.intent === "remove" && !removable) return optionalSetupFailure(request, "configuration_changed");
+        if (current.config[field] && request.intent === "create") return reply({ status: "preserved", code: "replacement_required", snapshot: current.snapshot });
         for (const [key, row] of transactions) if (row.connectionId === connectionId) transactions.delete(key);
         const transaction = { id: crypto.randomUUID(), expiresAtMs: now() + 120000, capability: request.capability, intent: request.intent };
         transactions.set(transaction.id, { ...transaction, connectionId, revision: current.revision });
         return reply({ status: "ok", snapshot: current.snapshot, transaction });
       }
-      if (request.operation === "credential.cancel" || request.operation === "credential.save") {
+      if (request.operation === "credential.cancel" || request.operation === "credential.save" || request.operation === "credential.remove") {
         const transaction = transactions.get(request.transactionId);
         if (!transaction || transaction.connectionId !== connectionId) return optionalSetupFailure(request, "transaction_invalid");
         transactions.delete(request.transactionId);
         if (request.operation === "credential.cancel") return reply({ status: "cancelled", snapshot: current.snapshot });
+
+        if ((request.operation === "credential.remove") !== (transaction.intent === "remove")) return optionalSetupFailure(request, "transaction_invalid");
         if (saving) return optionalSetupFailure(request, "busy");
         if (transaction.revision !== current.revision) return optionalSetupFailure(request, "configuration_changed");
         saving = true;
+        if (request.operation === "credential.remove") {
+          try {
+            const field = fields[transaction.capability];
+            const removed = await removeOptionalCredential(api, field, {
+              previous: current.config[field], activationPlan: current.plan,
+              checkDraft: (draft     ) => !disconnected.has(connectionId) && revision(draft) === transaction.revision,
+            });
+            if (!removed) return optionalSetupFailure(request, "save_unconfirmed", "outcome_unknown");
+            return reply({ status: "removed", snapshot: read().snapshot });
+          } catch (err     ) {
+            api?.logger?.warn?.(`[ocuclaw] optional-setup credential.remove (${transaction.capability}) failed: ${err && err.message ? err.message : String(err)}`);
+            return optionalSetupFailure(request, "save_unconfirmed", "outcome_unknown");
+          } finally { saving = false; }
+        }
         try {
           const field = fields[transaction.capability];
           const saved = await saveOptionalCredential(api, field, request.credential, {
@@ -210,7 +290,13 @@ export function createOptionalSetupService(api     , dependencies      = {}) {
       return optionalSetupFailure(request, "unavailable", "outcome_unknown");
     }
   }
-  return { handle, disconnect(connectionId     ) {
+
+  function statusSnapshot() {
+    if (!supported()) return null;
+    const reply = optionalSetupResult({ requestId: "setup-next", operation: "status" }, { status: "ok", snapshot: read().snapshot });
+    return reply.snapshot ?? null;
+  }
+  return { handle, statusSnapshot, disconnect(connectionId     ) {
     routes.disconnect(connectionId);
     disconnected.add(connectionId);
     if (disconnected.size > 256) disconnected.delete(disconnected.values().next().value);

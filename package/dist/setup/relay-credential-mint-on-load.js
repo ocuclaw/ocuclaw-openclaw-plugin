@@ -3,6 +3,7 @@ import {
   describeRelayCredentialAmbiguity,
   PROVISION_RELAY_CREDENTIAL_OPERATION,
 } from "./relay-credential-provision.js";
+import { planOptionalSetupActivation } from "./optional-activation-policy.js";
 
 export const MINT_ON_LOAD_AFTER_WRITE = Object.freeze({
   mode: "none",
@@ -21,11 +22,11 @@ export const MINT_ON_LOAD_STATUS = Object.freeze({
   FAILED: "failed",
 });
 
-function isRecord(value) {
+function isRecord(value     ) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function readLiveRelayCredential(api) {
+export function readLiveRelayCredential(api     ) {
   const runtimeConfig = api?.runtime?.config;
   if (!runtimeConfig || typeof runtimeConfig.current !== "function") return null;
   let live;
@@ -38,7 +39,7 @@ export function readLiveRelayCredential(api) {
   return live.plugins.entries.ocuclaw.config.relayToken;
 }
 
-function outcome(status, fields = {}) {
+function outcome(status     , fields      = {}) {
   return {
     status,
     origin: null,
@@ -48,14 +49,14 @@ function outcome(status, fields = {}) {
   };
 }
 
-export function mintOnLoadSupported(api) {
+export function mintOnLoadSupported(api     ) {
   const runtimeConfig = api?.runtime?.config;
   return !!runtimeConfig &&
     typeof runtimeConfig.current === "function" &&
     typeof runtimeConfig.mutateConfigFile === "function";
 }
 
-export function createRelayCredentialMintOnLoad(api, deps = {}) {
+export function createRelayCredentialMintOnLoad(api     , deps      = {}) {
   const provision = isRecord(deps) && typeof deps.provision === "function" ? deps.provision : null;
   return async function mintRelayCredentialAtLoad() {
     if (!mintOnLoadSupported(api) || !provision) {
@@ -96,19 +97,19 @@ export function createRelayCredentialMintOnLoad(api, deps = {}) {
       });
     }
 
-    let receipt;
+    let receipt     ;
 
-    let persisted = null;
+    let persisted      = null;
     try {
       receipt = await provision(
         { operation: PROVISION_RELAY_CREDENTIAL_OPERATION },
         {
-          onPersisted(value) {
+          onPersisted(value     ) {
             persisted = typeof value === "string" && value.length > 0 ? value : null;
           },
         },
       );
-    } catch (err) {
+    } catch (err     ) {
       const code = typeof err?.code === "string" ? err.code : "mint_failed";
       if (code === "stale_precondition") {
 
@@ -151,5 +152,58 @@ export function createRelayCredentialMintOnLoad(api, deps = {}) {
       code: "minted-at-load",
       credential: minted,
     });
+  };
+}
+
+export const MINT_RELOAD_AFTER_WRITE = Object.freeze({ mode: "auto" });
+
+export const MINT_RELOAD_STATUS = Object.freeze({
+  RELOADING: "reloading",
+  SKIPPED: "skipped",
+  FAILED: "failed",
+});
+
+const CREDENTIAL_NOT_PERSISTED = Object.freeze({ code: "credential_not_persisted" });
+
+export function createRelayCredentialReloadAfterMint(api     , deps      = {}) {
+  const plan = isRecord(deps) && typeof deps.planActivation === "function"
+    ? deps.planActivation
+    : planOptionalSetupActivation;
+  return async function reloadAfterRelayCredentialMint() {
+    if (!mintOnLoadSupported(api)) {
+      return outcome(MINT_RELOAD_STATUS.SKIPPED, { code: "unsupported_host" });
+    }
+    let live;
+    try {
+      live = api.runtime.config.current();
+    } catch (_) {
+      return outcome(MINT_RELOAD_STATUS.SKIPPED, { code: "config_unreadable" });
+    }
+    const activation = plan(live, api?.runtime?.version);
+    if (!activation || !activation.afterWrite || activation.afterWrite.mode !== "auto") {
+      return outcome(MINT_RELOAD_STATUS.SKIPPED, {
+        code: "hot_reload_unavailable",
+        detail: activation && typeof activation.reason === "string" ? activation.reason : null,
+      });
+    }
+    try {
+      await api.runtime.config.mutateConfigFile({
+        afterWrite: { ...MINT_RELOAD_AFTER_WRITE },
+        mutate(draft     ) {
+
+          if (classifyConfiguredRelayCredential(draft) !== "present") throw CREDENTIAL_NOT_PERSISTED;
+          return { reloadAfterMint: true };
+        },
+      });
+    } catch (err     ) {
+      if (err === CREDENTIAL_NOT_PERSISTED) {
+        return outcome(MINT_RELOAD_STATUS.SKIPPED, { code: CREDENTIAL_NOT_PERSISTED.code });
+      }
+      return outcome(MINT_RELOAD_STATUS.FAILED, {
+        code: typeof err?.code === "string" ? err.code : "write_failed",
+        detail: typeof err?.message === "string" ? err.message : String(err),
+      });
+    }
+    return outcome(MINT_RELOAD_STATUS.RELOADING, { code: "reload-requested" });
   };
 }

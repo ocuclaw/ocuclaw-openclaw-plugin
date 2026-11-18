@@ -56,7 +56,7 @@ parentPort.on("message", async (message) => {
       return;
     }
     transport.handleMainMessage(message);
-  } catch (err) {
+  } catch (err     ) {
     parentPort.postMessage({
       kind: "worker.error",
       message: err && err.message ? err.message : String(err),

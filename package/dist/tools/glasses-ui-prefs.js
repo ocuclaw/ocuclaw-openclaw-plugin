@@ -9,6 +9,10 @@ export const LIVEUI_PREFS_FILENAME = "prefs-v1.json";
 
 export const LIVEUI_PREFS_CONTEXTS = Object.freeze(["isolated", "current_session"]);
 
+export const LIVEUI_VIDEO_SIZES                    = Object.freeze([288, 240, 192, 144, 96]);
+
+export const LIVEUI_VIDEO_SIZE_DEFAULT = 288;
+
 const PREFS_KEYS = new Set([
   "schemaVersion",
   "enabled",
@@ -16,14 +20,26 @@ const PREFS_KEYS = new Set([
   "defaultExecutor",
 
   "pauseApps",
+
+  "titleIcons",
+
+  "videoSpeed",
+
+  "videoSize",
+
+  "videoSubtitles",
   "digest",
 ]);
 
-function hasOnlyKeys(value, allowed) {
+export const PREFS_SAVED_SHAPE             = Object.freeze({ fields: [...PREFS_KEYS] });
+
+const PATCH_KEYS = ["enabled", "defaultContext", "defaultExecutor", "pauseApps", "titleIcons", "videoSpeed", "videoSize", "videoSubtitles"];
+
+function hasOnlyKeys(value     , allowed     ) {
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
-function validatePrefsRecord(record) {
+function validatePrefsRecord(record     ) {
   return !!record &&
     typeof record === "object" &&
     !Array.isArray(record) &&
@@ -33,11 +49,15 @@ function validatePrefsRecord(record) {
     LIVEUI_PREFS_CONTEXTS.includes(record.defaultContext) &&
     (record.defaultExecutor === null || isExecutorId(record.defaultExecutor)) &&
     typeof record.pauseApps === "boolean" &&
+    (record.titleIcons === undefined || typeof record.titleIcons === "boolean") &&
+    (record.videoSpeed === undefined || typeof record.videoSpeed === "boolean") &&
+    (record.videoSize === undefined || LIVEUI_VIDEO_SIZES.includes(record.videoSize)) &&
+    (record.videoSubtitles === undefined || typeof record.videoSubtitles === "boolean") &&
     typeof record.digest === "string" &&
     !!record.digest;
 }
 
-function isExecutorId(value) {
+function isExecutorId(value     ) {
   return typeof value === "string" && !!value.trim() && value.length <= 128;
 }
 
@@ -48,20 +68,31 @@ export function defaultLiveuiPrefsInput() {
     defaultContext: "isolated",
     defaultExecutor: null,
     pauseApps: false,
+    videoSubtitles: true,
   };
 }
 
-function rejected(code, message) {
+function rejected(code     , message     ) {
   return { status: "rejected", code, message };
 }
 
-export function normalizeLiveuiPrefsPatch(patch) {
+function withTitleIcons(record     ) {
+  return {
+    ...record,
+    titleIcons: record.titleIcons !== false,
+    videoSpeed: record.videoSpeed !== false,
+    videoSize: LIVEUI_VIDEO_SIZES.includes(record.videoSize) ? record.videoSize : LIVEUI_VIDEO_SIZE_DEFAULT,
+    videoSubtitles: record.videoSubtitles === true,
+  };
+}
+
+export function normalizeLiveuiPrefsPatch(patch     ) {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
     return rejected("prefs_patch_invalid", "prefs patch must be an object");
   }
-  const out = {};
+  const out      = {};
   for (const key of Object.keys(patch)) {
-    if (!["enabled", "defaultContext", "defaultExecutor", "pauseApps"].includes(key)) {
+    if (!PATCH_KEYS.includes(key)) {
       return rejected("prefs_field_unknown", `unknown prefs field: ${key}`);
     }
   }
@@ -76,6 +107,30 @@ export function normalizeLiveuiPrefsPatch(patch) {
       return rejected("prefs_value_invalid", "pauseApps must be a boolean");
     }
     out.pauseApps = patch.pauseApps;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "titleIcons")) {
+    if (typeof patch.titleIcons !== "boolean") {
+      return rejected("prefs_value_invalid", "titleIcons must be a boolean");
+    }
+    out.titleIcons = patch.titleIcons;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "videoSpeed")) {
+    if (typeof patch.videoSpeed !== "boolean") {
+      return rejected("prefs_value_invalid", "videoSpeed must be a boolean");
+    }
+    out.videoSpeed = patch.videoSpeed;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "videoSize")) {
+    if (!LIVEUI_VIDEO_SIZES.includes(patch.videoSize)) {
+      return rejected("prefs_value_invalid", `videoSize must be one of ${LIVEUI_VIDEO_SIZES.join(", ")}`);
+    }
+    out.videoSize = patch.videoSize;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "videoSubtitles")) {
+    if (typeof patch.videoSubtitles !== "boolean") {
+      return rejected("prefs_value_invalid", "videoSubtitles must be a boolean");
+    }
+    out.videoSubtitles = patch.videoSubtitles;
   }
   if (Object.prototype.hasOwnProperty.call(patch, "defaultContext")) {
     if (!LIVEUI_PREFS_CONTEXTS.includes(patch.defaultContext)) {
@@ -95,47 +150,59 @@ export function normalizeLiveuiPrefsPatch(patch) {
   return { status: "accepted", patch: out };
 }
 
-export function createLiveuiPrefs(opts = {}) {
+export function createLiveuiPrefs(opts      = {}) {
   const libraryDir = resolveLiveuiLibraryRoot(opts.libraryDir);
   const library = createLiveuiLibrary({ libraryDir, ...(opts.fs ? { fs: opts.fs } : {}) });
   const documentOptions = {
     defaultDigestInput: defaultLiveuiPrefsInput(),
     validateDocument: validatePrefsRecord,
+    shape: PREFS_SAVED_SHAPE,
   };
 
   function load() {
-    const loaded = library.loadDocument(LIVEUI_PREFS_FILENAME, documentOptions);
+    const loaded      = library.loadDocument(LIVEUI_PREFS_FILENAME, documentOptions);
     if (loaded.status === "accepted") {
-      return { status: "accepted", prefs: loaded.record };
+      return { status: "accepted", prefs: withTitleIcons(loaded.record) };
     }
 
     const digestInput = defaultLiveuiPrefsInput();
     return {
       status: "accepted",
-      prefs: { ...digestInput, digest: liveuiLibraryDigest(digestInput) },
+      prefs: withTitleIcons({ ...digestInput, digest: liveuiLibraryDigest(digestInput) }),
       prefsInvalid: loaded.reason || "library_document_malformed",
     };
   }
 
-  function save(patch) {
-    const normalized = normalizeLiveuiPrefsPatch(patch);
+  function save(patch     ) {
+    const normalized      = normalizeLiveuiPrefsPatch(patch);
     if (normalized.status !== "accepted") return normalized;
-    const current = load();
-    const digestInput = {
-      schemaVersion: LIVEUI_PREFS_SCHEMA_VERSION,
+    const current      = load();
+    const { titleIcons, videoSpeed, videoSize, videoSubtitles, ...next } = {
       enabled: current.prefs.enabled,
       defaultContext: current.prefs.defaultContext,
       defaultExecutor: current.prefs.defaultExecutor,
       pauseApps: current.prefs.pauseApps,
+      titleIcons: current.prefs.titleIcons,
+      videoSpeed: current.prefs.videoSpeed,
+      videoSize: current.prefs.videoSize,
+      videoSubtitles: current.prefs.videoSubtitles,
       ...normalized.patch,
     };
-    const saved = library.saveDocument(LIVEUI_PREFS_FILENAME, digestInput, {
+    const digestInput = {
+      schemaVersion: LIVEUI_PREFS_SCHEMA_VERSION,
+      ...next,
+      ...(titleIcons === false ? { titleIcons: false } : {}),
+      ...(videoSpeed === false ? { videoSpeed: false } : {}),
+      ...(videoSize !== LIVEUI_VIDEO_SIZE_DEFAULT ? { videoSize } : {}),
+      videoSubtitles,
+    };
+    const saved      = library.saveDocument(LIVEUI_PREFS_FILENAME, digestInput, {
       ...documentOptions,
 
       ...(current.prefsInvalid ? {} : { expectedDigest: current.prefs.digest }),
     });
     if (saved.status !== "saved") return saved;
-    return { status: "saved", prefs: saved.record, previous: current.prefs };
+    return { status: "saved", prefs: withTitleIcons(saved.record), previous: current.prefs };
   }
 
   return { libraryDir, load, save };
@@ -155,12 +222,12 @@ export function liveuiDisabledResult() {
 }
 
 export function liveuiDisabledError() {
-  const err = new Error(`${LIVEUI_DISABLED_CODE}: ${LIVEUI_DISABLED_MESSAGE}`);
+  const err      = new Error(`${LIVEUI_DISABLED_CODE}: ${LIVEUI_DISABLED_MESSAGE}`);
   err.code = LIVEUI_DISABLED_CODE;
   return err;
 }
 
-export function isLiveuiSwitchedOff(handler) {
+export function isLiveuiSwitchedOff(handler     ) {
   try {
     return handler.liveuiPrefs().prefs.enabled === false;
   } catch (_) {

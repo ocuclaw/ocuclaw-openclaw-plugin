@@ -2,7 +2,7 @@ import { substituteTemplate } from "./glasses-ui-template.js";
 
 const ITEMS_FROM_PATH_RE = /^\$(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[\d+\]))*\[\]$/;
 
-export function validateItemsFromPath(path) {
+export function validateItemsFromPath(path     ) {
   const dangerousSegment =
     typeof path === "string" &&
     path
@@ -21,7 +21,7 @@ export function validateItemsFromPath(path) {
   return { ok: true };
 }
 
-function resolveArray(path, output) {
+function resolveArray(path     , output     ) {
   const withoutTerminalArray = path.slice(1, -2);
   const normalized = withoutTerminalArray.replace(/\[(\d+)\]/g, ".$1");
   const segments = normalized.split(".").filter(Boolean);
@@ -40,18 +40,18 @@ function resolveArray(path, output) {
   return cursor;
 }
 
-function wrapForTemplate(value) {
+function wrapForTemplate(value     ) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return { ...value, output: value };
   }
   return { output: value };
 }
 
-function utf8Bytes(value) {
+function utf8Bytes(value     ) {
   return new TextEncoder().encode(JSON.stringify(value)).length;
 }
 
-export function mapArrayItems(params) {
+export function mapArrayItems(params     ) {
   const source = resolveArray(params.itemsFromPath, params.output);
   if (!Array.isArray(source)) {
     return {
@@ -89,7 +89,7 @@ export function mapArrayItems(params) {
     const label = rawLabel.slice(0, params.limits.itemMax);
     if (label.length !== rawLabel.length) clampedFields += 1;
     if (params.surfaceKind === "list_surface") return label;
-    const item = { label };
+    const item      = { label };
     if (typeof params.itemTemplate.body === "string") {
       const rawBody = substituteTemplate(params.itemTemplate.body, data, { previous });
       item.body = rawBody.slice(0, params.limits.detailBodyMax);

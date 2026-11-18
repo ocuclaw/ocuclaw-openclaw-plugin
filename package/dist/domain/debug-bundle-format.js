@@ -1,3 +1,5 @@
+import { voiceDiagnosticPriority } from "./voice-attempt-summary.js";
+
 export function sanitizeCategoryFilename(cat        ) {
   return cat.replace(/\./g, "-") + ".jsonl";
 }
@@ -12,7 +14,7 @@ const INCIDENT_EVENTS = new Set([
   "ptt_review_entered", "ptt_confirmed", "ptt_handoff_completed", "ptt_cancelled", "ptt_redo", "voice_handoff_committed",
 ]);
 export function isIncidentEvent(event     ) {
-  return event.severity === "warn" || event.severity === "error" ||
+  return voiceDiagnosticPriority(event) > 0 || event.severity === "warn" || event.severity === "error" ||
     ["screen.nav", "session.timeline", "liveui.library.events"].includes(event.cat) || INCIDENT_EVENTS.has(event.event);
 }
 
@@ -47,7 +49,7 @@ export function bucketEventsToFiles(input     ) {
     const cap = typeof perCategoryBytesCap === "number" && perCategoryBytesCap > 0 ? perCategoryBytesCap : Infinity;
     bytes = 0;
     const priority = list.map((event, index) => ({ event, index }))
-      .sort((a, b) => Number(isIncidentEvent(b.event)) - Number(isIncidentEvent(a.event)) || b.index - a.index);
+      .sort((a, b) => voiceDiagnosticPriority(b.event) - voiceDiagnosticPriority(a.event) || Number(isIncidentEvent(b.event)) - Number(isIncidentEvent(a.event)) || b.index - a.index);
     for (const { index } of priority) {
       if (lineBytes[index] > cap - bytes) continue;
       kept.add(index);

@@ -17,11 +17,11 @@ function buildValueTable() {
   return table;
 }
 
-function valueOfLevel(level, steps) {
+function valueOfLevel(level     , steps     ) {
   return Math.pow(2, level / steps);
 }
 
-function createReader(text) {
+function createReader(text     ) {
   const stream = String(text || "");
   let at = 0;
   function skipBreaks() {
@@ -57,7 +57,7 @@ function createReader(text) {
   };
 }
 
-function decodePairs(packed, wordCount) {
+function decodePairs(packed     , wordCount     ) {
   const reader = createReader(packed);
   const prevIds = [];
   const rowStarts = [];
@@ -88,7 +88,7 @@ function decodePairs(packed, wordCount) {
   };
 }
 
-function decodeScores(packed) {
+function decodeScores(packed     ) {
   const reader = createReader(packed);
   const out = [];
   while (!reader.done) {
@@ -98,10 +98,10 @@ function decodeScores(packed) {
   return Float64Array.from(out);
 }
 
-export function decodeSilentInputTables(sources) {
+export function decodeSilentInputTables(sources     ) {
   const s = sources && typeof sources === "object" ? sources : {};
-  const words = String(s.wordsRaw || "").split(/\s+/).filter((w) => w.length > 0);
-  const keys = words.map((w) => w.toLowerCase());
+  const words = String(s.wordsRaw || "").split(/\s+/).filter((w     ) => w.length > 0);
+  const keys = words.map((w     ) => w.toLowerCase());
   const indexOfKey = new Map();
 
   for (let i = 0; i < keys.length; i += 1) if (!indexOfKey.has(keys[i])) indexOfKey.set(keys[i], i);
@@ -115,7 +115,7 @@ export function decodeSilentInputTables(sources) {
     scores,
     pairs,
 
-    rowOf(prevId) {
+    rowOf(prevId     ) {
       const ids = pairs.prevIds;
       let low = 0;
       let high = ids.length - 1;
@@ -128,14 +128,14 @@ export function decodeSilentInputTables(sources) {
       return -1;
     },
 
-    prevIdOfKey(key) {
+    prevIdOfKey(key     ) {
       const index = indexOfKey.get(String(key || "").toLowerCase());
       return index === undefined ? -1 : index + 1;
     },
   };
 }
 
-let cached = null;
+let cached      = null;
 
 export function silentInputTables() {
   if (!cached) {

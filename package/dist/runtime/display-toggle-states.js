@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const DEFAULTS = { emoji: false, pace: false, beat: false };
+const DEFAULTS = { emoji: false, pace: false, beat: false, speck: false };
 const STORE_FILENAME = "ocuclaw-display-toggles.json";
 
 export function createDisplayToggleTracker(opts = {}) {
@@ -18,6 +18,7 @@ export function createDisplayToggleTracker(opts = {}) {
       emoji: !!(v && v.emoji),
       pace: !!(v && v.pace),
       beat: !!(v && v.beat),
+      speck: !!(v && v.speck),
     };
   }
 

@@ -1,10 +1,11 @@
 import { bucketEventsToFiles, renderBundleReadme, isIncidentEvent } from "./debug-bundle-format.js";
-import { redactEvents } from "./debug-bundle-redaction.js";
+import { redactEvents, scrubSecretShapes } from "./debug-bundle-redaction.js";
 import { zipFiles, sha256Hex } from "./debug-bundle-zip.js";
 import { strToU8 } from "fflate";
 import { countLanes } from "./debug-retention.js";
 import { sanitizeVersionMismatch } from "./debug-version-verdict.js";
 import { snapshotHealthSummary } from "./debug-health-summary.js";
+import { voiceDiagnosticPriority } from "./voice-attempt-summary.js";
 
 const LIVEUI_LANE = ["glasses.lifecycle", "openclaw.message", "evenai"];
 const SCHEMA_VERSION = 1;
@@ -14,10 +15,11 @@ const CATEGORY_SERIALIZED_BYTES_CAP = 4_194_304;
 
 export function sanitizeCaptureState(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const out = {};
+  const out      = {};
   const str = (k, max) => {
     const v = raw[k];
-    if (typeof v === "string" && v.length > 0) out[k] = v.slice(0, max);
+
+    if (typeof v === "string" && v.length > 0) out[k] = scrubSecretShapes(v.slice(0, max + 256)).slice(0, max);
   };
   const bool = (k) => {
     if (typeof raw[k] === "boolean") out[k] = raw[k];
@@ -32,21 +34,20 @@ export function sanitizeCaptureState(raw) {
   bool("displayDrainComplete");
   num("menuDepth");
   num("readSpeedWpm");
-  str("streamPageAdvanceMode", 40);
   const mismatch = sanitizeVersionMismatch(raw.versionMismatch);
   if (mismatch) out.versionMismatch = mismatch;
   return Object.keys(out).length > 0 ? out : null;
 }
 
-export function dedupeReportEvents(events) {
-  const result = [];
+export function dedupeReportEvents(events     ) {
+  const result      = [];
   const seen = new Map();
-  const canonical = (value) => {
+  const canonical = (value     )      => {
     if (Array.isArray(value)) return value.map(canonical);
     if (!value || typeof value !== "object") return value;
     return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
   };
-  const signatureOf = (event) => {
+  const signatureOf = (event     ) => {
     const { source, clientId, ...originalData } = event.data || {};
     return JSON.stringify(canonical({ cat: event.cat, event: event.event,
       severity: event.severity, screen: event.screen || null, runId: event.runId || null, data: originalData }));
@@ -72,10 +73,10 @@ export function dedupeReportEvents(events) {
   return result;
 }
 
-const incidentFirstOrder = (a, b) =>
-  Number(isIncidentEvent(a)) - Number(isIncidentEvent(b)) || a.ts - b.ts || (a.seq || 0) - (b.seq || 0);
+const incidentFirstOrder = (a     , b     ) =>
+  voiceDiagnosticPriority(a) - voiceDiagnosticPriority(b) || Number(isIncidentEvent(a)) - Number(isIncidentEvent(b)) || a.ts - b.ts || (a.seq || 0) - (b.seq || 0);
 
-function trimCuts(total, detailTotal) {
+function trimCuts(total     , detailTotal     ) {
   const cuts = [];
   let left = total;
   let detail = detailTotal;
@@ -99,9 +100,14 @@ export function assembleBundle(dumpResult, opts) {
 
   const events = redactEvents(dumpResult.events, { mode: opts.redactionMode });
 
-  const full = buildArtifacts(events, dumpResult, appliedQuery,
+  const reservedRaw = Array.isArray(opts.reservedEvents) ? opts.reservedEvents : [];
+  const reserved = reservedRaw.length ? redactEvents(reservedRaw, { mode: opts.redactionMode }) : [];
+  const counted = reserved.length ? { ...dumpResult, events: reservedRaw.concat(dumpResult.events || []) } : dumpResult;
+  const withReserved = (rows     ) => (reserved.length ? reserved.concat(rows) : rows);
+
+  const full = buildArtifacts(withReserved(events), counted, appliedQuery,
     { ...opts, zipOmitted: { phone: 0, relay: 0 } }, opts.ringCappedWindow);
-  const done = (built) => ({ zip: built.zip, bundleSha256: built.bundleSha256, metadata: built.metadata,
+  const done = (built     ) => ({ zip: built.zip, bundleSha256: built.bundleSha256, metadata: built.metadata,
     partCount: partCountFor(built.zip, opts.chunkBytes), files: built.files });
 
   const maxZipBytes = opts.maxZipBytes;
@@ -115,14 +121,14 @@ export function assembleBundle(dumpResult, opts) {
   const steps = cuts.length;
 
   const zipBytes = new Map();
-  let best = null;
-  const buildStep = (step) => {
+  let best      = null;
+  const buildStep = (step     ) => {
     const cut = cuts[step - 1];
 
-    return buildArtifacts(ordered.slice(cut), dumpResult, appliedQuery,
+    return buildArtifacts(withReserved(ordered.slice(cut)), counted, appliedQuery,
       { ...opts, zipOmitted: countLanes(ordered.slice(0, cut)) }, true);
   };
-  const fits = (step) => {
+  const fits = (step     ) => {
     if (!zipBytes.has(step)) {
       const built = buildStep(step);
       zipBytes.set(step, built.zip.length);
@@ -157,13 +163,13 @@ export function assembleBundle(dumpResult, opts) {
     }
   }
   while (high - low > 1) {
-    const mid = (low + high) >> 1;
+    const mid      = (low + high) >> 1;
     if (fits(mid)) high = mid; else low = mid;
   }
   return done(best && best.step === high ? best.built : buildStep(high));
 }
 
-function partCountFor(zip, chunkBytes) {
+function partCountFor(zip     , chunkBytes     ) {
   const safeChunkBytes = Math.max(1, chunkBytes | 0);
   return Math.max(1, Math.ceil(zip.length / safeChunkBytes));
 }
@@ -180,7 +186,7 @@ function buildArtifacts(events, dumpResult, appliedQuery, opts, ringCapped) {
   const finalCounts = countLanes(retainedEvents);
   const categoryOmitted = countLanes(omittedEvents);
   const inputCounts = countLanes(dumpResult.events || []);
-  const lanes = {};
+  const lanes      = {};
   for (const name of ["relay", "phone"]) {
     const source = opts.lanes?.[name] || { status: name === "phone" ? "missing" : "ok" };
     const laneRows = retainedEvents.filter((event) => (event.source === "phone" ? "phone" : "relay") === name);
@@ -191,7 +197,7 @@ function buildArtifacts(events, dumpResult, appliedQuery, opts, ringCapped) {
         toMs = toMs === null ? event.ts : Math.max(toMs, event.ts);
       }
     }
-    lanes[name] = { ...source, events: finalCounts[name], selectedEvents: inputCounts[name],
+    lanes[name] = { ...source, ...(name === "relay" && dumpResult.voiceSummaryRetention ? { voiceSummaryRetention: dumpResult.voiceSummaryRetention } : {}), events: finalCounts[name], selectedEvents: inputCounts[name],
       categoryOmitted: categoryOmitted[name], zipOmitted: opts.zipOmitted[name], fromMs, toMs,
       detailUnavailableEvents: laneRows.filter(event => event.data?.detailUnavailable === true).length };
   }
@@ -246,6 +252,12 @@ function buildArtifacts(events, dumpResult, appliedQuery, opts, ringCapped) {
     files.set(name, content);
     summary.totalBytes += strToU8(content).length;
   }
+
+  for (const [name, content] of Array.isArray(opts.extraFiles) ? opts.extraFiles : []) {
+    if ((name !== "cards.jsonl" && name !== "tasks.jsonl") || typeof content !== "string" || files.has(name)) continue;
+    files.set(name, content);
+    summary.totalBytes += strToU8(content).length;
+  }
   const contentNames = [...files.keys()].filter((n) => n !== "metadata.json").sort();
   const concat = contentNames.map((n) => files.get(n)).join("");
   const contentSha256 = sha256Hex(strToU8(concat));
@@ -264,12 +276,13 @@ function buildArtifacts(events, dumpResult, appliedQuery, opts, ringCapped) {
     ring: { events: dumpResult.ringEvents, capacity: dumpResult.ringCapacity },
     lanes,
     retentionAccountingVersion: 1,
+    voiceDiagnostics: { version: 1, summarySchema: 1, missingStages: "unobserved" },
     phoneDiagnostics: opts.clientDiagnostics?.metadata || { status: "missing" },
     totalBytes: summary.totalBytes,
     contentSha256,
     build: opts.build,
     ...(opts.connectionHealthDocument ? snapshotHealthSummary(opts.connectionHealthDocument) : {}),
-    installId: opts.installId,
+    installId: typeof opts.installId === "string" ? scrubSecretShapes(opts.installId) : opts.installId,
     redactionMode: opts.redactionMode,
     secretsStripped: true,
     categories: summary.categories,
@@ -288,11 +301,11 @@ function buildArtifacts(events, dumpResult, appliedQuery, opts, ringCapped) {
   return { files, summary, metadata, zip, bundleSha256 };
 }
 
-export function chunkZip(zip, chunkBytes) {
+export function chunkZip(zip     , chunkBytes     ) {
   return chunkZipRange(zip, chunkBytes, 0, Infinity);
 }
 
-export function chunkZipRange(zip, chunkBytes, fromIndex, count) {
+export function chunkZipRange(zip     , chunkBytes     , fromIndex     , count     ) {
   const safeChunkBytes = Math.max(1, chunkBytes | 0);
   const partCount = partCountFor(zip, safeChunkBytes);
   const first = Math.max(0, Math.floor(fromIndex) || 0);

@@ -10,6 +10,11 @@ export const FIRST_USE_WAITING_MESSAGE = "Waiting for the phone reply.";
 export const FIRST_USE_REARMED_MESSAGE =
   "First-message check restarted for the phone you just paired.";
 
+export const FIRST_USE_RECONNECTED_MESSAGE =
+  "Your phone reconnected, so the check restarted. If you already sent your message, send it again.";
+
+export const FIRST_USE_RECONNECT_REARMS = 3;
+
 export const FIRST_USE_REPLY_MESSAGE = "Phone reply received.";
 
 export const FIRST_USE_ALREADY_COMPLETE_MESSAGE =
@@ -32,10 +37,12 @@ export const FIRST_USE_PROVIDER_ERROR_LEAD =
 export const FIRST_USE_MODEL_LOGIN_COMMAND = "openclaw models auth add";
 export const FIRST_USE_MODEL_CHECK_COMMAND = "openclaw models status --probe";
 
+export const FIRST_USE_CLAUDE_LOGIN_COMMAND = "claude auth login";
+
 export function firstUseProviderErrorClassLine(errorClass     , retry     , login     , check     ) {
   switch (errorClass) {
     case "auth":
-      return `The model provider rejected the sign-in. Sign in to the model again (\`${login}\`), then run ${retry} and send a fresh message.`;
+      return `The model provider rejected the sign-in. Sign in to the model again (\`${login}\`; on a Claude plan, \`${FIRST_USE_CLAUDE_LOGIN_COMMAND}\`), then run ${retry} and send a fresh message.`;
     case "quota":
       return `The model account is out of quota or has a billing problem. Check the plan or billing for this model, then run ${retry} and send a fresh message.`;
     case "rate_limit":
@@ -150,6 +157,9 @@ export async function awaitFirstUseReply(io     ) {
   let lastNotice = now();
 
   let rearmed = false;
+
+  let heldSinceRearm = false;
+  let reconnectRearms = 0;
   let lastGoodStatus = typeof io.initialStatus === "string" ? io.initialStatus : null;
   let openAppSaid = false;
 
@@ -161,18 +171,25 @@ export async function awaitFirstUseReply(io     ) {
     if (!polled || polled.ok !== true) {
       const reason = (polled && polled.reason) || "unavailable";
 
-      if (FIRST_USE_REARM_REASONS.includes(reason) && !rearmed && lastGoodStatus === "awaiting-reply") {
-        rearmed = true;
+      const settling = now() - startedAt < phoneSettleMs;
+
+      const reconnected = rearmed && !settling && heldSinceRearm && reconnectRearms < FIRST_USE_RECONNECT_REARMS;
+      if (FIRST_USE_REARM_REASONS.includes(reason) && (!rearmed || settling || reconnected) && lastGoodStatus === "awaiting-reply") {
         const again = await call({ operation: "first_use_retry" });
         if (cancelled()) return outcomeOf("cancelled");
-        if (again && again.ok === true && again.record) {
-          lastGoodStatus = again.record.status || null;
-          say(FIRST_USE_REARMED_MESSAGE);
-          continue;
+        if (!again || again.ok !== true || !again.record) {
+          return outcomeOf("unavailable", null, (again && again.reason) || "unavailable");
         }
-        return outcomeOf("unavailable", null, (again && again.reason) || "unavailable");
-      }
-      if (FIRST_USE_PHONE_WAIT_REASONS.includes(reason)) {
+        lastGoodStatus = again.record.status || null;
+        if (!rearmed) say(FIRST_USE_REARMED_MESSAGE);
+        else if (reconnected) {
+          reconnectRearms += 1;
+          say(FIRST_USE_RECONNECTED_MESSAGE, "action");
+        }
+        rearmed = true;
+        heldSinceRearm = false;
+
+      } else if (FIRST_USE_PHONE_WAIT_REASONS.includes(reason)) {
         if (!openAppSaid && now() - startedAt >= phoneSettleMs) {
           openAppSaid = true;
           say(FIRST_USE_OPEN_APP_NOTICE, "action");
@@ -184,6 +201,7 @@ export async function awaitFirstUseReply(io     ) {
       const record = polled.record || null;
       const status = record ? record.status : null;
       if (status) lastGoodStatus = status;
+      heldSinceRearm = true;
 
       if (status === "awaiting-reply" && record && record.replyRunErrored) {
         const code = record.replyRunErrored.code;

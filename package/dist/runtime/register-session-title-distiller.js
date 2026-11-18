@@ -10,7 +10,7 @@ function genRunId() {
 
 const HIDDEN_AGENT_FALLBACK_BEFORE = [2026, 8, 0];
 
-export function hostAllowsHiddenAgentFallback(hostVersion) {
+export function hostAllowsHiddenAgentFallback(hostVersion     ) {
   if (typeof hostVersion !== "string") return false;
   const match = hostVersion.trim().match(/^(\d{4})\.(\d+)\.(\d+)/);
   if (!match) return false;

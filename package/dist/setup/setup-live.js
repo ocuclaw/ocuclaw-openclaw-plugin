@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createPrivateRouteReader } from "./private-route.js";
+import { createCustomRouteReader } from "./custom-route.js";
 import { daemonSummary } from "./cloudways.js";
 
 const JOURNEY_METHOD = "ocuclaw.setup.journey";
@@ -31,7 +32,7 @@ export async function readLiveSetupJourney(local     ) {
     if (typeof sdk.callGatewayFromCli !== "function") return local;
     const result = await sdk.callGatewayFromCli(JOURNEY_METHOD,
 
-      { timeout: "12000", json: true }, { installationId: local.installation.id },
+      { timeout: "30000", json: true }, { installationId: local.installation.id },
 
       { scopes: ["operator.read"], progress: false, clientName: "gateway-client", mode: "backend", deviceIdentity: null });
     if (result?.operation !== "journey" || result?.installation?.id !== local.installation.id) return local;
@@ -41,7 +42,13 @@ export async function readLiveSetupJourney(local     ) {
   }
 }
 
-export const readPrivateRoute = createPrivateRouteReader();
+const readServeRoute = createPrivateRouteReader();
+const readCustomRoute = createCustomRouteReader();
+export function readPrivateRoute(relayPort     , context      = {}) {
+  return context && typeof context.phoneAddress === "string"
+    ? readCustomRoute(relayPort, context)
+    : readServeRoute(relayPort, context);
+}
 
 export async function readTailnetDaemon() {
   try {

@@ -2,6 +2,7 @@ import {
   PAIRING_ENDPOINT_CONTENT_TYPE,
   PAIRING_MAX_REQUEST_BODY_BYTES,
 } from "./pairing-endpoint-address.js";
+import { EXCHANGE_ID_PATTERN } from "./pairing-exchange.js";
 
 export const PAIRING_MAX_POSTS_PER_WINDOW = 12;
 export const PAIRING_RATE_WINDOW_MS = 60_000;
@@ -200,6 +201,14 @@ export function createPairingEndpointService(
         if (type !== "pairing.poll") {
           producedAfterSequence = nextOutboxSequence;
           await deliverToCore(frame                );
+
+          if (type !== "pairing.manual-request") {
+            for (let i = outbox.length - 1; i >= 0; i -= 1) {
+              const entry = outbox[i]               ;
+              if (entry.sequence <= producedAfterSequence) break;
+              if (entry.exchangeId === null) outbox.splice(i, 1);
+            }
+          }
         }
       }
 
@@ -211,7 +220,7 @@ export function createPairingEndpointService(
       if (owns) {
 
         frames = outbox
-          .filter((entry) => entry.exchangeId === null || entry.exchangeId === claimedExchangeId)
+          .filter((entry) => entry.exchangeId === claimedExchangeId)
           .map((entry) => JSON.parse(JSON.stringify(entry.frame))                );
       } else if (type === "pairing.manual-request") {
 
@@ -245,6 +254,8 @@ export function createPairingEndpointService(
     const exchangeId = hello?.exchangeId;
     const confirmation = hello?.confirmation;
     if (typeof exchangeId !== "string" || typeof confirmation !== "string") return false;
+
+    if (!EXCHANGE_ID_PATTERN.test(exchangeId)) return false;
     if (!frameHandler) return false;
 
     await deliverToCore({

@@ -18,7 +18,7 @@ npm is the explicit fallback (`openclaw plugins install npm:ocuclaw`) and
 carries beta builds (`openclaw plugins install npm:ocuclaw@beta`).
 
 On OpenClaw 2026.9 and later the install asks you to confirm (`y/N`). It lists
-what OcuClaw may do: 8 tools (draw on your glasses, manage LiveUI templates and
+what OcuClaw may do: 9 tools (draw on your glasses, manage LiveUI templates and
 tasks, read the glasses and device state, set session titles, read your
 location, run setup) and 2 skills (the glasses UI guide and the Setup
 Assistant). Answer `y` to install. ClawHub may ask twice; answer `y` both times.
@@ -50,6 +50,69 @@ retyping. Until that first load the plugin is unconfigured and does not open
 the relay listener. An existing credential is never replaced. To keep the relay
 off on purpose, disable the plugin (`openclaw plugins disable ocuclaw`); an
 emptied credential is refilled at the next load.
+
+## Conversation access
+
+OcuClaw reads and writes the conversation your glasses are paired to: it puts
+the agent's replies on the glasses and your spoken words into the
+conversation. OpenClaw only runs a plugin's conversation hooks when
+`plugins.entries.ocuclaw.hooks.allowConversationAccess` is `true`, so the
+first time the plugin loads without it, it sets it on its own entry. Nothing
+else in your configuration changes. Where OpenClaw can reload plugins in place
+(the default on 2026.9.5), this takes effect at once. Otherwise it takes effect
+at the next gateway start. Install consent does not set this key.
+
+To keep it off, set it to `false`
+(`openclaw config set plugins.entries.ocuclaw.hooks.allowConversationAccess false --strict-json`).
+OcuClaw never changes a `false`. While it is off, OpenClaw blocks the OcuClaw
+hooks that read the conversation, so the glasses features that need them do
+not work.
+
+## Your own private network (instead of Tailscale)
+
+Tailscale is the default and needs nothing here. If you already run your own
+private network (WireGuard, UniFi Teleport, ZeroTier, NetBird, OpenVPN or your
+home network), you can use it instead:
+
+- `phoneAddress`: the `wss://name:port` address your phone dials. Leave it
+  unset to use Tailscale.
+
+What you provide:
+
+1. A name your phone resolves to this computer's **private** address
+   (`10/8`, `172.16/12`, `192.168/16`, `100.64/10` or `fc00::/7`), with a
+   publicly trusted certificate for that name. A Let's Encrypt DNS challenge
+   works for a name that points at a private address.
+2. A TLS front door on this computer that forwards to the relay's loopback
+   port, the job Tailscale Serve does otherwise. With Caddy:
+
+   ```
+   ocuclaw.home.example.com:8444 {
+     reverse_proxy 127.0.0.1:<relay port>
+   }
+   ```
+
+3. The address:
+
+```bash
+openclaw config set plugins.entries.ocuclaw.config.phoneAddress wss://ocuclaw.home.example.com:8444
+```
+
+Then run `openclaw ocuclaw journey` and `openclaw ocuclaw pair` as usual. Setup
+checks that the name resolves to private addresses only, that the certificate
+passes the checks your phone applies, and that the front door leads to this
+relay. It never changes your network, proxy, DNS or certificates. A public
+address is refused. If this computer cannot reach its own address (some VPNs do
+not route a host back to itself), setup says it could not check, and pairing
+still goes ahead: the phone connecting is the proof. To go back to Tailscale,
+run `openclaw config unset plugins.entries.ocuclaw.config.phoneAddress`.
+
+Even AI uses the phone address too, with no `:8443` route: `openclaw ocuclaw
+even-ai route` prints the Agent URL `https://<name>:<port>/v1/chat/completions`
+(no `:443`). The phone must be on that private network, and the front door must
+forward everything at that address to the relay, not only the WebSocket. The
+LiveUI video exit node stays Tailscale-only. Cloudways hosts do not support
+`phoneAddress`.
 
 ## Voice
 

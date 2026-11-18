@@ -2,16 +2,16 @@ import process from "node:process";
 import { planOptionalSetupActivation } from "./optional-activation-policy.js";
 import { saveOptionalCredential } from "./optional-credential-store.js";
 
-const FIELDS = { soniox: "sonioxApiKey", "even-ai": "evenAiToken", typesafe: "typesafeApiKey" };
+const FIELDS      = { soniox: "sonioxApiKey", "even-ai": "evenAiToken", typesafe: "typesafeApiKey" };
 
-const GUIDANCE = {
+const GUIDANCE      = {
   soniox: "Soniox live transcription: open https://console.soniox.com, choose your project, then API keys. Enable real-time speech-to-text, temporary API keys and model listing. Model sign-in does not provide Soniox access.\n",
   "even-ai": "Enter the private Even AI token for this runtime. This is separate from the phone Relay Credential.\n",
 
-  typesafe: "Smart word order (silent input) uses TypeSafe: open https://typesafe.ai, sign in and create an API key. Saving it here arms ranking on this host; the phone turns the row on after its Check.\n",
+  typesafe: "LiveUI Jev, the Bot Screen's Jev mode and Jev in program cards use TypeSafe: open https://typesafe.ai, sign in and create an API key. Saving the key is not a consent: each feature keeps its own switch on the phone.\n",
 };
 
-export function readPrivateCredential(input = process.stdin, output = process.stderr) {
+export function readPrivateCredential(input      = process.stdin, output      = process.stderr)      {
   if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") {
     return Promise.resolve({ state: "terminal_required" });
   }
@@ -21,7 +21,7 @@ export function readPrivateCredential(input = process.stdin, output = process.st
     const wasRaw = input.isRaw === true;
 
     const wasFlowing = input.readableFlowing === true;
-    const finish = (result) => {
+    const finish = (result     ) => {
       if (finished) return;
       finished = true;
       input.removeListener("data", onData);
@@ -34,7 +34,7 @@ export function readPrivateCredential(input = process.stdin, output = process.st
       resolve(result);
     };
     const onEnd = () => finish({ state: "cancelled" });
-    const onData = (chunk) => {
+    const onData = (chunk     ) => {
       for (const character of String(chunk)) {
         if (character === "\u0003" || character === "\u0004" || character === "\u001b") {
           finish({ state: "cancelled" });
@@ -63,7 +63,7 @@ export function readPrivateCredential(input = process.stdin, output = process.st
   });
 }
 
-function pluginConfig(document, create = false) {
+function pluginConfig(document     , create      = false)      {
   let node = document;
   for (const key of ["plugins", "entries", "ocuclaw", "config"]) {
     if (!node || typeof node !== "object" || Array.isArray(node)) throw new Error("ambiguous_config");
@@ -75,10 +75,10 @@ function pluginConfig(document, create = false) {
   return node;
 }
 
-export function createOptionalCredentialCommand(api, dependencies = {}) {
-  const write = dependencies.write || ((text) => process.stderr.write(text));
+export function createOptionalCredentialCommand(api     , dependencies      = {}) {
+  const write = dependencies.write || ((text     ) => process.stderr.write(text));
   const read = dependencies.readPrivate || (() => readPrivateCredential());
-  return async (capability, options = {}) => {
+  return async (capability     , options      = {}) => {
     const field = FIELDS[capability];
     if (!Object.prototype.hasOwnProperty.call(FIELDS, capability)) {
       return { exitCode: 2, status: "invalid_capability" };
@@ -87,8 +87,8 @@ export function createOptionalCredentialCommand(api, dependencies = {}) {
     if (typeof config?.current !== "function" || typeof config?.mutateConfigFile !== "function") {
       return { exitCode: 1, status: "unsupported_host", instruction: "Use a supported OpenClaw host with private configuration input. Never paste credentials into chat." };
     }
-    let previous;
-    let activationPlan;
+    let previous     ;
+    let activationPlan     ;
     try {
       const observed = config.current();
       previous = pluginConfig(observed)[field];
@@ -102,7 +102,7 @@ export function createOptionalCredentialCommand(api, dependencies = {}) {
         instruction: `Existing credential preserved. To deliberately replace it, run openclaw ocuclaw credential ${capability} --replace.` };
     }
     write(GUIDANCE[capability]);
-    let entered;
+    let entered     ;
     try { entered = await read(); } catch (_) { return { exitCode: 1, status: "input_unavailable" }; }
     if (entered?.state !== "entered") {
       const status = ["cancelled", "terminal_required", "invalid_input"].includes(entered?.state) ? entered.state : "input_unavailable";

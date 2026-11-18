@@ -1,9 +1,9 @@
 # Availability and focused recovery
 
-**Guide version:** 2026-09-28 (1.0.59)
+**Guide version:** 2026-10-28 (1.0.60)
 
 Read on fresh installation, missing/failed controller, version mismatch or recovery.
-Use SKILL.md's capability-first controller routing and existing step procedures.
+Use controller-routing.md's capability-first controller routing and existing step procedures.
 Keep the same OpenClaw profile/wrapper, installation, backend and phone session.
 
 ## Public packages versus prepared instructions
@@ -25,19 +25,20 @@ never a separate thing to refresh or reinstall.
 A separately installed copy of this assistant still wins over the plugin's,
 silently. `openclaw skills info ocuclaw-assist --json` reports the active copy
 with its `source`; `openclaw-extra` is the bundled one. Any other source is a
-shadow: name it, have the user clear it, and continue. The removal is
-host-version dependent. `openclaw skills remove ocuclaw-assist` works where that
-verb exists; OpenClaw 2026.7.x has no `skills remove`, so there the user deletes
-the folder holding the `filePath` the listing reported. Check
-`openclaw skills --help` before naming one. The journey read's `assistantSkill`
-block reports the same condition with its own `nextAction`.
+shadow: name it, have the user clear it, and continue. The removal depends on
+the host. `openclaw skills remove ocuclaw-assist` works where that verb exists;
+where it does not, the user deletes the folder holding the `filePath` the
+listing reported. Check `openclaw skills --help` before naming one. The journey
+read's `assistantSkill` block reports the same condition with its own
+`nextAction`.
 
-The recommended candidate host is OpenClaw **2026.9.x** (2026.9.4 parity-tested;
-2026.9.6 install and update lab-tested), whose npm metadata requires Node
-**>=24.16.0 <25 || >=26.1.0**. The bundle host floor
-is **>=2026.7.1-2** (the release Cloudways ships), with package Node metadata **>=20**; the host's stricter
-Node requirement still applies. These are separate facts. This guide does not
-raise manifests or authorize a live host upgrade.
+The bundle host floor is **>=2026.9.5**, the release Cloudways runs. OpenClaw
+2026.9.5's npm metadata requires Node **>=24.16.0 <25 || >=26.1.0**. The
+package's own Node metadata says **>=20**, but the host's stricter Node
+requirement still applies. A host below the floor must upgrade OpenClaw before
+it installs or updates OcuClaw: installs and updates refuse it (troubleshooting
+case `HOST-OLD`). This guide does not raise manifests, and a live host upgrade
+still needs the person's OK.
 
 Terminal `pair` and `first-use` exist in prepared source following the pairing
 and first-use merges. Neither public channel above supplies them. Use them only
@@ -71,7 +72,7 @@ question.
 **The consent is ONE final message.** The whole disclosure and the question go
 in the same reply, and that reply is your final message for the turn. It
 contains, in this order: what installs (or updates) and from which source; the
-8 tools; the 2 skills; that OpenClaw asks its own capability approval, which
+20 tools; the 1 skill; that OpenClaw asks its own capability approval, which
 this yes answers; the exact fenced command; and last, the question. Never put
 any of it in an interim, progress or commentary message before the question,
 and never follow it with a second, shorter message that restates the question.
@@ -80,11 +81,13 @@ lost, and the person would approve access they never saw. A drafted consent
 message without the tool list, the skill list and a command block is malformed:
 discard it and send this one:
 
-> Step 2 installs OcuClaw from <source>. It adds 8 tools (`render_glasses_ui`,
-> `manage_liveui_templates`, `manage_liveui_tasks`, `get_glasses_ui_state`,
-> `set_session_title`, `get_evenrealities_device_info`,
-> `get_current_location`, `ocuclaw_setup`) and 2 skills (`glasses-ui`,
-> `ocuclaw-assist`). OpenClaw asks its own approval for these capabilities.
+> Step 2 installs OcuClaw from <source>. It adds 20 tools
+> (`compose_glasses_ui`, `manage_liveui_templates`, `manage_liveui_tasks`,
+> `get_glasses_ui_state`, `set_session_title`,
+> `get_evenrealities_device_info`, `get_current_location`, `save_glasses_card`,
+> `ocuclaw_setup`, `write_glasses_card`, `ask_glasses_card`,
+> `look_glasses_card`, `glasses_card_command`, `edit_glasses_card`, `glasses_card_draft`,
+> `request_card_mcp_write`, `request_host_command`, `request_card_setup`, `get_ocuclaw_settings`, `set_ocuclaw_setting`) and 2 skills (`ocuclaw-assist`, `weekly-review-planning`). OpenClaw asks its own approval for these capabilities.
 > Your yes here answers it: I add `--accept-capabilities` only when this
 > host's `--help` lists it. If you'd rather answer OpenClaw's prompt
 > yourself, say so and I'll give you the command for your own terminal.
@@ -114,13 +117,13 @@ openclaw plugins install npm:ocuclaw@beta --force    # confirmed beta tester onl
 ```
 
 Tell them OpenClaw asks its own capability approval there (`y/N`; ClawHub may
-ask twice: proceed, then capabilities), and that the answer is theirs. Never
-tell them to accept it, and never hand over the probed command on this path:
+ask twice: proceed, then capabilities), and that the answer is theirs. Do not
+urge them to accept it, and never hand over the probed command on this path:
 the flag pre-accepts, so no prompt appears and the command would consent for
 them. Answering `y` installs it. Then run the step's VERIFY as usual.
 
 Probe the host's command contract before every install or update. Branch on
-`--help`, never on the version number: OpenClaw 2026.7.x rejects
+`--help`, never on the version number: a host without the flag rejects
 `--accept-capabilities` as an unknown option.
 
 ```bash
@@ -129,7 +132,7 @@ u=(); openclaw plugins update --help 2>&1 | grep -q -- '--accept-capabilities' &
 ```
 
 After the yes, run the selected command with the probed flag. Each array is
-empty on hosts without the flag, so these are the plain 2026.7.x commands there:
+empty on hosts without the flag, so these are the plain commands there:
 
 ```bash
 openclaw plugins install clawhub:ocuclaw "${f[@]}"             # stable
@@ -153,13 +156,15 @@ On a shell without bash arrays, run the `--help` check yourself and add
   consent substitute.
 - **Updates can ask too.** `plugins update` needs consent when the new version
   adds tools or skills. It also needs it on the first update after the host
-  moved from 2026.7.x to 9.x, because the old install record holds no approval.
+  moved from 2026.7.x to 9.x, because the old install record does not store the
+  earlier consent.
   Use the same ask-once checkpoint and the probed `u` flag.
 - A source advisory can be informational, but a consent refusal is a failed
   install or update: do not continue to enable or claim it succeeded. Ask the
   question above, or hand the command to the person's terminal.
-- Consent does not grant conversation access. Keep fresh-install Step 4's
-  `allowConversationAccess` config on every host version.
+- Consent does not grant conversation access. OcuClaw sets
+  `allowConversationAccess` itself at first load; keep fresh-install Step 4's
+  check on every host version.
 - After a host upgrade from 2026.7.x, OpenClaw may refuse every command until
   its own state migration runs (`state database schema migration required …
   run openclaw doctor --fix`). That is the host's upgrade step, not OcuClaw's.
@@ -223,12 +228,12 @@ other Runtime Bundles, session affinity or unrelated host configuration.
 
 ## Private human actions and credential reset
 
-The user runs pairing in their own terminal; `--light-terminal` only changes QR
-contrast. Compare four safety words and type `approve` (any letter case) only for the intended
+The user runs pairing in their own terminal and types the phone code OcuClaw
+shows (`--light-terminal` is kept for older commands and does nothing). Compare four safety words and type `approve` (any letter case) only for the intended
 exchange. A typo is asked again and never approves; mismatch, timeout and cancellation do not approve. Never capture
-QR, code, safety words or credential values in agent tools, transcripts or logs.
+the phone code, pairing code, safety words or credential values in agent tools, transcripts or logs.
 
-First-use confirmation is the user's exact `SEEN ON G2` in their terminal after
+First-use confirmation is the user's own `yes` to "Did the reply appear on your Even G2? [yes/no]" in their terminal after
 seeing that reply on the glasses. Never issue it for them. `--test-input` is
 automation-only and cannot establish a wearer verdict or real core completion.
 

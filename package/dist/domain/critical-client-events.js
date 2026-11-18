@@ -24,6 +24,8 @@ export const PHONE_CRITICAL_EVENT_NAMES = Object.freeze([
   "startup_default_session_requested",
   "message_screen_reentry_requested",
   "stale_thinking_recovered",
+
+  "card_studio_press",
 ]);
 
 export const FORCED_CLIENT_EVENT_NAMES = Object.freeze([
@@ -34,7 +36,7 @@ export const FORCED_CLIENT_EVENT_NAMES = Object.freeze([
 
 const forcedNames = new Set(FORCED_CLIENT_EVENT_NAMES);
 
-export function isForcedClientEvent(payload) {
+export function isForcedClientEvent(payload     ) {
   if (!payload || typeof payload !== "object") return false;
   if (forcedNames.has(payload.event)) return true;
   return !!(

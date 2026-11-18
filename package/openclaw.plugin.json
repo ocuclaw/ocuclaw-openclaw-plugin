@@ -11,21 +11,33 @@
     }
   ],
   "name": "OcuClaw",
-  "description": "OcuClaw for Even Realities G2 smart glasses.",
+  "description": "OcuClaw for Even Realities G2 smart glasses. It reads and writes the conversation your glasses are paired to, and turns that access on for itself when it first loads.",
   "contracts": {
     "tools": [
-      "render_glasses_ui",
+      "compose_glasses_ui",
       "manage_liveui_templates",
       "manage_liveui_tasks",
       "get_glasses_ui_state",
       "set_session_title",
+      "ask_glasses_card",
       "get_evenrealities_device_info",
       "get_current_location",
-      "ocuclaw_setup"
+      "save_glasses_card",
+      "ocuclaw_setup",
+      "write_glasses_card",
+      "look_glasses_card",
+      "glasses_card_command",
+      "edit_glasses_card",
+      "glasses_card_draft",
+      "request_card_mcp_write",
+      "request_host_command",
+      "request_card_setup",
+      "get_ocuclaw_settings",
+      "set_ocuclaw_setting"
     ]
   },
   "toolMetadata": {
-    "render_glasses_ui": {
+    "compose_glasses_ui": {
       "configSignals": [
         {
           "rootPath": "plugins.entries.ocuclaw.config",
@@ -65,6 +77,14 @@
         }
       ]
     },
+    "ask_glasses_card": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
     "get_evenrealities_device_info": {
       "configSignals": [
         {
@@ -80,11 +100,99 @@
           "required": ["relayToken"]
         }
       ]
+    },
+    "save_glasses_card": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "write_glasses_card": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "look_glasses_card": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "glasses_card_command": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "edit_glasses_card": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "glasses_card_draft": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "request_card_mcp_write": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "request_host_command": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "request_card_setup": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "get_ocuclaw_settings": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
+    },
+    "set_ocuclaw_setting": {
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.ocuclaw.config",
+          "required": ["relayToken"]
+        }
+      ]
     }
   },
   "skills": [
-    "skills/glasses-ui",
-    "skills/ocuclaw-assist"
+    "skills/ocuclaw-assist",
+    "skills/weekly-review-planning"
   ],
   "hooks": {
     "allowConversationAccess": true
@@ -96,9 +204,31 @@
       "placeholder": "user-defined password",
       "sensitive": true
     },
+    "phoneAddress": {
+      "label": "Phone address (own private network)",
+      "help": "Leave empty to use Tailscale. Set it only if you run your own private network (WireGuard, UniFi Teleport, ZeroTier, NetBird, home network) and a TLS front door on this host with a trusted certificate. Example: wss://ocuclaw.home.example.com:8444",
+      "placeholder": "wss://ocuclaw.home.example.com:8444",
+      "advanced": true
+    },
     "glassesUiLive.httpHostPolicy": {
       "label": "LiveUI HTTP host policy",
       "help": "owner-grants lets the paired phone owner approve exact hosts. Use operator-only on shared or hosted installs.",
+      "advanced": true
+    },
+    "liveuiJev.enabled": {
+      "label": "Enable LiveUI Jev decider",
+      "help": "Off by default: arming this sends the wearer's transcript text to a third-party API (api.typesafe.ai) for a pre-turn render judgment. Strictly opt-in per gateway. Only a literal true arms it; a saved TypeSafe key never arms it by itself. The phone's LiveUI settings switch writes this flag. Read at plugin load: a host with config hot reload applies a change at once, otherwise it takes a gateway restart.",
+      "advanced": true
+    },
+    "liveuiJev.apiKey": {
+      "label": "TypeSafe API key",
+      "help": "Optional override for the LiveUI Jev decider's TypeSafe key. Leave it empty to use the shared saved key (typesafeApiKey, the one Silent input uses), then TYPESAFE_API_KEY in the gateway's env block, then the process environment. Read at plugin load.",
+      "sensitive": true,
+      "advanced": true
+    },
+    "liveuiJev.budgetMs": {
+      "label": "LiveUI Jev decider budget (ms)",
+      "help": "Wall-clock budget from firing the TypeSafe request (at the send) to using its answer (at prompt build); past it the turn proceeds with no block. Default 800: the prompt build cannot run before the ~600 ms gateway hop, so a smaller value never waits, it only discards slow answers. Clamped 50-5000.",
       "advanced": true
     },
     "sonioxApiKey": {
@@ -108,7 +238,7 @@
     },
     "typesafeApiKey": {
       "label": "TypeSafe API key",
-      "help": "Optional. Saved from the phone's Silent input settings; arms smart word order (TypeSafe ranking) for the glasses keyboard.",
+      "help": "Optional. Saved from the phone's settings. The key the LiveUI Jev decider uses once liveuiJev.enabled is on, and Jev in programmable cards uses while programCardsJev.enabled is on. Saving it turns neither on. Silent input does not use it.",
       "sensitive": true
     },
     "cartesiaApiKey": {
@@ -133,7 +263,7 @@
     },
     "sessionTitleModel": {
       "label": "Session-title model",
-      "help": "Optional model override (\"provider/model\") for the background session-title distiller. This is a lightweight background task, so a small, fast, inexpensive model is a good choice (e.g. anthropic/claude-haiku-4-5). Leave blank to use your normal model.",
+      "help": "Optional model override (\"provider/model\") for the background session-title distiller. This is a lightweight background task, so a small, fast, inexpensive model is a good choice, such as the one you use as OpenClaw's utility model. Leave blank to use your normal model.",
       "advanced": true
     },
     "evenAiRoutingMode": {
@@ -213,19 +343,34 @@
       "advanced": true
     },
     "silentInputJev.enabled": {
-      "label": "Enable silent input Jev ranker",
-      "help": "Off by default: arming this sends the wearer's draft, and the message they are answering, to a third-party API (api.typesafe.ai), which ranks words the host builds instead of a reasoning model writing them. Strictly opt-in per gateway. Only a literal true arms it. Changing this or the key takes a gateway restart.",
+      "label": "Silent input Jev ranker (retired, ignored)",
+      "help": "Retired: Silent input no longer uses TypeSafe, and nothing reads this flag. Kept only so older configs that still carry it keep validating.",
       "advanced": true
     },
     "silentInputJev.apiKey": {
-      "label": "TypeSafe API key (silent input)",
-      "help": "API key for the silent input Jev ranker's TypeSafe calls. Falls back to TYPESAFE_API_KEY in the gateway's env block, then the process environment. Read once at start; rotating it takes a gateway restart.",
+      "label": "TypeSafe API key (silent input, retired, ignored)",
+      "help": "Retired: nothing reads this key. Kept only so older configs that still carry it keep validating. The shared TypeSafe key is typesafeApiKey.",
       "sensitive": true,
       "advanced": true
     },
     "silentInputJev.budgetMs": {
-      "label": "Silent input Jev budget (ms)",
-      "help": "Wall-clock budget for the ranking request. Past it the word keeps the keyboard's own local ranking, with no error shown. Default 2500, measured: a real 8-question request took 1.6 s cold and 1.35 s warm. Clamped 200-5000.",
+      "label": "Silent input Jev budget (retired, ignored)",
+      "help": "Retired: nothing reads this value. Kept only so older configs that still carry it keep validating.",
+      "advanced": true
+    },
+    "programCardsJev.enabled": {
+      "label": "Enable Jev in programmable cards",
+      "help": "On by default: lets programmable cards ask Jev (TypeSafe) the questions they declare, with the saved TypeSafe key (typesafeApiKey, then TYPESAFE_API_KEY in the gateway's env block, then the process environment). Without a key it does nothing. Each ask sends the data that card declares to a third-party API (api.typesafe.ai), and each card still needs the wearer's yes. Unset reads on; an explicit false turns it off. The phone's Jev in cards switch (under Programmable cards) writes this flag. Read at plugin load: a host with config hot reload applies a change at once, otherwise it takes a gateway restart.",
+      "advanced": true
+    },
+    "programCardsMcp.enabled": {
+      "label": "Enable MCP in programmable cards",
+      "help": "On by default: lets programmable cards read the MCP tools they declare, through this gateway's own MCP servers (mcp.servers). Only tools a server marks read-only are used, each server stays off for cards until the owner turns it on in the phone's Staging page, and each card still needs the wearer's yes. Unset reads on; an explicit false turns it off. The phone's MCP in cards switch (under Programmable cards) writes this flag. Read at plugin load: a host with config hot reload applies a change at once, otherwise it takes a gateway restart.",
+      "advanced": true
+    },
+    "programCardsMcp.hostCommands": {
+      "label": "Host commands in cards",
+      "help": "On by default (unset reads on; an explicit false turns it off). Lets programmable cards show the output of commands on this gateway host with no model in between, from a list the owner keeps (host-commands-v1.json in the LiveUI Library). The agent can only ask: a command is added once the owner says Add on the glasses or the phone. Only commands that read run, with no shell, a short environment and their output redacted, and each card still needs the wearer's yes. Read at plugin load.",
       "advanced": true
     },
     "evenAiDedicatedSessionKey": {
@@ -242,6 +387,11 @@
       "label": "Activity summary freshness window",
       "help": "Milliseconds an agent summary outranks a tool label (3000-8000).",
       "advanced": true
+    },
+    "tokenEfficiency": {
+      "label": "Token-efficiency experiments",
+      "help": "A/B flags for prompt and schema layout. Leave unset for the defaults.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -257,6 +407,12 @@
         "type": "string",
         "default": "127.0.0.1",
         "description": "Local interface the relay WebSocket listens on."
+      },
+      "phoneAddress": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+        "description": "Optional. Your own private network instead of Tailscale: the canonical wss://name:port address your phone dials, served by your own TLS front door (Caddy, nginx, Traefik or a router proxy) with a publicly trusted certificate, forwarding to the loopback relay. When set, setup checks this address instead of Tailscale Serve. Private addresses only. Leave unset to use Tailscale. Not supported on Cloudways."
       },
       "wsPort": {
         "type": "integer",
@@ -336,7 +492,7 @@
       },
       "typesafeApiKey": {
         "type": "string",
-        "description": "Optional TypeSafe API key saved from the phone (#3359). A present key arms silentInputJev unless silentInputJev.apiKey/enabled are set explicitly."
+        "description": "Optional TypeSafe API key saved from the phone (#3359), shared by the LiveUI Jev decider (after liveuiJev.apiKey) and Jev in programmable cards. It never arms either: that needs liveuiJev.enabled or programCardsJev.enabled. Silent input does not use it."
       },
       "cartesiaApiKey": {
         "type": "string",
@@ -386,24 +542,56 @@
       "silentInputJev": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Silent input Jev ranker (#3124): the host builds the candidate words from its own tables and asks TypeSafe (api.typesafe.ai) to rank them, instead of asking a reasoning model to write them. Off by default because arming it sends the wearer's draft and the message being answered to that third-party API; strictly opt-in per gateway.",
+        "description": "Retired and ignored. Silent input's TypeSafe Jev ranker (#3124) is removed and nothing reads this block. It stays in the schema only so older configs, where the phone wrote silentInputJev.enabled, keep validating after an upgrade.",
         "properties": {
           "enabled": {
             "type": "boolean",
-            "default": false,
-            "description": "Master switch. Off by default: this sends the wearer's draft, and the message they are answering, to a third-party API (api.typesafe.ai). An operator must opt in explicitly per gateway."
+            "description": "Retired and ignored: nothing reads it. Kept only so older configs keep validating."
           },
           "apiKey": {
             "type": "string",
-            "default": "",
-            "description": "TypeSafe API key for the silent input Jev ranker. Falls back to the TYPESAFE_API_KEY environment variable when unset, so a pet/dev box can supply the key without writing a secret into openclaw.json."
+            "description": "Retired and ignored: nothing reads it. Kept only so older configs keep validating. The shared TypeSafe key is typesafeApiKey."
           },
           "budgetMs": {
             "type": "integer",
             "minimum": 200,
             "maximum": 5000,
-            "default": 2500,
-            "description": "Wall-clock budget for one ranking request. Past it the word falls back to the keyboard's own local ranking with no error shown."
+            "description": "Retired and ignored: nothing reads it. Kept only so older configs keep validating."
+          }
+        }
+      },
+      "programCardsJev": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Jev in programmable cards: a card may ask Jev (TypeSafe, api.typesafe.ai) the questions it declares, with the saved typesafeApiKey. On by default: each ask sends the data that card declares to that third-party API, so each card needs the wearer's yes for its own Jev block first, and without a key nothing is sent.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Master switch. On by default (unset reads on): this lets programmable cards ask to send the data they declare to a third-party API (api.typesafe.ai). The phone's Jev in cards switch writes it, and an explicit false turns it off. Without a TypeSafe key it does nothing, and each card still needs the wearer's yes."
+          }
+        }
+      },
+      "programCardsModel": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Direct sessionless model calls for programmable cards. On by default (unset reads on, an explicit false turns it off); each card also needs owner consent.",
+        "properties": { "enabled": { "type": "boolean", "default": true } }
+      },
+      "programCardsMcp": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "MCP in programmable cards: a card may read the MCP tools it declares, through this gateway's own MCP servers. On by default: a card's reads reach the owner's outside services, so each server stays off for cards until the owner turns it on, and each card still needs the wearer's yes. Reads only: a tool counts as a read only when its server marks it read-only.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Master switch. On by default (unset reads on): this lets programmable cards ask to read data from the owner's MCP servers. The phone's MCP in cards switch writes it, and an explicit false turns it off. Each server is still off for cards until the owner turns it on, and each card still needs the wearer's yes."
+          },
+          "hostCommands": {
+            "type": "boolean",
+            "default": true,
+            "description": "Host commands in cards. On by default (unset reads on; an explicit false turns it off): lists the owner's approved commands to cards as server host. A command joins the list only after the owner's Add, commands only read, run with no shell, and each card still needs the wearer's yes."
           }
         }
       },
@@ -469,7 +657,7 @@
           },
           "tickModel": {
             "type": "string",
-            "description": "Model for llm ticks. Unset adopts the host provider and uses its small backend default: anthropic/claude-haiku-4-5-20251001 for Anthropic or gpt-4o-mini for OpenAI."
+            "description": "Model for llm ticks. Unset adopts the host provider and uses a small model: on Anthropic, the one this OpenClaw release recommends for utility tasks; on OpenAI, gpt-4o-mini."
           },
           "tickApiBaseUrl": {
             "type": "string",
@@ -503,6 +691,61 @@
           }
         }
       },
+      "liveuiJev": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "LiveUI Jev pre-turn decider: a TypeSafe judgment (api.typesafe.ai) on whether to render a glasses surface. Off by default because arming it sends the wearer's transcript text to that third-party API; strictly opt-in per gateway.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master switch. Off by default: this sends the wearer's transcript text to a third-party API (api.typesafe.ai) for a pre-turn render judgment. An operator must opt in explicitly per gateway."
+          },
+          "apiKey": {
+            "type": "string",
+            "default": "",
+            "description": "TypeSafe API key for the LiveUI Jev decider. Falls back to the TYPESAFE_API_KEY environment variable when unset, so a pet/dev box can supply the key without writing a secret into openclaw.json."
+          },
+          "budgetMs": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 5000,
+            "default": 800,
+            "description": "Wall-clock budget (ms) from firing the TypeSafe request to using its answer; past it the turn proceeds with no block. Clamped because this sits on the wearer's critical path."
+          }
+        }
+      },
+      "liveuiV2": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "LiveUI V2: glasses surfaces the agent builds from UI records written in its reply.",
+        "properties": {
+          "composed": {
+            "type": "boolean",
+            "description": "Retired and ignored: every chat uses composed surfaces. Accepted so an existing setting still loads."
+          },
+          "presets": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Retired and ignored: every Preset goes as its V2 form. Accepted so an existing setting still loads."
+          },
+          "pictureFolders": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Absolute folders the agent's pictures may be read from. Unset means the agent workspace and the system temp folder."
+          },
+          "titleIcons": {
+            "type": "boolean",
+            "deprecated": true,
+            "description": "Deprecated and ignored: title icons are the wearer's Title icons switch in the phone's LiveUI settings (on by default). Retained in the schema only so existing configs that still set it continue to validate."
+          },
+          "pictureLoops": {
+            "type": "boolean",
+            "deprecated": true,
+            "description": "Deprecated and ignored: small animated GIF and WebP pictures always play on the picture plate. Retained in the schema only so existing configs that still set it continue to validate."
+          }
+        }
+      },
       "freshnessWindowMs": {
         "type": "integer",
         "minimum": 3000,
@@ -510,9 +753,45 @@
         "default": 5000,
         "description": "How long (ms) a fresh agent summary stays preferred over a tool label in the glasses activity status. Clamped 3000-8000."
       },
+      "tokenEfficiency": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Token-efficiency settings. glassesUiSchema defaults to flat; every other key defaults to prior behavior. Set one to A/B test it and delete it to roll back.",
+        "properties": {
+          "glassesUiSchema": {
+            "type": "string",
+            "enum": ["full", "flat"],
+            "default": "flat",
+            "description": "flat (default) sends render_glasses_ui's flat field union without the per-kind oneOf branches, which is what Anthropic, Hermes and newer OpenAI routes already see. full restores the branches as a rollback. Takes effect on the next session."
+          },
+          "glassesUiToolLoading": {
+            "type": "string",
+            "enum": ["catalog", "direct"],
+            "default": "catalog",
+            "description": "direct marks render_glasses_ui catalogMode direct-only so hosts with tool search (OpenClaw embedded, Codex) keep it model-visible instead of behind search and describe. Best paired with glassesUiSchema flat."
+          },
+          "stableContextPlacement": {
+            "type": "string",
+            "enum": ["turn", "system"],
+            "default": "system",
+            "description": "system (the default) sends turn-stable context (the LiveUI Task index; a dedicated-session Even AI owner prompt) as appended system context instead of per-turn prompt context, on non-Codex harnesses once a session harness is known, so the conversation history stays cache-reusable between turns. turn restores the per-turn placement."
+          },
+          "liveuiTemplatesSchema": {
+            "type": "string",
+            "enum": ["full", "lean"],
+            "default": "full",
+            "description": "lean sends manage_liveui_templates without the full Template shape (about 7,400 schema characters on every model call) and adds a schema operation that returns it before a save. Takes effect on the next session."
+          },
+          "detailedTelemetry": {
+            "type": "boolean",
+            "default": false,
+            "description": "true also registers the llm_input and after_tool_call hooks, so the token.usage debug category records request size breakdowns and per-tool calls. OpenClaw copies each attempt's history and each tool result for these hooks, so leave it off outside measurement. Takes effect on gateway restart."
+          }
+        }
+      },
       "sessionTitleModel": {
         "type": "string",
-        "description": "Optional model override (\"provider/model\") for the background session-title distiller. This is a lightweight background task, so a small, fast, inexpensive model is a good choice (e.g. anthropic/claude-haiku-4-5). When absent, the user's normal model is used."
+        "description": "Optional model override (\"provider/model\") for the background session-title distiller. This is a lightweight background task, so a small, fast, inexpensive model is a good choice, such as the one used as OpenClaw's utility model. When absent, the user's normal model is used."
       },
       "evenTerminal": {
         "type": "object",

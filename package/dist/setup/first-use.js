@@ -1,7 +1,5 @@
 import * as fs from "node:fs";
-
 import * as path from "node:path";
-
 import { randomUUID, createHash } from "node:crypto";
 import { setupInstallation, FIRST_USE_ERRORED_RUN_REASONS, firstUseSuccessLines } from "./setup-journey.js";
 import { readJsonReceipt, writeJsonReceiptDurable } from "./private-route.js";

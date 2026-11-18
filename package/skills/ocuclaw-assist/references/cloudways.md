@@ -1,14 +1,32 @@
 # Cloudways managed OpenClaw: userspace Tailscale kept alive by the plugin itself
 
-**Guide version:** 2026-09-28 (1.0.59)
+**Guide version:** 2026-10-28 (1.0.60)
 
 Use this branch in place of fresh-install Steps 6 and 7 when the host is a
-Cloudways **Managed AI Agents** container running OpenClaw 2026.7.1-2 (hostname
-ends `.cloudwaysagents.com`). Everything else in the fresh-install guide stays
+Cloudways **Managed AI Agents** container running OpenClaw 2026.9.5 (hostname
+ends `.cloudwaysagents.com`). OcuClaw needs 2026.9.5 or newer, so Step 1's
+version check passes there. Everything else in the fresh-install guide stays
 as written: rejoin it at Step 8 once C5 below is green. The setup receipt's
 `journey` keeps driving; this branch adds one sub-check.
 
-## Fast path: one command
+## Chat setup comes first
+
+When `ocuclaw_setup` offers `next`, setup on Cloudways is SKILL.md's **Chat
+setup**: call `next` and relay its lines. The user stays in their OpenClaw
+chat. `next` starts Tailscale, gets the approval link, opens the private route
+behind an approval card and pairs the phone from a code typed in chat. Nobody
+opens a terminal or SSH on that path, and nothing on this page is run by hand.
+
+Read the rest of this page only for:
+
+- a `stuck` result, to understand what `next` checked;
+- an older plugin with no `next`;
+- a user who asks to run setup in their own terminal instead.
+
+Never restart the gateway on this host, by any means (see **Restart and reload
+on this host** below). `next` never asks for one here.
+
+## Terminal fallback: one command
 
 ```bash
 openclaw ocuclaw cloudways setup
@@ -38,8 +56,28 @@ nothing" and the literal word `yes` are printed either way.
 only for automation), `--no-pair` stops before pairing, `--no-first-use` stops
 after pairing, `--wait <seconds>` sets how long it waits for the node to be
 approved (default 600), `--first-use-wait <seconds>` sets how long it waits for
-the first phone reply (default 600), and `--light-terminal` renders the pairing
-QR for a light background.
+the first phone reply (default 600), and `--light-terminal` is kept so older
+commands still run; it does nothing.
+
+**A model comes first, from the Cloudways panel.** Right after the host check,
+setup reads whether a model is signed in (`openclaw models status --json`). It
+never signs in itself. With no model it says to sign in to OpenAI in the
+Cloudways panel (**LLM & Channels → OAuth → OpenAI → Connect**) and stops, with
+`--yes` too. That Connect restarts the container, and the gateway can take
+several minutes to come back, so never start it while setup runs and never tell
+the user to skip the model. Once the agent is back, run the same setup command
+again: it reads the model as signed in and carries on. A status setup cannot
+read never stops it.
+
+**ChatGPT needs device code sign-in turned on first.** That Connect signs in to
+ChatGPT with a link and a one-time code, and ChatGPT refuses it until the
+account's **Enable device code sign-in for Codex, Excel, PowerPoint, and Word**
+switch is on (ChatGPT **Settings → Security and login → App security**,
+https://chatgpt.com/settings/security). While it is off, the sign-in can loop
+through account picking and security checks before ChatGPT says why. If the
+user says the OpenAI sign-in is refused or keeps looping, tell them to turn that
+switch on and click Connect again. On a ChatGPT Business, Enterprise or Edu
+workspace, an admin may have to allow it.
 
 **It now looks for the phone itself.** Step 5 asks the user to install
 Tailscale on the phone and approve the authorization link there, so the phone
@@ -53,9 +91,14 @@ have to finish before you offer this command; doing it first simply means step
 Step 8 arms the same first-use checkpoint `openclaw ocuclaw first-use` uses, asks
 the user to send `hello` from the paired phone conversation, waits in that
 terminal for the reply, then hands over to the first-use ceremony and its own
-`SEEN ON G2` prompt. `--yes` never answers that prompt and neither does this
-command: the wearer types it themselves. When the phone has already reported
-that exact reply reaching the display, the ceremony says so and asks nothing.
+yes/no prompt ("Did the reply appear on your Even G2? [yes/no]"). `--yes` never answers that prompt and neither does this
+command: the wearer types `yes` themselves. When the phone has already reported
+that exact reply reaching the display, the ceremony says so and asks nothing. When the
+phone was the Even simulator, it says "This was the simulator, so setup can't check the glasses
+itself." before it asks. An answer of `no` records nothing and exits 1.
+
+Setup opens with "If your terminal drops, run the same command again." A rerun resumes at the
+first unfinished step.
 
 **Step 8 finishes the welcome card too.** When the saved record stands at
 `awaiting-welcome`, the command says `A welcome image is coming to your glasses.
@@ -122,16 +165,21 @@ not imply a missing phone and do not offer another code automatically.
 
 ## The pairing code waits for the user
 
-The code lasts two minutes, and both lanes used to burn the first one while the
-user was still finding their phone. On a real terminal step 7 now prints, before
-minting anything:
+Step 7 prints `Open Even > OcuClaw on your phone.` and goes straight to the
+phone-code prompt. Nothing is minted until the user types the code OcuClaw
+shows, so there is no Enter step first.
+
+A manual code lasts five minutes, and it used to be burned while the user was
+still finding their phone. So when phone codes are off or not working, on a
+real terminal step 7 prints, before minting anything:
 
 ```
-Open Even on your phone. The pairing code lasts 2 minutes.
-Press Enter when ready.
+In OcuClaw tap Pair with your agent > Pair manually, then press Enter to show the code.
+The next pairing code expires in 5 minutes.
 ```
 
-and waits with no timeout. `--yes` and a non-interactive run skip that gate.
+and waits for Enter, for up to ten minutes. `--yes` and a non-interactive run
+skip that gate, and so does typing `m` at the phone-code prompt.
 
 A code that runs out no longer ends the command. It prints
 `Press Enter for a new code, or type stop:`
@@ -139,17 +187,18 @@ and mints a fresh one in place, up to three times. Typing `stop` finishes with
 the ordinary failed-pair ending, and a non-interactive run keeps exiting as it
 always did.
 
-Scan instructions, Address and Pairing code precede the QR. The whole scan
-state, including the waiting line, must fit the terminal. A small terminal
-prints the typed **Enter the pairing code instead** lane rather than a clipped
-code. On the phone the controls are **Pair with your agent** (older apps: **Pair with your computer**), then
-**Take a photo of the QR code** or **Enter the pairing code instead**. Use these exact control names. The four-word comparison
+The terminal asks for the phone code. On the phone the control is **Pair with
+your agent** (older apps: **Pair with your computer**): OcuClaw shows a phone
+code, and the user types it at the pair prompt. For manual pairing the user
+types `m` at the pair prompt, then in OcuClaw taps **Pair with your agent >
+Pair manually** and types the address and pairing code the terminal shows. Use
+these exact control names. The four-word comparison
 appears only after the phone joins: type `approve`, `refuse`, or `cancel`.
 Case does not matter; a typo never approves. Approval waits for the phone's
 authenticated connection before reporting that it is paired.
 
-`--details` also explains settings that are already applied, without asking
-for consent again or rewriting them. Private-route consent still shows the
+`--details` also explains settings that are already applied. It leaves them
+as they are and does not re-ask the consent already given for them. Private-route consent still shows the
 exact command and requires the literal word `yes`.
 
 ## What is different on this host
@@ -178,7 +227,7 @@ userspace-networking `tailscaled` (binaries in `~/bin`, state in
 implements that path as idempotent verbs the agent runs from its terminal
 tool: `detect`, `install`, `enroll`, `status`, `retry`, `enable`, `disable`,
 `rollback`, plus `setup`, which runs the whole sequence in the user's own
-terminal (see "Fast path" above). Every verb except `setup` takes `--json`. `status` takes `--wait <seconds>`.
+terminal (see "Terminal fallback" above). Every verb except `setup` takes `--json`. `status` takes `--wait <seconds>`.
 `enroll` and `retry` take `--hostname <name>`. `rollback` needs `--yes` and
 takes `--purge-identity`. The only manual work is Tailscale authorization (a
 link the user opens) and the phone.
@@ -189,17 +238,20 @@ root and no TUN device on this container, so those paths cannot work and must
 not be tried. Also never, on this host: Tailscale Funnel, ACL or tailnet
 policy edits, `tailscale serve reset`, or starting `tailscaled` by hand.
 
-Host-configuration facts specific to OpenClaw 2026.7.1 on this box:
+Host-configuration facts for this box:
 
-- `plugins.allow` on this host is a non-empty allowlist. `"ocuclaw"` must be
-  in it or the plugin never loads:
+- `plugins.allow` on this host has been a non-empty allowlist. When it is a
+  list, `"ocuclaw"` must be in it or the plugin never loads:
   ```bash
   openclaw config get plugins.allow
   ```
   Merge `"ocuclaw"` into the list if it is missing, preserving all existing
   entries.
-- `--accept-capabilities` does not exist on 2026.7.1. Grant conversation
-  access through config instead:
+- Install consent (`--accept-capabilities`) does not grant conversation
+  access. Fresh-install Step 2 sets it just before the install, so the consent
+  screen reads "allowed" and the hooks work from the first load. OcuClaw also
+  sets it itself at first load, and `cloudways setup` step 2 checks it, so
+  this is only for a box where it is still not `true`:
   ```bash
   openclaw config set plugins.entries.ocuclaw.hooks.allowConversationAccess true --strict-json
   ```
@@ -207,10 +259,9 @@ Host-configuration facts specific to OpenClaw 2026.7.1 on this box:
   outside a fresh install, check it here.
 - Any scripted or SSH install here (`install <tgz>`, `install --force <tgz>`,
   `update`) still runs the `--help` probe from recovery-routing.md's
-  **Installation consent and recorded source**. On 2026.7.1-2 the probe is
-  empty, so the command is unchanged. If the box ever runs
-  OpenClaw 2026.9.x, the probe adds `--accept-capabilities`, an archive needs
-  `--force` too, and both need the person's yes first.
+  **Installation consent and recorded source**. On 2026.9.5 the probe adds
+  `--accept-capabilities`, an archive needs `--force` too, and both need the
+  person's yes first.
 - Every `openclaw` command on this box, `openclaw plugins install` included,
   prints OpenClaw's own "Config warnings" about
   `channels.whatsapp.allowFrom` twice before its first line: a plain list while
@@ -225,22 +276,16 @@ Host-configuration facts specific to OpenClaw 2026.7.1 on this box:
 A fresh plugin install needs no restart on this host. Do not restart on your
 own: `openclaw ocuclaw cloudways setup` step 3 checks the running gateway and
 asks for the one restart only when it is needed (for example, an upgrade over
-an existing install). Step 1 says nothing about restarts. What the install
-prints differs by OpenClaw version:
+an existing install). Step 1 says nothing about restarts. What to expect on
+OpenClaw 2026.9.5:
 
-- 2026.7.1-2: no restart. `openclaw plugins install <tgz>` added `"ocuclaw"`
-  to `plugins.allow`, wrote `plugins.entries.ocuclaw.enabled=true`, and the
-  running gateway hot-loaded the plugin in the same process (same PID). Do not
-  restart to "make it take effect". A restart here restarts the whole
-  container, so it costs the SSH session for nothing. The install still prints
-  its own generic "Restart the gateway to load plugins.": that is OpenClaw's
-  text, not ours. Tell the user to skip it.
-- 2026.9.5: no restart either, but a slower check. The install prints no
+- No restart, but a slower check. The install prints no
   restart hint; it ends with "Applied in Gateway generation N." The step 2
   grant makes the gateway reload OcuClaw, and for about a minute the gateway
-  does not answer whether OcuClaw is loaded. Step 3 waits up to 3 minutes and
-  says "Still checking. This can take up to 3 minutes." while it does (#3889).
-  Tell the user to let it finish. If step 3 still prints the gateway kill
+  does not answer whether OcuClaw is loaded. Newer OpenClaw restarts can take
+  about 7 minutes. Step 3 waits up to 8 minutes and says "Still checking. This
+  can take up to 8 minutes." while it does, then how long it has been about
+  once a minute (#3889, #6377). Tell the user to let it finish. If step 3 still prints the gateway kill
   command, relay it as printed.
 - No gateway process running (for example after the gateway ran out of
   memory and the respawned one exited): the kill command would end nothing,
@@ -308,7 +353,7 @@ that you are waiting for its authorization link. This runs `tailscale up`
 once, bounded, and returns the `https://login.tailscale.com/...` link. A
 pending result is not a failed registration. `retry` observes the same
 enrollment and recovers a link that arrived late; neither `enroll` nor `retry`
-logs out. Never loop indefinitely: after one bounded retry still has no link,
+logs out. Make at most one bounded `retry`. If it still has no link,
 explain the pending state and offer to retry later or cancel setup. Do not
 print daemon logs or secrets to the wearer.
 
@@ -358,8 +403,8 @@ or the relay. Only a repeat timeout after that wait points at a real problem.
 
 **Do that wait inside the same turn.** Run one bounded wait in your own
 terminal (`sleep 60`), or re-read journey up to three times about 30 seconds
-apart, and answer the user only after the last read. Never tell the user you
-will re-check the route later and then end your turn: nothing wakes you, so
+apart, and answer the user only after the last read. Do not promise the user
+a later re-check of the route and then end your turn: nothing wakes you, so
 the user sits waiting for a message that never arrives. That happened on a
 live run and cost the user two minutes of silence. If you genuinely must end
 the turn, say so plainly and ask them to say "check the route again" in a
@@ -379,6 +424,11 @@ and `subCheck: "tailnet-daemon"` when it is not `running`. Fix the daemon (C3/
 C4) before the route.
 
 ## Restart and reload on this host
+
+**Never restart the gateway yourself here.** That includes OpenClaw's own
+gateway tool (a restart action such as `gateway.restart.safe`): in #6339 it
+restarted the whole container and cut the Tailscale link mid-setup. Changes
+hot-load; verify by reading again instead.
 
 `openclaw gateway restart` is a no-op here. It prints "Gateway service
 disabled" plus systemd hints, and the gateway PID does not change. Do not run
@@ -410,8 +460,8 @@ These all hot-reload with no restart: a fresh `openclaw plugins install
 <tgz>`, `openclaw config set ...`, and plugin uninstall. On 2026.9.5 a
 reload takes about a minute before OcuClaw answers again (see above). The one
 case that needs a container restart is an upgrade over an existing install
-(`openclaw plugins install --force <tgz>`, which does exist on 2026.7.1): the
-old code stays live until the container restarts.
+(`openclaw plugins install --force <tgz>`): the old code stays live until the
+container restarts.
 
 After any restart (dashboard or forced), run
 `openclaw ocuclaw cloudways status --wait 120 --json` before probing the

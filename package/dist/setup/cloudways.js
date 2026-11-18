@@ -1,10 +1,6 @@
-import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import * as https from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
-
 import process from "node:process";
 
 import {
@@ -21,17 +17,34 @@ import {
   TAILSCALE_CLI_RECEIPT_FILENAME,
   writeJsonReceiptDurable,
 } from "./private-route.js";
+import { runKeepingPartialOutput, startHostProcess } from "../tools/host-process.js";
+import {
+  adoptableDaemon,
+  ADOPTED_DAEMON_FILENAME,
+  adoptedLogPath,
+  buildAdoptedRecord,
+  DIAL_TAILSCALE_NC,
+  readAdoptedRecord,
+  writeAdoptedRecord,
+} from "./cloudways-adopt.js";
 
-export const TAILSCALE_VERSION = "1.102.4";
-export const TAILSCALE_TGZ_URL =
-  `https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz`;
+export const PLATFORM_BIN_DIR = "/usr/bin";
+export const PLATFORM_STATE_DIR = "/var/lib/tailscale";
+export const PLATFORM_SOCKET = "/var/run/tailscale/tailscaled.sock";
+export const BINARIES_PLATFORM = "platform";
+export const BINARIES_BUNDLED = "bundled";
 
-export const TAILSCALE_TGZ_SHA256 = "50748df1045e60b5b695f19f4c56b0da36c019948b440fb456b6584a50f0d8b9";
-export const TAILSCALE_TGZ_MEMBER_DIR = `tailscale_${TAILSCALE_VERSION}_amd64`;
+export const TAILSCALE_MISSING_MESSAGE =
+  "Tailscale is missing on this server. Restart your agent from the Cloudways panel to get the current server image, then run setup again.";
 
 export const SOCKS5_LISTEN = "127.0.0.1:1055";
 export const RECEIPT_PROVISIONER = "openclaw ocuclaw cloudways";
 export const CLOUDWAYS_STATE_FILENAME = "ocuclaw.cloudways.openclaw.json";
+
+export const HERMES_RECEIPT_PROVISIONER = "hermes ocuclaw cloudways";
+export const HERMES_CLOUDWAYS_STATE_FILENAME = "ocuclaw.cloudways.hermes.json";
+export const BUNDLE_OPENCLAW = "openclaw";
+export const BUNDLE_HERMES = "hermes";
 export const CLOUDWAYS_STATE_SCHEMA_VERSION = 1;
 
 export const STATE_ABSENT = "absent";
@@ -46,41 +59,84 @@ export const STALE_ENROLLMENT_MESSAGE =
 
 const AUTH_URL_RE = /https:\/\/login\.tailscale\.com\/\S+/;
 const CMD_TIMEOUT_MS = 20000;
-const DOWNLOAD_TIMEOUT_MS = 120000;
-const MAX_REDIRECTS = 5;
-const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 
 export function resolveLayout(options      = {}) {
   let home = typeof options.home === "string" && options.home ? options.home : "";
   if (!home) {
-    const envHome = process.env && typeof process.env.HOME === "string" ? process.env.HOME.trim() : "";
+    const envHome = typeof process.env.HOME === "string" ? process.env.HOME.trim() : "";
     home = envHome || os.homedir();
   }
+
   const hostStateDir = typeof options.hostStateDir === "string" && options.hostStateDir
     ? options.hostStateDir
-    : resolveHostStateDir(process.env);
+    : resolveHostStateDir({ HOME: process.env.HOME, LOCALAPPDATA: process.env.LOCALAPPDATA });
   const binDir = path.join(home, "bin");
   const stateDir = path.join(home, ".tailscale");
   const runDir = path.join(stateDir, "run");
-  return {
+
+  const platformBinDir = options.platformBinDir === undefined ? PLATFORM_BIN_DIR : options.platformBinDir;
+
+  const platformTailscaled = typeof platformBinDir === "string" && platformBinDir
+    ? [path.join(platformBinDir, "tailscaled"), path.join(path.dirname(platformBinDir), "sbin", "tailscaled")].find(isFile) ?? null
+    : null;
+  const platform = !!platformTailscaled && isFile(path.join(platformBinDir, "tailscale"));
+  const bundledTailscale = path.join(binDir, "tailscale");
+  const bundledTailscaled = path.join(binDir, "tailscaled");
+  const bundle = options.bundle === BUNDLE_HERMES ? BUNDLE_HERMES : BUNDLE_OPENCLAW;
+  const stateFilename = bundle === BUNDLE_HERMES ? HERMES_CLOUDWAYS_STATE_FILENAME : CLOUDWAYS_STATE_FILENAME;
+  const own = {
     home,
     hostStateDir,
+    bundle,
+    provisioner: bundle === BUNDLE_HERMES ? HERMES_RECEIPT_PROVISIONER : RECEIPT_PROVISIONER,
     binDir,
-    tailscale: path.join(binDir, "tailscale"),
-    tailscaled: path.join(binDir, "tailscaled"),
+    binarySource: platform ? BINARIES_PLATFORM : BINARIES_BUNDLED,
+    tailscale: platform ? path.join(platformBinDir, "tailscale") : bundledTailscale,
+    tailscaled: platform ? platformTailscaled : bundledTailscaled,
+
+    bundledTailscale,
+    bundledTailscaled,
     stateDir,
     runDir,
     socketPath: path.join(runDir, "tailscaled.sock"),
     logDir: path.join(stateDir, "log"),
     logPath: path.join(stateDir, "log", "tailscaled.log"),
-    needsAuthMarker: path.join(stateDir, "needs-authorization"),
+    signInMarker: path.join(stateDir, "needs-authorization"),
 
     installReceipt: path.join(stateDir, "ocuclaw-install.json"),
 
-    statePath: hostStateDir ? path.join(hostStateDir, CLOUDWAYS_STATE_FILENAME) : null,
+    statePath: hostStateDir ? path.join(hostStateDir, stateFilename) : null,
     receiptPath: hostStateDir ? path.join(hostStateDir, TAILSCALE_CLI_RECEIPT_FILENAME) : null,
     legacySupervisorDir: path.join(home, ".local", "share", "tailscale"),
+
+    ownDaemonToken: `--statedir=${stateDir}`,
+    adopted: null       ,
   };
+
+  if (options.adopted === null || own.binarySource !== BINARIES_PLATFORM) return own;
+  const record = options.adopted && typeof options.adopted === "object"
+    ? options.adopted
+    : readAdoptedRecord(hostStateDir, adoptionContext(own));
+  return record ? withAdoption(own, record) : own;
+}
+
+export function adoptionContext(layout     ) {
+  return { home: layout.home, ours: layout.stateDir, platformTailscaled: layout.tailscaled };
+}
+
+export function withAdoption(layout     , record     ) {
+  return {
+    ...layout,
+    socketPath: record.socket,
+    logPath: record.logPath,
+    logDir: path.dirname(record.logPath),
+    ownDaemonToken: record.stateFlag,
+    adopted: record,
+  };
+}
+
+export function ownIdentityExists(layout     ) {
+  return isFile(path.join(layout.stateDir, "tailscaled.state"));
 }
 
 export function cliArgv(layout     ) {
@@ -88,6 +144,8 @@ export function cliArgv(layout     ) {
 }
 
 export function daemonArgv(layout     ) {
+
+  if (layout.adopted) return layout.adopted.daemonArgv.slice();
   return [
     layout.tailscaled,
     `--statedir=${layout.stateDir}`,
@@ -97,38 +155,10 @@ export function daemonArgv(layout     ) {
   ];
 }
 
-function text(value     ) {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value;
-  if (Buffer.isBuffer(value)) return value.toString("utf8");
-  return String(value);
-}
-
 export function defaultRunCommand(argv     , options      = {}) {
-  return new Promise((resolve) => {
-    execFile(
-      argv[0],
-      argv.slice(1),
-      {
-        timeout: Number.isFinite(options.timeoutMs) ? options.timeoutMs : CMD_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024,
-        encoding: "utf8",
-        env: options.env || process.env,
-      },
-      (error     , stdout     , stderr     ) => {
-        if (error) {
-          const killed = Boolean(error.killed) || error.signal === "SIGTERM" || error.code === "ETIMEDOUT";
-          resolve({
-            code: killed || typeof error.code !== "number" ? null : error.code,
-            stdout: text(stdout),
-            stderr: text(stderr) || (killed ? "timeout" : String(error.message || "spawn failed")),
-            spawnFailed: typeof error.code === "string",
-          });
-          return;
-        }
-        resolve({ code: 0, stdout: text(stdout), stderr: text(stderr), spawnFailed: false });
-      },
-    );
+  return runKeepingPartialOutput(argv, {
+    timeoutMs: Number.isFinite(options.timeoutMs) ? options.timeoutMs : CMD_TIMEOUT_MS,
+    ...(options.env ? { env: options.env } : {}),
   });
 }
 
@@ -219,10 +249,14 @@ export async function daemonState(layout     , deps      = {}) {
   } else if (backend === "NoState" || backend === "Starting") {
     report.state = STATE_STARTING;
   } else if (backend === "Stopped") {
-    report.state = fileExists(layout.needsAuthMarker) ? STATE_NEEDS_AUTH : STATE_STOPPED;
+    report.state = fileExists(layout.signInMarker) ? STATE_NEEDS_AUTH : STATE_STOPPED;
     report.detail = "tailscaled is up but `tailscale up` has not been run";
   }
   return report;
+}
+
+function isFile(target     ) {
+  try { return fs.statSync(target).isFile(); } catch (_) { return false; }
 }
 
 function fileExists(target     ) {
@@ -233,7 +267,7 @@ export function clearNeedsAuthorizationMarker(layout     ) {
 
   clearEnrollmentDaemon(layout);
   try {
-    fs.unlinkSync(layout.needsAuthMarker);
+    fs.unlinkSync(layout.signInMarker);
     return true;
   } catch (_) {
     return false;
@@ -242,7 +276,7 @@ export function clearNeedsAuthorizationMarker(layout     ) {
 
 export function enrollmentDaemonRecordPath(layout     ) {
   if (layout && typeof layout.enrollmentDaemonRecord === "string") return layout.enrollmentDaemonRecord;
-  return path.join(path.dirname(layout.needsAuthMarker), "enrollment-daemon");
+  return path.join(path.dirname(layout.signInMarker), "enrollment-daemon");
 }
 
 export function daemonIdentity(layout     , deps      = {}) {
@@ -281,7 +315,7 @@ export async function daemonProcesses(layout     , deps      = {}) {
   const ours      = [];
   const foreign      = [];
   if (!result || result.code !== 0) return { ours, foreign };
-  const wanted = `--statedir=${layout.stateDir}`;
+  const wanted = layout.ownDaemonToken || `--statedir=${layout.stateDir}`;
   for (const line of String(result.stdout || "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -293,8 +327,9 @@ export async function daemonProcesses(layout     , deps      = {}) {
     if (pid === process.pid) continue;
     const tokens = cmdline.split(/\s+/);
     if (path.basename(tokens[0]) !== "tailscaled") continue;
-    if (tokens.includes(wanted)) ours.push({ pid, cmdline: cmdline.slice(0, 200) });
-    else foreign.push({ pid, cmdline: cmdline.slice(0, 200) });
+
+    if (tokens.includes(wanted)) ours.push({ pid, cmdline: cmdline.slice(0, 200), tokens });
+    else foreign.push({ pid, cmdline: cmdline.slice(0, 200), tokens });
   }
   return { ours, foreign };
 }
@@ -362,6 +397,86 @@ export function refuseIfForeignSupervisor(inventory     ) {
     + foreign.join("; ");
 }
 
+export function platformDaemonSocket(cmdline     ) {
+  const tokens = String(cmdline || "").split(/\s+/);
+  const onPlatformState = tokens.some((token) => token === `--statedir=${PLATFORM_STATE_DIR}`
+    || token.startsWith(`--state=${PLATFORM_STATE_DIR}/`));
+  if (!onPlatformState) return null;
+  const socket = tokens.find((token) => token.startsWith("--socket="));
+  return socket ? socket.slice("--socket=".length) : PLATFORM_SOCKET;
+}
+
+export async function replaceLoggedOutPlatformDaemons(layout     , deps      = {}) {
+  const processes = await daemonProcesses(layout, deps);
+  const replaced      = [];
+  const kill = typeof deps.kill === "function" ? deps.kill : (pid     , signal     ) => process.kill(pid, signal);
+  for (const entry of processes.foreign) {
+    const socket = platformDaemonSocket(entry.cmdline);
+    if (!socket) continue;
+    const result      = await runnerOf(deps)([layout.tailscale, `--socket=${socket}`, "status", "--json"], { timeoutMs: 8000 });
+    let backend      = null;
+    try { backend = JSON.parse(String((result && result.stdout) || "")).BackendState; } catch (_) { backend = null; }
+    if (backend !== "NeedsLogin" && backend !== "NoState") continue;
+    try { kill(entry.pid, "SIGTERM"); } catch (_) { continue; }
+    replaced.push(entry.pid);
+  }
+  if (replaced.length === 0) return { replaced };
+  const sleep = typeof deps.sleep === "function" ? deps.sleep : defaultSleep;
+  const attempts = Number.isFinite(deps.stopAttempts) ? deps.stopAttempts : 20;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const now = await daemonProcesses(layout, deps);
+    if (!now.foreign.some((entry     ) => replaced.includes(entry.pid))) return { replaced };
+    await sleep(250);
+  }
+  return { replaced, stillRunning: replaced };
+}
+
+export const TWO_IDENTITIES_MESSAGE =
+  "Two Tailscale identities are on this server: OcuClaw's own in ~/.tailscale and the one already running. "
+  + "Setup will not switch between them by itself, because the server's tailnet name, its certificate and the phone's pairing would change. "
+  + "Ask the user which one to keep.";
+
+export async function findAdoption(layout     , deps      = {}) {
+  if (layout.adopted) return { record: layout.adopted, existing: true };
+  if (layout.binarySource !== BINARIES_PLATFORM) return { record: null, notAdoptable: [] };
+  const processes = await daemonProcesses(layout, deps);
+  const judged = processes.foreign.map((entry     ) => ({ entry, verdict: adoptableDaemon(entry.tokens, adoptionContext(layout)) }));
+  const notAdoptable = judged
+    .filter((item     ) => !item.verdict.adoptable)
+    .map((item     ) => ({ pid: item.entry.pid, reason: item.verdict.reason }));
+  const adoptable = judged.filter((item     ) => item.verdict.adoptable);
+  if (adoptable.length !== 1 || notAdoptable.length > 0) return { record: null, notAdoptable };
+  const { entry, verdict } = adoptable[0];
+  if (processes.ours.length > 0 || ownIdentityExists(layout)) {
+    return { record: null, notAdoptable, refusal: TWO_IDENTITIES_MESSAGE, candidate: { pid: entry.pid, stateFlag: verdict.stateFlag } };
+  }
+  const result      = await runnerOf(deps)([layout.tailscale, `--socket=${verdict.socket}`, "status", "--json"], { timeoutMs: 8000 });
+  let backend      = null;
+  try { backend = JSON.parse(String((result && result.stdout) || "")).BackendState; } catch (_) { backend = null; }
+  if (typeof backend !== "string" || !backend) {
+    return { record: null, notAdoptable: [{ pid: entry.pid, reason: "not-answering" }] };
+  }
+  const record = buildAdoptedRecord({
+    daemonArgv: entry.tokens,
+    stateFlag: verdict.stateFlag,
+    socket: verdict.socket,
+    logPath: adoptedLogPath(layout.home, layout.logPath),
+    adoptedBy: layout.provisioner || RECEIPT_PROVISIONER,
+  });
+  return { record: { ...record, socks5: verdict.socks5 }, backend, pid: entry.pid };
+}
+
+export function adoptionSummary(layout     ) {
+  if (!layout.adopted) return null;
+  return {
+    socket: layout.adopted.socket,
+    stateFlag: layout.adopted.stateFlag,
+    socks5: layout.adopted.socks5 || null,
+    logPath: layout.adopted.logPath,
+    adoptedBy: layout.adopted.adoptedBy || null,
+  };
+}
+
 export function readCloudwaysState(layout     ) {
   if (!layout.statePath) return null;
   const { record, status } = readJsonReceipt(layout.statePath);
@@ -379,7 +494,8 @@ export function writeCloudwaysState(layout     , patch     ) {
     version: patch.version || known.version || null,
     stateDir: layout.stateDir,
     socket: layout.socketPath,
-    socks5: SOCKS5_LISTEN,
+    socks5: receiptSocks5(layout),
+    ...(layout.adopted ? { adopted: true } : {}),
 
     installed: Array.isArray(patch.installed) ? patch.installed : (known.installed || []),
     installedAt: known.installedAt || patch.installedAt || null,
@@ -392,40 +508,6 @@ export function writeCloudwaysState(layout     , patch     ) {
 export function supervisionEnabled(layout     ) {
   const state = readCloudwaysState(layout);
   return Boolean(state && state.enabled !== false);
-}
-
-export function defaultFetch(url     , timeoutMs      = DOWNLOAD_TIMEOUT_MS, redirects      = 0) {
-  return new Promise((resolve, reject) => {
-    const request = https.get(url, { timeout: timeoutMs }, (response     ) => {
-      const status = response.statusCode;
-      if (status >= 300 && status < 400 && response.headers.location) {
-        response.resume();
-        if (redirects >= MAX_REDIRECTS) { reject(new Error("too many redirects")); return; }
-        resolve(defaultFetch(new URL(response.headers.location, url).toString(), timeoutMs, redirects + 1));
-        return;
-      }
-      if (status !== 200) {
-        response.resume();
-        reject(new Error(`${url} answered HTTP ${status}`));
-        return;
-      }
-      const chunks      = [];
-      let size = 0;
-      response.on("data", (chunk     ) => {
-        size += chunk.length;
-        if (size > MAX_ARCHIVE_BYTES) {
-          response.destroy();
-          reject(new Error("download exceeded the size ceiling"));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      response.on("end", () => resolve(Buffer.concat(chunks)));
-      response.on("error", reject);
-    });
-    request.on("timeout", () => { request.destroy(new Error("download timed out")); });
-    request.on("error", reject);
-  });
 }
 
 function mkdirHardened(target     ) {
@@ -445,83 +527,25 @@ async function installedVersion(layout     , deps     ) {
   return first ? first.trim() : null;
 }
 
-async function extractBinaries(layout     , archivePath     , deps     ) {
-  const workDir = fs.mkdtempSync(path.join(layout.stateDir, "unpack-"));
-  try {
-    const argv = [
-      "tar", "-xzf", archivePath, "-C", workDir,
-      `${TAILSCALE_TGZ_MEMBER_DIR}/tailscale`,
-      `${TAILSCALE_TGZ_MEMBER_DIR}/tailscaled`,
-    ];
-    const result      = await runnerOf(deps)(argv, { timeoutMs: 60000 });
-    if (!result || result.code !== 0) {
-      throw new Error(`tar could not extract the archive: ${String((result && result.stderr) || "").trim().slice(0, 200)}`);
-    }
-    mkdirHardened(layout.binDir);
-    const installed      = [];
-    for (const name of ["tailscale", "tailscaled"]) {
-      const source = path.join(workDir, TAILSCALE_TGZ_MEMBER_DIR, name);
-      if (!fileExists(source)) throw new Error(`archive did not contain ${name}`);
-      const target = path.join(layout.binDir, name);
-      const tmp = `${target}.tmp`;
-      fs.copyFileSync(source, tmp);
-      fs.chmodSync(tmp, 0o700);
-      fs.renameSync(tmp, target);
-      installed.push(target);
-    }
-    return installed;
-  } finally {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (_) {  }
-  }
+export async function installBinaries(layout     , deps      = {}) {
+  if (layout.binarySource !== BINARIES_PLATFORM) throw new Error(TAILSCALE_MISSING_MESSAGE);
+  const version = await installedVersion(layout, deps);
+  return { binaries: BINARIES_PLATFORM, version, installed: [] };
 }
 
-export async function installBinaries(layout     , deps      = {}) {
-  const fetch = typeof deps.fetch === "function" ? deps.fetch : defaultFetch;
-  const version = await installedVersion(layout, deps);
-  if (version === TAILSCALE_VERSION && !deps.forceDownload) {
-    return { binaries: "adopted", version, installed: [layout.tailscale, layout.tailscaled] };
-  }
-  const payload      = await fetch(TAILSCALE_TGZ_URL, DOWNLOAD_TIMEOUT_MS);
-  const buffer = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
-  const digest = createHash("sha256").update(buffer).digest("hex");
-  if (digest !== TAILSCALE_TGZ_SHA256) {
-    throw new Error(`tailscale archive sha256 ${digest} does not match the pinned ${TAILSCALE_TGZ_SHA256}`);
-  }
-  const liveRaw      = await fetch(`${TAILSCALE_TGZ_URL}.sha256`, 30000);
-  const live = String(Buffer.isBuffer(liveRaw) ? liveRaw.toString("utf8") : liveRaw).trim().split(/\s+/)[0];
-  if (!live || live.toLowerCase() !== TAILSCALE_TGZ_SHA256) {
-    throw new Error("the published .sha256 for the pinned archive does not match the pin");
-  }
-  mkdirHardened(layout.stateDir);
-  const archivePath = path.join(layout.stateDir, `tailscale-${process.pid}-${Date.now().toString(36)}.tgz`);
-  fs.writeFileSync(archivePath, buffer, { mode: 0o600 });
-  let installed     ;
-  try {
-    installed = await extractBinaries(layout, archivePath, deps);
-  } finally {
-    try { fs.unlinkSync(archivePath); } catch (_) {  }
-  }
-  writeJsonReceiptDurable(layout.installReceipt, {
-    schemaVersion: 1,
-    version: TAILSCALE_VERSION,
-    url: TAILSCALE_TGZ_URL,
-    sha256: TAILSCALE_TGZ_SHA256,
-    provisioner: RECEIPT_PROVISIONER,
-    installedAt: new Date().toISOString(),
-  });
-  return {
-    binaries: version === null ? "downloaded" : "replaced",
-    previousVersion: version,
-    version: TAILSCALE_VERSION,
-    installed,
-  };
+export function receiptSocks5(layout     ) {
+  if (!layout.adopted) return SOCKS5_LISTEN;
+  return layout.adopted.socks5 || null;
 }
 
 export function writeTailscaleCliReceipt(layout     ) {
   if (!layout.receiptPath) throw new Error("no host state directory");
+  const socks5 = receiptSocks5(layout);
   const body = buildTailscaleCliBody({
     argv: cliArgv(layout),
-    socks5: SOCKS5_LISTEN,
+    socks5,
+
+    dial: socks5 ? null : DIAL_TAILSCALE_NC,
     provisioner: RECEIPT_PROVISIONER,
   });
   writeJsonReceiptDurable(layout.receiptPath, body);
@@ -531,17 +555,43 @@ export function writeTailscaleCliReceipt(layout     ) {
 export function layoutSummary(layout     ) {
   return {
     binDir: layout.binDir,
+    binarySource: layout.binarySource,
+    tailscaled: layout.tailscaled,
     stateDir: layout.stateDir,
     socket: layout.socketPath,
     receipt: layout.receiptPath || "",
     state: layout.statePath || "",
     log: layout.logPath,
-    socks5: SOCKS5_LISTEN,
+    socks5: receiptSocks5(layout),
   };
 }
 
 export async function install(layout     , deps      = {}) {
   const report      = { ok: false, layout: layoutSummary(layout) };
+  const platformDaemons = await replaceLoggedOutPlatformDaemons(layout, deps);
+  if (platformDaemons.replaced.length > 0) report.replacedPlatformDaemons = platformDaemons.replaced;
+
+  const adoption      = await findAdoption(layout, deps);
+  if (adoption.refusal) {
+    report.error = adoption.refusal;
+    report.adoptable = adoption.candidate;
+    return report;
+  }
+  if (adoption.notAdoptable && adoption.notAdoptable.length > 0) report.foreignNotAdoptable = adoption.notAdoptable;
+  if (adoption.record && !adoption.existing) {
+    const { socks5: _socks5, ...body } = adoption.record;
+    try {
+      writeAdoptedRecord(layout.hostStateDir, body);
+    } catch (error     ) {
+      report.error = `adoption record: ${error && error.message ? error.message : error}`;
+      return report;
+    }
+    layout = withAdoption(layout, adoption.record);
+    report.layout = layoutSummary(layout);
+  }
+  if (layout.adopted) {
+    report.adopted = { ...adoptionSummary(layout), backend: adoption.backend || null, existing: Boolean(adoption.existing) };
+  }
   const inventory = await legacyInventory(layout, deps);
   report.legacy = inventory;
   const refusal = refuseIfForeignSupervisor(inventory);
@@ -550,16 +600,24 @@ export async function install(layout     , deps      = {}) {
   try {
     binaries = await installBinaries(layout, deps);
   } catch (error     ) {
-    report.error = `binary install failed: ${error && error.message ? error.message : error}`;
+    report.error = error && error.message ? error.message : String(error);
     return report;
   }
   Object.assign(report, binaries);
   prepareStateDirs(layout);
+  if (binaries.binaries === BINARIES_PLATFORM) {
+    const move = await moveToPlatformBinary(layout, deps);
+    if (move.moved) report.moved = move;
+    else if (move.reason === "old-daemon-did-not-stop" || move.reason === "platform-daemon-did-not-start") {
+      report.error = `could not move Tailscale onto ${layout.tailscaled}: ${move.reason}`;
+      return report;
+    }
+  }
   try {
     report.receipt = writeTailscaleCliReceipt(layout);
     report.state = writeCloudwaysState(layout, {
       enabled: true,
-      version: TAILSCALE_VERSION,
+      version: binaries.version,
       installed: binaries.installed,
       installedAt: new Date().toISOString(),
     });
@@ -575,11 +633,13 @@ export async function install(layout     , deps      = {}) {
 }
 
 export function defaultSpawnDaemon(layout     ) {
-  mkdirHardened(layout.logDir);
+
+  if (layout.adopted) fs.mkdirSync(layout.logDir, { recursive: true, mode: 0o700 });
+  else mkdirHardened(layout.logDir);
   const logFd = fs.openSync(layout.logPath, "a", 0o600);
   try {
     const argv = daemonArgv(layout);
-    const child = spawn(argv[0], argv.slice(1), {
+    const child = startHostProcess(argv[0], argv.slice(1), {
       detached: true,
       stdio: ["ignore", logFd, logFd],
     });
@@ -631,8 +691,16 @@ export async function startDaemon(layout     , deps      = {}) {
     return { action: "start-failed", state: state.state, pid: spawned && spawned.pid, detail: `tailscaled did not answer after start; see ${layout.logPath}` };
   }
   if (state.state === STATE_RUNNING) clearNeedsAuthorizationMarker(layout);
-  try { fs.chmodSync(layout.socketPath, 0o600); } catch (_) {  }
-  return { action: "started", state: state.state, pid: spawned && spawned.pid, detail: state.detail || "" };
+  if (!layout.adopted) {
+    try { fs.chmodSync(layout.socketPath, 0o600); } catch (_) {  }
+  }
+  return {
+    action: "started",
+    state: state.state,
+    pid: spawned && spawned.pid,
+    detail: state.detail || "",
+    ...(layout.adopted ? { adopted: true } : {}),
+  };
 }
 
 export function defaultSleep(ms     ) {
@@ -640,6 +708,7 @@ export function defaultSleep(ms     ) {
 }
 
 export async function stopDaemon(layout     , deps      = {}) {
+  if (layout.adopted) return { daemon: "left-running", pids: [], reason: "adopted" };
   const before = await daemonState(layout, deps);
   if (before.state === STATE_ABSENT) return { daemon: "already-stopped", pids: [] };
   const processes = await daemonProcesses(layout, deps);
@@ -657,6 +726,75 @@ export async function stopDaemon(layout     , deps      = {}) {
     await sleep(250);
   }
   return { daemon: "still-running", pids };
+}
+
+export function bundledBinaryInUse(layout     ) {
+  if (layout.binarySource !== BINARIES_PLATFORM) return false;
+  const receipt = readTailscaleCliReceipt(layout.hostStateDir);
+  if (receipt && receipt.argv[0] === layout.bundledTailscale) return true;
+  return isFile(layout.bundledTailscale) || isFile(layout.bundledTailscaled);
+}
+
+function downloadedByOcuClaw(layout     ) {
+  try {
+    const record = JSON.parse(fs.readFileSync(layout.installReceipt, "utf8"));
+    return typeof record.url === "string" && record.url.startsWith("https://pkgs.tailscale.com/")
+      && typeof record.sha256 === "string";
+  } catch (_) {
+    return false;
+  }
+}
+
+function bundledLayout(layout     ) {
+  return { ...layout, binarySource: BINARIES_BUNDLED, tailscale: layout.bundledTailscale, tailscaled: layout.bundledTailscaled };
+}
+
+export async function moveToPlatformBinary(layout     , deps      = {}, options      = {}) {
+  if (layout.binarySource !== BINARIES_PLATFORM) return { moved: false, reason: "no-platform-binary" };
+
+  if (layout.adopted) return { moved: false, reason: "adopted" };
+  const provisioner = options.provisioner || layout.provisioner || RECEIPT_PROVISIONER;
+  const receipt = readTailscaleCliReceipt(layout.hostStateDir);
+  if (receipt && receipt.provisioner !== provisioner) {
+    return { moved: false, reason: `receipt-provisioned-by-${receipt.provisioner}` };
+  }
+  const processes = await daemonProcesses(layout, deps);
+  const onBundled = processes.ours.filter((entry     ) => entry.cmdline.split(/\s+/)[0] === layout.bundledTailscaled);
+  if (!bundledBinaryInUse(layout) && onBundled.length === 0) return { moved: false, reason: "already-on-platform" };
+  const report      = { moved: true, restarted: false };
+  if (onBundled.length > 0) {
+    const stopped = await stopDaemon(layout, deps);
+    if (stopped.daemon === "still-running") {
+      return { moved: false, reason: "old-daemon-did-not-stop", pids: stopped.pids };
+    }
+    const started = await startDaemon(layout, deps);
+    if (started.action !== "started" && started.action !== "kept") {
+
+      const restored = await startDaemon(bundledLayout(layout), deps);
+      return { moved: false, reason: "platform-daemon-did-not-start", daemon: started, restored };
+    }
+    report.restarted = true;
+    report.daemon = started;
+  }
+  if (receipt && layout.receiptPath) {
+    writeJsonReceiptDurable(layout.receiptPath, buildTailscaleCliBody({ argv: cliArgv(layout), socks5: SOCKS5_LISTEN, provisioner }));
+    report.receipt = layout.receiptPath;
+  }
+  const removed      = [];
+  if (downloadedByOcuClaw(layout)) {
+    for (const target of [layout.bundledTailscale, layout.bundledTailscaled, layout.installReceipt]) {
+      try { fs.unlinkSync(target); removed.push(target); } catch (_) {  }
+    }
+    try { fs.rmdirSync(layout.binDir); removed.push(layout.binDir); } catch (_) {  }
+  } else {
+    report.bundledKept = "no install receipt names this download";
+  }
+  report.removed = removed;
+
+  if (provisioner === RECEIPT_PROVISIONER && readCloudwaysState(layout)) {
+    writeCloudwaysState(layout, { installed: [], version: await installedVersion(layout, deps) });
+  }
+  return report;
 }
 
 export function defaultNodeName(hostname      = null) {
@@ -700,7 +838,7 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
   let commandFailed = false;
   let enrollmentStarted = false;
   try {
-    enrollmentStarted = fs.readFileSync(layout.needsAuthMarker, "utf8") === "enrollment-started\n";
+    enrollmentStarted = fs.readFileSync(layout.signInMarker, "utf8") === "enrollment-started\n";
   } catch (_) { enrollmentStarted = false; }
 
   let staleMarkerCleared = false;
@@ -709,7 +847,7 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
     const current = daemonIdentity(layout, deps);
     const sameDaemon = recorded !== null && current !== null && recorded === current;
     if (!sameDaemon && (await tailscaleUpRunning(deps, layout)) === false) {
-      try { fs.unlinkSync(layout.needsAuthMarker); } catch (_) {  }
+      try { fs.unlinkSync(layout.signInMarker); } catch (_) {  }
       clearEnrollmentDaemon(layout);
       enrollmentStarted = false;
       staleMarkerCleared = true;
@@ -717,8 +855,8 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
   }
   if (!before.authUrl && !enrollmentStarted) {
 
-    mkdirHardened(path.dirname(layout.needsAuthMarker));
-    fs.writeFileSync(layout.needsAuthMarker, "enrollment-started\n", { mode: 0o600 });
+    mkdirHardened(path.dirname(layout.signInMarker));
+    fs.writeFileSync(layout.signInMarker, "enrollment-started\n", { mode: 0o600 });
 
     writeEnrollmentDaemon(layout, deps);
     if (typeof deps.progress === "function") {
@@ -728,7 +866,7 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
     out = String((result && result.stdout) || "");
     err = String((result && result.stderr) || "");
     if (result && result.spawnFailed) {
-      try { fs.unlinkSync(layout.needsAuthMarker); } catch (_) {  }
+      try { fs.unlinkSync(layout.signInMarker); } catch (_) {  }
       clearEnrollmentDaemon(layout);
       return {
         ok: false, state: before.state, pending: false, commandFailed: true,
@@ -766,7 +904,7 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
     result.pending = after.state === STATE_NEEDS_AUTH && !commandFailed;
     if (commandFailed) {
 
-      try { fs.unlinkSync(layout.needsAuthMarker); } catch (_) {  }
+      try { fs.unlinkSync(layout.signInMarker); } catch (_) {  }
       clearEnrollmentDaemon(layout);
       result.commandFailed = true;
     }
@@ -778,8 +916,8 @@ export async function enroll(layout     , deps      = {}, options      = {}) {
   }
   if (after.state === STATE_RUNNING) clearNeedsAuthorizationMarker(layout);
   else if (authUrl) {
-    mkdirHardened(path.dirname(layout.needsAuthMarker));
-    if (!fileExists(layout.needsAuthMarker)) fs.writeFileSync(layout.needsAuthMarker, "", { mode: 0o600 });
+    mkdirHardened(path.dirname(layout.signInMarker));
+    if (!fileExists(layout.signInMarker)) fs.writeFileSync(layout.signInMarker, "", { mode: 0o600 });
   }
   return result;
 }
@@ -801,10 +939,16 @@ export async function status(layout     , deps      = {}, options      = {}) {
   return {
     detect: await detect(deps),
     daemon,
-    needsAuthorizationMarker: fileExists(layout.needsAuthMarker),
+    needsAuthorizationMarker: fileExists(layout.signInMarker),
 
-    authorizationPending: fileExists(layout.needsAuthMarker) && daemon.state !== STATE_RUNNING,
-    binaries: { present: binariesPresent(layout), path: layout.tailscaled },
+    authorizationPending: fileExists(layout.signInMarker) && daemon.state !== STATE_RUNNING,
+    binaries: {
+      present: binariesPresent(layout),
+      path: layout.tailscaled,
+      source: layout.binarySource,
+
+      movePending: bundledBinaryInUse(layout),
+    },
     receipt: receipt === null ? null : { argv: receipt.argv, socks5: receipt.socks5 ? `${receipt.socks5.host}:${receipt.socks5.port}` : null, provisioner: receipt.provisioner },
     supervisor: {
       owner: "ocuclaw-plugin-relay-service",
@@ -814,6 +958,8 @@ export async function status(layout     , deps      = {}, options      = {}) {
     },
     legacy: await legacyInventory(layout, deps),
     layout: layoutSummary(layout),
+
+    adopted: adoptionSummary(layout),
   };
 }
 
@@ -827,13 +973,15 @@ export async function daemonSummary(deps      = {}, options      = {}) {
     nodeName: state.nodeName || null,
     dnsName: state.dnsName || null,
     online: state.online === undefined ? null : state.online,
-    needsAuthorizationMarker: fileExists(layout.needsAuthMarker),
-    authorizationPending: fileExists(layout.needsAuthMarker) && state.state !== STATE_RUNNING,
+    needsAuthorizationMarker: fileExists(layout.signInMarker),
+    authorizationPending: fileExists(layout.signInMarker) && state.state !== STATE_RUNNING,
     supervisorEnabled: supervisionEnabled(layout),
+    adopted: Boolean(layout.adopted),
   };
 }
 
 export async function enable(layout     , deps      = {}) {
+  await replaceLoggedOutPlatformDaemons(layout, deps);
   const inventory = await legacyInventory(layout, deps);
   const refusal = refuseIfForeignSupervisor(inventory);
   if (refusal) return { ok: false, error: refusal, legacy: inventory };
@@ -873,7 +1021,8 @@ export async function rollback(layout     , deps      = {}, options      = {}) {
     try { return fs.realpathSync(left) === fs.realpathSync(right); }
     catch { return path.resolve(left) === path.resolve(right); }
   };
-  const keepBinaries = keepReceipt && (!receipt || sameFile(receipt.argv[0], layout.tailscale));
+  const keepBinaries = keepReceipt && (!receipt || sameFile(receipt.argv[0], layout.tailscale)
+    || sameFile(receipt.argv[0], layout.bundledTailscale));
   const stopped = await stopDaemon(layout, deps);
   Object.assign(report, stopped);
   const removed      = [];
@@ -887,17 +1036,25 @@ export async function rollback(layout     , deps      = {}, options      = {}) {
     }
   };
   for (const target of (known && Array.isArray(known.installed) ? known.installed : [])) {
-    if (keepBinaries && [layout.tailscale, layout.tailscaled].includes(target)) continue;
+    if (keepBinaries && [layout.tailscale, layout.tailscaled, layout.bundledTailscale, layout.bundledTailscaled]
+      .includes(target)) continue;
     if (typeof target === "string" && target) remove(target);
   }
   if (!keepBinaries) remove(layout.installReceipt);
-  remove(layout.needsAuthMarker);
+  remove(layout.signInMarker);
   remove(enrollmentDaemonRecordPath(layout));
 
   if (keepReceipt) {
     report.receiptKept = provisioner || "unknown";
     if (keepBinaries) report.binariesKept = true;
   } else if (layout.receiptPath) remove(layout.receiptPath);
+
+  const adoptedByOther = layout.adopted && layout.adopted.adoptedBy && layout.adopted.adoptedBy !== RECEIPT_PROVISIONER;
+  if (!keepReceipt && !adoptedByOther) {
+    const adoptedPath = layout.hostStateDir ? path.join(layout.hostStateDir, ADOPTED_DAEMON_FILENAME) : null;
+    if (adoptedPath && fs.existsSync(adoptedPath)) remove(adoptedPath);
+  } else if (adoptedByOther) report.adoptionKept = layout.adopted.adoptedBy;
+  if (layout.adopted) report.adoptedLeftRunning = adoptionSummary(layout);
   if (layout.statePath) remove(layout.statePath);
   if (options.purgeIdentity && keepReceipt) report.identityPurgeSkipped = true;
   else if (options.purgeIdentity) {

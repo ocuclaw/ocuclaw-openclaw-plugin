@@ -16,7 +16,7 @@ export const COMPANION_SNAPSHOT_SCHEMA_VERSION = 1;
 export const COMPANION_SNAPSHOT_AUTHORITY = "read_only";
 export const COMPANION_SNAPSHOT_MAX_BYTES = 32 * 1024;
 
-export const COMPANION_LIVEUI_SCHEMA_VERSION = 7;
+export const COMPANION_LIVEUI_SCHEMA_VERSION = 8;
 
 const ENVELOPE_FIELDS = Object.freeze([
   "schema",
@@ -34,7 +34,7 @@ const OWNERSHIP_FIELDS = Object.freeze([
   "inflight", "inflightPlatform",
 ]);
 
-function validOwnership(value, envelope) {
+function validOwnership(value     , envelope     ) {
   if (value === null) return true;
   if (!exactKeys(value, OWNERSHIP_FIELDS) || envelope.backend !== "hermes" ||
       value.contract !== "ocuclaw.session-driver-projection" || value.contractVersion !== 1 ||
@@ -68,22 +68,22 @@ const CONTENT_FIELDS = Object.freeze([
   "imageHeight",
 ]);
 
-function fail(code, message, extra = {}) {
+function fail(code     , message     , extra      = {}) {
   return { ok: false, code, message, ...extra };
 }
 
-function exactKeys(value, expected) {
+function exactKeys(value     , expected     ) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
-function validateProfile(profile) {
+function validateProfile(profile     ) {
   return typeof profile === "string" && PROFILE_PATTERN.test(profile);
 }
 
-function validateContent(content) {
+function validateContent(content     ) {
   if (content === null || content === undefined) return true;
   if (!content || typeof content !== "object" || Array.isArray(content)) return false;
   if (Object.keys(content).some((key) => !CONTENT_FIELDS.includes(key))) return false;
@@ -107,12 +107,12 @@ function validateContent(content) {
   return true;
 }
 
-export function companionSnapshotPath(stateDir) {
+export function companionSnapshotPath(stateDir     ) {
   const dir = typeof stateDir === "string" ? stateDir.trim() : "";
   return dir ? path.join(dir, COMPANION_SNAPSHOT_FILENAME) : null;
 }
 
-export function buildCompanionSnapshot(input) {
+export function buildCompanionSnapshot(input     ) {
   if (UI_STATE_SCHEMA_VERSION !== COMPANION_LIVEUI_SCHEMA_VERSION) {
     throw new Error(
       `companion snapshot pins LiveUI schema v${COMPANION_LIVEUI_SCHEMA_VERSION}; ` +
@@ -163,7 +163,7 @@ export function buildCompanionSnapshot(input) {
   return { snapshot, serialized, bytes };
 }
 
-export function validateCompanionSnapshot(value) {
+export function validateCompanionSnapshot(value     ) {
   try {
     const v2 = value?.schema === "ocuclaw/companion-snapshot@2" && value?.schemaVersion === 2;
     if (!exactKeys(value, v2 ? [...ENVELOPE_FIELDS, "ownership"] : ENVELOPE_FIELDS)) return fail("wrong_shape", "unexpected envelope fields");
@@ -201,15 +201,15 @@ export function validateCompanionSnapshot(value) {
     }
     if (v2 && !validOwnership(value.ownership, value)) return fail("wrong_ownership", "invalid ownership projection");
     return { ok: true, snapshot: value };
-  } catch (err) {
+  } catch (err     ) {
     return fail("invalid", err && err.message ? err.message : String(err));
   }
 }
 
-export function writeCompanionSnapshot(input) {
+export function writeCompanionSnapshot(input     ) {
   const target = companionSnapshotPath(input && input.stateDir);
   if (!target) return fail("no_state_dir", "active adapter has no state directory");
-  let tmp = null;
+  let tmp      = null;
   try {
     const built = buildCompanionSnapshot({
       backend: input.backend,
@@ -226,7 +226,7 @@ export function writeCompanionSnapshot(input) {
     fs.renameSync(tmp, target);
     tmp = null;
     return { ok: true, path: target, bytes: built.bytes, snapshot: built.snapshot };
-  } catch (err) {
+  } catch (err     ) {
     if (tmp) {
       try {
         fs.unlinkSync(tmp);
@@ -238,7 +238,7 @@ export function writeCompanionSnapshot(input) {
   }
 }
 
-export function readCompanionSnapshot(input) {
+export function readCompanionSnapshot(input     ) {
   const target = companionSnapshotPath(input && input.stateDir);
   if (!target) return fail("no_state_dir", "active adapter has no state directory");
   try {
@@ -253,7 +253,7 @@ export function readCompanionSnapshot(input) {
     let parsed;
     try {
       parsed = JSON.parse(raw);
-    } catch (err) {
+    } catch (err     ) {
       return fail("corrupt", err && err.message ? err.message : "invalid JSON", { path: target });
     }
     const validated = validateCompanionSnapshot(parsed);
@@ -268,7 +268,7 @@ export function readCompanionSnapshot(input) {
       ageMs,
       stale: maxAgeMs === null ? null : ageMs > maxAgeMs,
     };
-  } catch (err) {
+  } catch (err     ) {
     const code = err && err.code === "ENOENT" ? "missing" : "read_failed";
     return fail(code, err && err.message ? err.message : String(err), { path: target });
   }

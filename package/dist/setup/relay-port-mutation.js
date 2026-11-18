@@ -6,15 +6,15 @@ export const SET_RELAY_PORT_OPERATION = "set_relay_port";
 export const MIN_RELAY_PORT = 1;
 export const MAX_RELAY_PORT = 65535;
 
-function isRecord(value) {
+function isRecord(value     ) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function boundedPort(value) {
+function boundedPort(value     ) {
   return Number.isInteger(value) && value >= MIN_RELAY_PORT && value <= MAX_RELAY_PORT;
 }
 
-export function validateRelayPortMutationParams(params) {
+export function validateRelayPortMutationParams(params     ) {
   if (
     !isRecord(params) ||
     params.operation !== SET_RELAY_PORT_OPERATION ||
@@ -25,7 +25,7 @@ export function validateRelayPortMutationParams(params) {
       (key) => !["operation", "expectedCurrentPort", "newPort"].includes(key),
     )
   ) {
-    const err = new Error(
+    const err      = new Error(
       "invalid_input: set_relay_port requires distinct expectedCurrentPort and newPort integers from 1 through 65535",
     );
     err.code = "invalid_input";
@@ -38,20 +38,20 @@ export function validateRelayPortMutationParams(params) {
   };
 }
 
-function explicitRelayPort(config) {
+function explicitRelayPort(config     ) {
   const value = config?.plugins?.entries?.ocuclaw?.config?.wsPort;
   return value === undefined ? OPENCLAW_BUNDLE_DEFAULT_WS_PORT : value;
 }
 
-function stalePrecondition(expected, actual) {
-  const err = new Error(
+function stalePrecondition(expected     , actual     ) {
+  const err      = new Error(
     `stale_precondition: expected current relay port ${expected}, but it is ${boundedPort(actual) ? actual : "not a valid port"}`,
   );
   err.code = "stale_precondition";
   return err;
 }
 
-function ensurePluginConfig(draft) {
+function ensurePluginConfig(draft     ) {
   if (!isRecord(draft.plugins)) draft.plugins = {};
   if (!isRecord(draft.plugins.entries)) draft.plugins.entries = {};
   if (!isRecord(draft.plugins.entries.ocuclaw)) {
@@ -63,15 +63,15 @@ function ensurePluginConfig(draft) {
   return draft.plugins.entries.ocuclaw.config;
 }
 
-function boundedMutationError(code, message) {
-  const err = new Error(`${code}: ${message}`);
+function boundedMutationError(code     , message     ) {
+  const err      = new Error(`${code}: ${message}`);
   err.code = code;
   return err;
 }
 
-export function createRelayPortMutation(api) {
+export function createRelayPortMutation(api     ) {
   const runtimeConfig = api?.runtime?.config;
-  return async function setRelayPort(rawParams) {
+  return async function setRelayPort(rawParams     ) {
     const params = validateRelayPortMutationParams(rawParams);
     if (
       !runtimeConfig ||
@@ -90,14 +90,14 @@ export function createRelayPortMutation(api) {
       throw stalePrecondition(params.expectedCurrentPort, currentPort);
     }
 
-    let mutation;
+    let mutation     ;
     try {
       mutation = await runtimeConfig.mutateConfigFile({
         afterWrite: {
           mode: "restart",
           reason: "OcuClaw relay port changed",
         },
-        mutate(draft) {
+        mutate(draft     ) {
           const transactionPort = explicitRelayPort(draft);
           if (transactionPort !== params.expectedCurrentPort) {
             throw stalePrecondition(params.expectedCurrentPort, transactionPort);
@@ -109,7 +109,7 @@ export function createRelayPortMutation(api) {
           };
         },
       });
-    } catch (err) {
+    } catch (err     ) {
       if (err?.code === "stale_precondition") throw err;
       if (
         err?.name === "ConfigMutationConflictError" ||
@@ -175,7 +175,7 @@ export function createRelayPortMutation(api) {
 }
 
 export function createRelayPortApprovalHook() {
-  return async function requireRelayPortApproval(event) {
+  return async function requireRelayPortApproval(event     ) {
     if (
       event?.toolName !== "ocuclaw_setup" ||
       event?.params?.operation !== SET_RELAY_PORT_OPERATION
@@ -185,7 +185,7 @@ export function createRelayPortApprovalHook() {
     let params;
     try {
       params = validateRelayPortMutationParams(event.params);
-    } catch (err) {
+    } catch (err     ) {
       return {
         block: true,
         blockReason: err.message,

@@ -1,5 +1,5 @@
 import { normalizeLogger } from "../domain/logger-adapter.js";
-import { extractEmbeddedEvenAiSessionKey } from "../domain/even-ai-session-keys.js";
+import { evenAiSessionKeysMatch } from "../domain/even-ai-session-keys.js";
 
 function normalizeRunId(value) {
   if (typeof value !== "string") return null;
@@ -13,24 +13,7 @@ function normalizeSessionKey(value) {
   return trimmed ? trimmed : null;
 }
 
-function normalizeSessionKeyForCompare(value) {
-  const normalized = normalizeSessionKey(value);
-  if (!normalized) return "";
-  return (extractEmbeddedEvenAiSessionKey(normalized) || normalized).toLowerCase();
-}
-
-function sessionKeysMatch(expected, actual) {
-  const normalizedExpected = normalizeSessionKeyForCompare(expected);
-  const normalizedActual = normalizeSessionKeyForCompare(actual);
-  if (!normalizedExpected || !normalizedActual) return false;
-  return (
-    normalizedExpected === normalizedActual ||
-    normalizedExpected.endsWith(`:${normalizedActual}`) ||
-    normalizedActual.endsWith(`:${normalizedExpected}`)
-  );
-}
-
-function extractAssistantText(content) {
+export function extractAssistantText(content) {
   if (typeof content === "string") {
     return content;
   }
@@ -47,6 +30,14 @@ function extractAssistantText(content) {
     })
     .map((block) => block.text)
     .join("");
+}
+
+function isInterimCommit(data     ) {
+  if (!data) return false;
+  if (data.turnActive === true || data.retag === true) return true;
+  const kind =
+    typeof data.messageKind === "string" ? data.messageKind.trim().toLowerCase() : "";
+  return kind === "narration" || kind === "tool_progress";
 }
 
 function createRunWaiterError(code, message, extras = {}) {
@@ -131,11 +122,15 @@ export function createEvenAiRunWaiter(opts = {}) {
       pending &&
       pending.sessionKey &&
       sessionKey &&
-      !sessionKeysMatch(pending.sessionKey, sessionKey)
+      !evenAiSessionKeysMatch(pending.sessionKey, sessionKey)
     ) {
       return;
     }
     if (data && typeof data.role === "string" && data.role !== "assistant") {
+      return;
+    }
+
+    if (isInterimCommit(data)) {
       return;
     }
     resolveRun(runId, extractAssistantText(data && data.content));
@@ -146,6 +141,8 @@ export function createEvenAiRunWaiter(opts = {}) {
     if (!runId || !pendingRuns.has(runId)) return;
     const phase = typeof data.phase === "string" ? data.phase.trim().toLowerCase() : "";
     if (phase !== "error") return;
+
+    if (data.failoverPending === true) return;
     rejectRun(
       runId,
       createRunWaiterError(

@@ -1,12 +1,12 @@
 # OcuClaw troubleshooting — named cases
 
-**Guide version:** 2026-09-28 (1.0.59)
+**Guide version:** 2026-10-28 (1.0.60)
 
 **Reference only** — execute nothing here unless a step routed you here by its
 case name. After resolving a case, return to the skill's SKILL.md and re-run
 the state assessment. Step references in these cases (Step 3, Step 5, Step 7,
 Step 9, …) point to `{baseDir}/references/fresh-install.md`; the state
-assessment, lane card, and guardrails are in the skill's SKILL.md.
+assessment and lane card are in guided-setup.md, and the guardrails in SKILL.md.
 
 ---
 
@@ -114,6 +114,44 @@ not there. Two causes, one rule: Tailscale must run where the gateway runs.
   the namespace that already has Tailscale. Redo Steps 6 and 7 from there. A
   bridge + outside proxy cannot pass Step 7 or Step 9 and is not a supported
   lane; never widen `wsBind` to work around it.
+- **The user already runs their own private network** (WireGuard, UniFi
+  Teleport, ZeroTier, NetBird, home network) and does not want Tailscale: offer
+  the phone address once, then see `CUSTOM-ROUTE`. Never push it on a user who
+  is happy to install Tailscale.
+
+---
+
+**CUSTOM-ROUTE** — the host has `phoneAddress` set, so the `verify-private-route`
+checkpoint carries `routeMode: custom` and Tailscale is not consulted. The user
+owns the network, the name, the certificate and the TLS front door; OcuClaw
+reads and probes only. Never edit their VPN, proxy, DNS or certificates, never
+widen `wsBind`, and never propose a `tailscale serve` command in this mode.
+Set or change it in the user's own terminal:
+`openclaw config set plugins.entries.ocuclaw.config.phoneAddress wss://<name>:<port>`.
+Clear it to go back to Tailscale:
+`openclaw config unset plugins.entries.ocuclaw.config.phoneAddress`.
+`routeAnswer` says what the check found; quote the checkpoint's action:
+- `ready`: verified. Pair next.
+- `unverified`: this host could not reach its own address (split DNS, or a VPN
+  that does not route a host back to itself). Pairing still goes ahead, and the
+  phone connecting is the proof. Do not report it as working until then.
+- `wrong`, by the failed check (`currentHealth.privateRoute.customRoute.check`):
+  `address` (exact `wss://name:port` with an explicit port and no path);
+  `private` (the name resolves to a public address: OcuClaw refuses
+  Cloudflare Tunnel, port forwarding and public proxies); `tls` (the front door
+  needs a publicly trusted certificate for exactly that name, for example
+  Let's Encrypt with a DNS challenge); `probe` with `other-relay` or
+  `not-relay` (the front door must forward to this host's relay on
+  `127.0.0.1:<relay port>`); `loopback` (the relay itself, Step 5);
+  `cloudways` (Cloudways supports Tailscale only: clear the address).
+A minimal Caddy front door, for the user to run themselves:
+`ocuclaw.home.example.com:8444 { reverse_proxy 127.0.0.1:<relay port> }`.
+Even AI needs no `:8443` route in this mode: `openclaw ocuclaw even-ai route`
+prints `agentUrl` built from the phone address
+(`https://<name>:<port>/v1/chat/completions`, no `:443`). The phone must be on
+that private network, and the front door must forward everything at that
+address to the relay, not only the WebSocket. The LiveUI video exit node stays
+Tailscale-only in this mode.
 
 ---
 
@@ -137,7 +175,7 @@ Then the token (a mismatch logs the reject line above): have the user re-enter i
 
 ---
 
-**AGENT-TOOLS-FILTERED** — apply SKILL.md's **Capability-first controller
+**AGENT-TOOLS-FILTERED** — apply controller-routing.md's **Capability-first controller
 routing** table first. Only the table's `controller-policy-hidden` lane belongs
 here; every other state follows its named standalone or version lane. Use
 `openclaw sandbox explain` and `openclaw logs` (`agents/tool-policy` entries) to
@@ -169,7 +207,7 @@ allow reload, and verify. Only if the live runtime is proven stale request one
 
 ---
 
-**HOST-OLD** — OpenClaw below 2026.7.1 (floor 2026.7.1-2, the release Cloudways ships) is under the plugin's minimum host version (installs and updates refuse), and builds below 2026.4.25 additionally have a known plugin-install bug. Upgrade with `openclaw update` (detects the install type, can run `openclaw doctor`, and restarts the gateway itself). If that subcommand isn't available on a very old build, fall back to `npm install -g openclaw@latest` then `openclaw gateway restart`. Give the restart warning first either way, then re-run the State Assessment.
+**HOST-OLD** — OpenClaw below 2026.9.5 is under the plugin's minimum host version: installs and updates refuse. Upgrade OpenClaw first, then install or update OcuClaw. OpenClaw 2026.9.5 needs Node 24.16+ within 24.x, or 26.1+, so check `node --version` first; outside that range the user moves Node before OpenClaw (point them at OpenClaw's official install docs). Upgrade with `openclaw update` (detects the install type, can run `openclaw doctor`, and restarts the gateway itself). If that subcommand isn't available on a very old build, fall back to `npm install -g openclaw@latest` then `openclaw gateway restart`. Give the restart warning first either way. If OpenClaw then refuses commands with `state database schema migration required`, the person runs `openclaw doctor --fix` (recovery-routing.md). Cloudways manages OpenClaw on its boxes and runs 2026.9.5: an older Cloudways box is updated from Cloudways, not with these commands. Then re-run the State Assessment.
 
 ---
 
@@ -208,7 +246,7 @@ If the failure is a relay bind/port error (`EADDRINUSE`, `WSAEACCES`, "address a
 
 ---
 
-**PLUGIN-BLOCKED-OWNERSHIP** — plugin diagnostics say `blocked plugin candidate: suspicious ownership (... uid=1000, expected uid=0 or root)` and config validation follows with `plugin present but blocked`: the plugin files are owned by a different Unix user than the process loading them (common on Docker/VPS installs). Keep the config; fix ownership. For the official Docker image (runs as `node`, uid `1000`), the host bind-mounted OpenClaw config/workspace dirs should be owned by uid `1000`:
+**PLUGIN-BLOCKED-OWNERSHIP** — plugin diagnostics say `blocked plugin candidate: suspicious ownership (... uid=1000, expected uid=0 or root)` and config validation follows with `plugin present but blocked`: the plugin files are owned by a different Unix user than the process loading them (common on Docker/VPS installs). Keep the config; fix ownership. For the official Docker image (runs as `node`, uid `1000`), the host bind-mounted OpenClaw config/workspace dirs should be owned by uid `1000`. These commands need root on the host that holds those dirs. Checkpoint them (rule 4), and if the lane card says "user runs elevated," hand them to the user's own terminal:
 ```bash
 sudo chown -R 1000:1000 /path/to/openclaw-config /path/to/openclaw-workspace
 ```
@@ -271,7 +309,7 @@ or a Sprite/microVM.
    the mapping entirely once Tailscale runs in the gateway's namespace. Run
    `docker compose ls` (host) first:
    - **Compose-managed** (a project is listed): edit the file shown under CONFIG FILES — in the OpenClaw service's `ports:` list correct it to `- "127.0.0.1:<port>:<port>"` (remove any stale mapping for an old relay port) — then `docker compose -f <that file> up -d`.
-   - **Not compose-managed** (empty list — standalone `docker run`): the container must be RECREATED with the corrected `-p 127.0.0.1:<port>:<port>` and otherwise identical settings. Read them first — `docker inspect <name>` shows image, volumes/mounts, env, and restart policy. Confirm the state lives on a mount/volume (not the container's own filesystem) BEFORE removing anything, write out the full stop → remove → re-run sequence (`docker stop`, container removal, then the complete `docker run …` line) for the user, and check with them at each step.
+   - **Not compose-managed** (empty list — standalone `docker run`): the container must be RECREATED with the corrected `-p 127.0.0.1:<port>:<port>` and otherwise identical settings. Read them first — `docker inspect <name>` shows image, volumes/mounts, env, and restart policy. Confirm the state lives on a mount/volume (not the container's own filesystem) BEFORE removing anything, write out the full stop → remove → re-run sequence (`docker stop`, container removal, then the complete `docker run` line, with the exact image reference `docker inspect` showed) for the user, and check with them at each step.
    Either path restarts OpenClaw — give the restart warning (rule 5) first. If you (the agent) live inside that container, the restart also cuts THIS chat: hand the user the complete remaining command list *and* the verify steps below before they apply anything, plus a one-line resume note they can paste into a fresh session.
 
 4. VERIFY, from inside the gateway's own namespace:
@@ -289,6 +327,35 @@ Then resume where the flow left off (usually Step 6 or Step 7).
 ---
 
 **GW-RESTART-NOSVC** — `openclaw gateway restart` reports `Gateway service disabled` / `no installed service found`, yet `openclaw gateway status` shows the gateway alive. This host runs the gateway as a foreground process (containers, microVMs, dev shells) — there is no managed service for the command to restart, and it will NOT kill the live gateway. Path: plugin and config changes usually **hot-reload** — verify directly (`openclaw plugins inspect ocuclaw --runtime` shows the expected version/config effect) instead of chasing a restart. If verification proves a real restart is needed, the **user** restarts their foreground gateway process the way they started it (or restarts the container); then verify again. Never loop the restart command hoping for a different answer.
+
+---
+
+**CLAUDE-PLAN** — the agent runs on a Claude Pro or Max plan through OpenClaw's
+Claude CLI route (the model's runtime is `claude-cli`; onboarding calls it
+**Anthropic → Anthropic Claude CLI**), and a reply fails on sign-in, a first-use
+verdict names a rejected sign-in, or the gateway says the Claude CLI is not
+found. Claude Code owns this login. OpenClaw never stores or refreshes it, so
+`openclaw models auth add` cannot renew it. The user runs these in their own
+terminal, as the user the gateway runs as (TERM-HELP):
+- `claude auth status --text`. Not signed in → `claude auth login`: they open
+  the link, sign in, and paste back the code if it asks. Never ask for that code
+  or any Claude token, and never handle them yourself.
+- `claude --version` works in their terminal, but the gateway still reports the
+  Claude CLI missing → the background service cannot see the folder `claude` is
+  in. On macOS the gateway's LaunchAgent PATH holds only Homebrew and system
+  folders, not `~/.local/bin`, where Anthropic's own installer puts `claude`.
+  Reinstall it where the service looks: `npm install -g
+  @anthropic-ai/claude-code` when Node came from Homebrew (the OpenClaw
+  installer's default), or `brew install --cask claude-code`. Then
+  `openclaw gateway restart` (GW-RESTART-NOSVC if there is no service).
+- An install moving to a Claude plan: Claude Code installed as above, then
+  `claude auth login`, then `openclaw models auth login --provider anthropic
+  --method cli --set-default`. It checks the Claude login first and refuses
+  without one.
+Never use `--method setup-token` or `paste-token`: both store a Claude token
+inside OpenClaw, which Anthropic's terms do not allow. A Claude API key from the
+Claude Console is the other allowed route. Plan usage limits apply: a
+`rate_limit` verdict means wait for the plan's limit to reset.
 
 ---
 
@@ -314,7 +381,7 @@ If the bug icon or Send flow isn't available (very old app build, or the app was
 
 **Lane 2 — Discord paste block.** Assemble this paste-ready breakdown, show it to the user, confirm together it contains no secrets, and point them at the OcuClaw Discord:
 ```
-OcuClaw setup help — guide 2026-09-28 (1.0.59)
+OcuClaw setup help — guide 2026-10-28 (1.0.60)
 Platform/OS:
 openclaw --version:
 openclaw status --all (read-only, pasteable — confirm no secrets):
@@ -331,9 +398,26 @@ Debug upload ticket (if sent):
 
 ---
 
+**VOICE-ERRORS** — the glasses show a voice notice. Read the words the user
+reports, then:
+
+| Glasses say | Meaning | Fix |
+| --- | --- | --- |
+| Voice isn't set up. / Set it up on your phone: Settings › Voice | No Soniox key is loaded yet (never saved, or saved and not applied) | Step 11. If the key is saved, finish the Home voice card (**Check again** or **Apply changes**) |
+| Soniox key invalid. / Fix it in phone Settings › Voice | Soniox rejected the key | New key at console.soniox.com, then **Settings > Voice** > Service > **Change** > **Replace key** |
+| Soniox is out of credits. / Top up, or switch on the phone | The Soniox account has no balance | Add billing in the Soniox console |
+| Soniox rate limited. / Wait a minute, then try again | Too many requests | Wait, then retry |
+| Soniox unavailable. or Soniox timed out. or Can't reach the voice service. | Soniox or the network is down | Retry; text chat still works |
+| Lost the voice connection. / The voice connection expired. | The live session dropped | Retry; the next try opens a fresh session |
+
+A notice is not a reason to restart the gateway or Cloudways. After a fix, run
+the Step 11 spoken test again.
+
+---
+
 **BETA-REPORT** — when a beta build misbehaves, assemble this paste-ready report, show it to the user, confirm together it contains no secrets, and have them post it in the beta-testing Discord (`https://discord.ocuclaw.com`). If the app is installed, also offer the ESCALATE Lane 1 in-app debug upload first — the ticket attaches real diagnostics to the report:
 ```
-OcuClaw beta report — guide 2026-09-28 (1.0.59)
+OcuClaw beta report — guide 2026-10-28 (1.0.60)
 Installed beta version (from plugins inspect):
 Platform/OS:
 openclaw --version:

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeLogger } from "../domain/logger-adapter.js";
+import { describeStateFileLoadError, quarantineStateFile, stripLeadingBom, versionQuarantineSuffix } from "../runtime/state-file-quarantine.js";
 import {
   normalizeAndValidateCustomSystemPrompt,
   normalizeCustomSystemPrompt,
@@ -254,59 +255,117 @@ export function createEvenAiSettingsStore(opts = {}) {
       return { ...defaults };
     }
 
+    let raw;
     try {
-      const raw = fs.readFileSync(statePath, "utf8");
-      const parsed = JSON.parse(raw);
-      const storedSettings =
-        parsed && parsed.settings && typeof parsed.settings === "object"
-          ? parsed.settings
-          : null;
-      const loaded =
-        parsed &&
-        parsed.version === STORE_VERSION &&
-        storedSettings
-          ? normalizeEvenAiSettingsSnapshot(storedSettings)
-          : defaults;
-      emitDebug(
-        "settings.loadsave",
-        "even_ai_settings_loaded",
-        "info",
-        null,
-        () => ({
-          statePath,
-          routingMode: loaded.routingMode,
-          systemPromptChars: loaded.systemPrompt.length,
-          defaultModel: loaded.defaultModel,
-          defaultThinking: loaded.defaultThinking,
-          defaultFastMode: loaded.defaultFastMode,
-          listenEnabled: loaded.listenEnabled,
-          trackedThrowawayKeyCount: loaded.trackedThrowawayKeys.length,
-        }),
-      );
-      if (
-        parsed.version !== STORE_VERSION ||
-        !isStoredSnapshotCanonical(storedSettings, loaded)
-      ) {
-        persistSnapshot(loaded, "normalize_loaded_settings");
-      }
-      return loaded;
+      raw = fs.readFileSync(statePath, "utf8");
     } catch (err) {
-      logger.warn(
-        `[evenai] failed to load Even AI settings, falling back to defaults: ${err && err.message ? err.message : err}`,
+
+      const detail = describeStateFileLoadError(err);
+      logger.error(
+        `[evenai] could not read the Even AI settings file (${detail}); running on defaults without touching it`,
       );
       emitDebug(
         "settings.loadsave",
-        "even_ai_settings_load_failed",
+        "even_ai_settings_read_failed",
         "warn",
         null,
-        () => ({
-          statePath,
-          message: err && err.message ? err.message : String(err),
-        }),
+        () => ({ statePath, message: detail }),
       );
-      persistSnapshot(defaults, "rewrite_after_load_failure");
       return { ...defaults };
     }
+    let parsed;
+    let hadBom = false;
+    try {
+      const stripped = stripLeadingBom(raw);
+      hadBom = stripped.hadBom;
+      parsed = JSON.parse(stripped.text);
+    } catch (err) {
+      return setAsideUnusableFile("corrupt", "rewrite_after_load_failure", describeStateFileLoadError(err));
+    }
+
+    const isObject = !!parsed && typeof parsed === "object" && !Array.isArray(parsed);
+    if (isObject && parsed.version !== STORE_VERSION) {
+
+      const suffix = versionQuarantineSuffix(parsed.version);
+      return setAsideUnusableFile(
+        suffix,
+        "rewrite_after_version_mismatch",
+        `store version ${suffix}, expected v${STORE_VERSION}`,
+      );
+    }
+    const storedSettings =
+      isObject && parsed.settings && typeof parsed.settings === "object" && !Array.isArray(parsed.settings)
+        ? parsed.settings
+        : null;
+    if (!storedSettings) {
+      return setAsideUnusableFile("corrupt", "rewrite_after_load_failure", "no settings object");
+    }
+
+    let loaded;
+    try {
+      loaded = normalizeEvenAiSettingsSnapshot(storedSettings);
+    } catch (err) {
+      return setAsideUnusableFile("corrupt", "rewrite_after_load_failure", describeStateFileLoadError(err));
+    }
+    emitDebug(
+      "settings.loadsave",
+      "even_ai_settings_loaded",
+      "info",
+      null,
+      () => ({
+        statePath,
+        routingMode: loaded.routingMode,
+        systemPromptChars: loaded.systemPrompt.length,
+        defaultModel: loaded.defaultModel,
+        defaultThinking: loaded.defaultThinking,
+        defaultFastMode: loaded.defaultFastMode,
+        listenEnabled: loaded.listenEnabled,
+        trackedThrowawayKeyCount: loaded.trackedThrowawayKeys.length,
+      }),
+    );
+    if (hadBom) {
+
+      persistSnapshot(loaded, "strip_bom");
+    } else if (!isStoredSnapshotCanonical(storedSettings, loaded)) {
+      persistSnapshot(loaded, "normalize_loaded_settings");
+    }
+    return loaded;
+  }
+
+  function setAsideUnusableFile(suffix, reason, detail) {
+    logger.warn(
+      `[evenai] cannot use the Even AI settings file (${detail}); moving it aside and falling back to defaults`,
+    );
+    emitDebug(
+      "settings.loadsave",
+      "even_ai_settings_load_failed",
+      "warn",
+      null,
+      () => ({ statePath, reason, message: detail }),
+    );
+    const result = quarantineStateFile(statePath, suffix, { now });
+    if (result.originalGone) {
+      emitDebug(
+        "settings.loadsave",
+        "even_ai_settings_quarantined",
+        "warn",
+        null,
+        () => ({ statePath, quarantinePath: result.quarantinePath }),
+      );
+      persistSnapshot(defaults, reason);
+    } else {
+      logger.error(
+        `[evenai] could not move the unusable Even AI settings file aside (${result.errorCode}); running on defaults without overwriting it`,
+      );
+      emitDebug(
+        "settings.loadsave",
+        "even_ai_settings_quarantine_failed",
+        "warn",
+        null,
+        () => ({ statePath, reason, errorCode: result.errorCode }),
+      );
+    }
+    return { ...defaults };
   }
 
   let snapshot = loadInitialSnapshot();

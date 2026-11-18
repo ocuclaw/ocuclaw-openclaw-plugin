@@ -131,16 +131,21 @@ export function createSessionTitleDistiller(deps) {
     return "skip";
   }
 
-  function buildDistillerInput(opts) {
-    const idempotencyKey = genId();
-    const distillerKey = `${DISTILLER_SESSION_PREFIX}${idempotencyKey}`;
+  function excerptFor(opts                                             ) {
+    if (opts && typeof opts.excerpt === "string") return opts.excerpt;
     const rawMessages =
       opts && Array.isArray(opts.messages)
         ? opts.messages
         : conversationState && typeof conversationState.getRawMessages === "function"
           ? conversationState.getRawMessages()
           : [];
-    const excerpt = buildExcerpt(rawMessages, {});
+    return buildExcerpt(rawMessages, {});
+  }
+
+  function buildDistillerInput(opts) {
+    const idempotencyKey = genId();
+    const distillerKey = `${DISTILLER_SESSION_PREFIX}${idempotencyKey}`;
+    const excerpt = excerptFor(opts);
     const message = `${PROMPT_INSTRUCTION}${EXCERPT_FENCE}\n${excerpt}\n${EXCERPT_FENCE_END}`;
     const model = typeof getSessionTitleModel === "function" ? getSessionTitleModel() : "";
     return { idempotencyKey, distillerKey, message, model };
@@ -285,7 +290,7 @@ export function createSessionTitleDistiller(deps) {
     const { message, model } = buildDistillerInput(opts);
 
     dbg("relay.session", "distiller_run_started", "debug", { sessionKey }, () => ({ chars: message.length, via: "llm-complete", modelOverride: model || null }));
-    const params = {
+    const params      = {
 
       messages: [{ role: "user", content: message }],
       maxTokens: 2048,
@@ -337,10 +342,16 @@ export function createSessionTitleDistiller(deps) {
       if (typeof sessionKey !== "string" || !sessionKey.trim()) return;
       if (!triggerGatesPass(sessionKey)) return;
 
+      const excerpt = excerptFor(opts);
+      if (!excerpt) {
+        dbg("relay.session", "distiller_skip", "debug", { sessionKey }, () => ({ via: "empty-excerpt" }));
+        return;
+      }
+
       if (budget && typeof budget.recordTurn === "function") budget.recordTurn(sessionKey);
       inFlight.add(sessionKey);
       try {
-        await runOnce(sessionKey, opts);
+        await runOnce(sessionKey, { ...(opts || {}), excerpt });
       } finally {
         inFlight.delete(sessionKey);
       }

@@ -5,6 +5,8 @@ import {
   createOpenclawInputPredictionAdapter,
   isInputPredictionMethod,
 } from "./input-prediction-openclaw.js";
+import { createOpenclawStarMapReader } from "./star-map-openclaw.js";
+import { STAR_MAP_FORGET_METHOD, STAR_MAP_GRAPH_METHOD } from "../domain/star-map.js";
 
 function removeListenerCompat(emitter, eventName, listener) {
   if (typeof emitter.off === "function") {
@@ -48,7 +50,7 @@ function buildChatSendRequestParams(
   text,
   sessionKey,
   createIdempotencyKey,
-  requestOptions = null,
+  requestOptions      = null,
 ) {
   const relaySessionKey = sessionKey || "main";
   const agentId =
@@ -66,7 +68,7 @@ function buildChatSendRequestParams(
   };
 }
 
-export function scopeOpenClawSessionKey(sessionKey, requestOptions) {
+export function scopeOpenClawSessionKey(sessionKey     , requestOptions     ) {
   const normalizedSessionKey =
     typeof sessionKey === "string" && sessionKey.trim()
       ? sessionKey.trim()
@@ -92,6 +94,30 @@ function callRequestMethod(openclawClient, method, params, requestOpts) {
     throw new Error("Gateway bridge requires a backend client with request()");
   }
   return requestFn.call(openclawClient, method, params, requestOpts);
+}
+
+function isRpcObject(value         )                                   {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function openClawReasoningParams(method        , params         )          {
+  return method === "sessions.patch" && isRpcObject(params) && params.reasoningLevel === "on.full"
+    ? { ...params, reasoningLevel: "stream" } : params;
+}
+
+function relayReasoningRow(row         )          {
+  return isRpcObject(row) && row.reasoningLevel === "stream" ? { ...row, reasoningLevel: "on.full" } : row;
+}
+
+function relayReasoningResult(method        , result         )          {
+  if (!isRpcObject(result)) return result;
+  if (method === "sessions.list" && Array.isArray(result.sessions)) {
+    return { ...result, sessions: result.sessions.map(relayReasoningRow) };
+  }
+  if (method === "sessions.patch" && result.entry) {
+    return { ...result, entry: relayReasoningRow(result.entry) };
+  }
+  return result;
 }
 
 function buildAgentRequestParams(
@@ -200,6 +226,9 @@ function createPluginRpcGatewayBridge(opts) {
       ? opts.inputPrediction
       : {},
   );
+  const starMap = createOpenclawStarMapReader({
+    request: (method        , params        ) => callRequestMethod(openclawClient, method, params, undefined),
+  });
 
   function start() {
     if (typeof openclawClient.start === "function") {
@@ -218,11 +247,21 @@ function createPluginRpcGatewayBridge(opts) {
       const handled = inputPrediction.handle(method, params);
       if (handled) return handled;
 
-      const err = new Error(`method not found: ${method}`);
+      const err      = new Error(`method not found: ${method}`);
       err.code = METHOD_NOT_FOUND_CODE;
       return Promise.reject(err);
     }
-    return callRequestMethod(openclawClient, method, params, requestOpts);
+    if (method === STAR_MAP_GRAPH_METHOD) {
+
+      return starMap.graph(params);
+    }
+    if (method === STAR_MAP_FORGET_METHOD) {
+
+      return starMap.forget(params);
+    }
+    const result = callRequestMethod(openclawClient, method, openClawReasoningParams(method, params), requestOpts);
+    return method === "sessions.patch" || method === "sessions.list"
+      ? Promise.resolve(result).then((response) => relayReasoningResult(method, response)) : result;
   }
 
   function sendMessage(text, sessionKey, attachment, requestOptions) {
@@ -300,6 +339,8 @@ function createPluginRpcGatewayBridge(opts) {
     resolveApproval,
     on: subscribe,
     off,
+    getSessionDefaults: () => typeof openclawClient.getSessionDefaults === "function"
+      ? openclawClient.getSessionDefaults() : null,
     rawClient: openclawClient,
   };
 }

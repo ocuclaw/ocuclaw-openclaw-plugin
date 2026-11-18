@@ -2,7 +2,7 @@ export const TITLE_BUDGET_PX = 540;
 
 export const BREADCRUMB_SEPARATOR = " › ";
 
-export function clipBreadcrumb(s, reserveText = "") {
+export function clipBreadcrumb(s     , reserveText = "") {
   if (typeof s !== "string" || s.length === 0) return s;
   const charBudget = Math.floor((TITLE_BUDGET_PX - reserveText.length * 20) / 20);
   if (charBudget <= 0) return "";
@@ -20,18 +20,18 @@ export function clipBreadcrumb(s, reserveText = "") {
   return /[\uD800-\uDBFF]$/.test(clipped) ? clipped.slice(0, -1) : clipped;
 }
 
-export function preloadedChildSurfaceId(parentSurfaceId, index, gen) {
+export function preloadedChildSurfaceId(parentSurfaceId     , index     , gen     ) {
   return `${parentSurfaceId}:c${index}-${gen}`;
 }
 
-export function preloadedChildrenAreMinted(children) {
+export function preloadedChildrenAreMinted(children     ) {
   if (!Array.isArray(children)) return false;
-  return children.every((child) => !child || (typeof child.surfaceId === "string" && child.surfaceId.length > 0));
+  return children.every((child     ) => !child || (typeof child.surfaceId === "string" && child.surfaceId.length > 0));
 }
 
-export function mintPreloadedChildren(parentSurfaceId, parentTitle, children, gen) {
+export function mintPreloadedChildren(parentSurfaceId     , parentTitle     , children     , gen     ) {
   if (!Array.isArray(children)) return children;
-  return children.map((child, i) => {
+  return children.map((child     , i     ) => {
     if (!child) return null;
     const wired = { ...child, surfaceId: preloadedChildSurfaceId(parentSurfaceId, i, gen) };
     if (typeof child.title === "string" && typeof parentTitle === "string") {

@@ -1,6 +1,6 @@
 # Updating OcuClaw
 
-**Guide version:** 2026-09-28 (1.0.59)
+**Guide version:** 2026-10-28 (1.0.60)
 
 This is the **stable update** path — for any already-installed OcuClaw user. You
 do **not** need to be a beta tester to be here. For the **beta channel** (newer
@@ -73,7 +73,7 @@ warning for each command.
    ```
    openclaw config set plugins.entries.ocuclaw.hooks.allowConversationAccess true --strict-json
    ```
-   (Non-secret but privacy-relevant — OpenClaw only runs a plugin's conversation-lifecycle hooks with this set. For OcuClaw those hooks do end-of-turn housekeeping: settle any glasses-display, device-info, or location call still pending when a turn ends so nothing hangs; apply the Even-AI model preference; and name sessions with a short title distilled from the conversation — that last part reads conversation content, which is why the host gates it behind the user's explicit OK; tell the user that's what it's for.)
+   (A new enough OcuClaw sets this itself the first time it loads without it, so after the update it is usually already `true`. An explicit `false` is the user's choice: ask before changing it. Non-secret but privacy-relevant — OpenClaw only runs a plugin's conversation-lifecycle hooks with this set. For OcuClaw those hooks do end-of-turn housekeeping: settle any glasses-display, device-info, or location call still pending when a turn ends so nothing hangs; apply the Even-AI model preference; and name sessions with a short title distilled from the conversation — that last part reads conversation content; tell the user that's what it's for.)
 2. `openclaw config get tools` — this is the root pre-flight clue, and it is
    load-bearing: OcuClaw's tools are exposed by default only while the policy
    leaves plugin tools exposed. Act on the first case that matches: a blocking
@@ -84,7 +84,7 @@ warning for each command.
    so merge `"ocuclaw"` into `tools.alsoAllow` after the usual checkpoint
    (`openclaw config set tools.alsoAllow '["ocuclaw"]' --strict-json`). A
    leftover `alsoAllow: ["ocuclaw"]` from an older setup is harmless — leave
-   it. Apply SKILL.md's **Capability-first
+   it. Apply controller-routing.md's **Capability-first
    controller routing** table after restart; this root check is not the
    effective-session verdict.
 
@@ -105,8 +105,8 @@ it does not restart fresh installation.
   beta goes to beta.md instead.
 - **ClawHub** (`clawhub:ocuclaw`): use bare `openclaw plugins update ocuclaw`.
   It follows ClawHub's stable line. Never add `@latest` here: OpenClaw only
-  matches `ocuclaw@latest` against npm records, so 2026.7.x skips it with "No
-  install record" and exit 0, and 9.x fails with "No tracked plugin".
+  matches `ocuclaw@latest` against npm records, so that update fails with
+  "No tracked plugin".
 
 **DO:**
 
@@ -129,7 +129,7 @@ clear yes. Never answer for the person; if they decline, hand them the plain
 `openclaw plugins update ocuclaw` (ClawHub record), with no probe and no
 `--accept-capabilities`, to run in their own terminal, where OpenClaw asks its
 own `y/N` and they answer it. Hosts without the flag
-(2026.7.x) run the plain update. A `requires capability consent … was not
+run the plain update. A `requires capability consent … was not
 updated` reply is a failed update, not a success.
 
 `update` follows the install's **recorded source**: installs tracked against npm
@@ -145,8 +145,11 @@ replacement procedure; it does not establish a public channel upgrade.
 Allow OpenClaw's reload planner to act, then run the VERIFY below. If the
 gateway is live but still serves the old runtime, request one
 `openclaw gateway restart --safe` and repeat VERIFY; do not restart
-pre-emptively.
+pre-emptively. Never restart it yourself on Cloudways: any gateway restart
+there, including OpenClaw's own gateway tool, restarts the whole container. If
+the old version stays live, the user restarts from the Cloudways dashboard
+(cloudways.md, **Restart and reload on this host**).
 
-**VERIFY:** `openclaw plugins inspect ocuclaw --runtime` shows the new `Version:` and `Status: loaded` (the `--runtime` flag confirms live runtime registration, not just registry state). Report the guide and observed plugin versions, then apply SKILL.md's **Capability-first controller routing** table. Run a controller `verify` only when the selected lane says that surface exists; an older loaded plugin stays on the standalone version lane. Run a quick Step 10 message test. On success → load `{baseDir}/references/wrap-feedback.md` and deliver the **WRAP** closing note.
+**VERIFY:** `openclaw plugins inspect ocuclaw --runtime` shows the new `Version:` and `Status: loaded` (the `--runtime` flag confirms live runtime registration, not just registry state). Report the guide and observed plugin versions, then apply controller-routing.md's **Capability-first controller routing** table. Run a controller `verify` only when the selected lane says that surface exists; an older loaded plugin stays on the standalone version lane. Run a quick Step 10 message test. On success → load `{baseDir}/references/wrap-feedback.md` and deliver the **WRAP** closing note.
 
 **If failed:** CASE-D if validation rejected the update; HOST-OLD if OpenClaw is too old for the new version; the app still reporting "plugin mismatch / update required" while `inspect` shows the new version → PLUGIN-RUNTIME-STALE; otherwise ESCALATE.

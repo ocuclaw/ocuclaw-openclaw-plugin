@@ -11,8 +11,8 @@ openclaw plugins install clawhub:ocuclaw
 ```
 
 Answer `y` if the install asks you to confirm. Then ask your agent to
-**set up OcuClaw**. On a Cloudways managed host, run
-`openclaw ocuclaw cloudways setup` instead. Install, update and uninstall
+**set up OcuClaw**, on a Cloudways managed host too (or run
+`openclaw ocuclaw cloudways setup` there). Install, update and uninstall
 steps are in [package/README.md](package/README.md).
 
 [Website](https://ocuclaw.com) · [Setup guide](https://ocuclaw.com/setup) · [Discord](https://discord.ocuclaw.com)
@@ -24,11 +24,11 @@ OcuClaw app, or ask on [Discord](https://discord.ocuclaw.com).
 
 ## About this repository
 
-This repository holds the published files for OcuClaw 2.1.2.
+This repository holds the published files for OcuClaw 2.2.0.
 OcuClaw is a community package, not an official or bundled OpenClaw plugin.
 
 - `package/` is the plugin, byte for byte as published.
-- `artifact/ocuclaw-2.1.2.tgz` is the exact tarball.
+- `artifact/ocuclaw-2.2.0.tgz` is the exact tarball.
 - `.github/workflows/` checks that the two match before it publishes to ClawHub.
 
 ClawHub source attribution ties each release to this repository's commit and

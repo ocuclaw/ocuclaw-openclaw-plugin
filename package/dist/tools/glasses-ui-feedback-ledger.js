@@ -195,7 +195,7 @@ export function createGlassesFeedbackLedger(deps = {}) {
     if (cls === "render_error") {
       const pending = pendingBySession.get(sessionKey) || [];
       const alreadyPending = pending.filter(
-        (e) => e.class === "render_error" && e.surfaceUuid === surfaceUuid,
+        (e     ) => e.class === "render_error" && e.surfaceUuid === surfaceUuid,
       ).length;
       if (alreadyPending >= FEEDBACK_RENDER_ERROR_CAP_PER_SURFACE) return false;
     }

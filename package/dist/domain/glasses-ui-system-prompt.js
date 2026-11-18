@@ -1,12 +1,16 @@
-export const GLASSES_UI_NUDGE_SYSTEM_PROMPT = [
-  "When an answer is a short set of pickable choices or one formatted block,",
-  "prefer the render_glasses_ui tool over a long text reply — see its",
-  "description for when and how.",
-  "If render_glasses_ui is not in your current tool list, search your",
-  "available/deferred tools for it by name (the owning plugin namespace",
-  "differs per host) before falling back to a text reply.",
-].join(" ");
+import { LIVEUI_RECORDS_BLOCK } from "./glasses-ui-records-block.generated.js";
+import { withCodePlateLines } from "../tools/liveui-registry/components/draw.js";
 
-export function composeGlassesUiNudgeSystemPrompt() {
-  return GLASSES_UI_NUDGE_SYSTEM_PROMPT;
+const hostEnv = ()      => Reflect.get(globalThis, "process")?.env ?? {};
+
+export function composeGlassesUiChannelOne(env      = hostEnv(), phoneCodePlate = false) {
+  return phoneCodePlate || codePlateEnabled(env) ? withCodePlateLines(LIVEUI_RECORDS_BLOCK) : LIVEUI_RECORDS_BLOCK;
 }
+
+export function codePlateEnabled(env      = hostEnv()) {
+  return env.OCUCLAW_LIVEUI_CODE_PLATE === "1";
+}
+
+export const CODE_PLATE_CAPABILITY = "liveuiCodePlateV1";
+
+export const RETIRED_V1_CHANNEL_ONE_MARKER = "If render_glasses_ui is not in your current tool list";

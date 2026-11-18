@@ -3,14 +3,14 @@ import { isDeepStrictEqual } from "node:util";
 export const HOST_CONFIG_WRITE_GATE_DEFAULTS = Object.freeze({
   pollMs: 200,
   settleMs: 1500,
-  maxWaitMs: 20000,
+  maxWaitMs: 300000,
 });
 
-function pluginsBranch(config) {
+function pluginsBranch(config     ) {
   return config && typeof config === "object" ? config.plugins : undefined;
 }
 
-export function createHostConfigWriteGate(options = {}) {
+export function createHostConfigWriteGate(options      = {}) {
   const readLive = typeof options.readLive === "function" ? options.readLive : null;
   const startedPlugins = pluginsBranch(options.startedConfig);
   const pollMs = Number.isFinite(options.pollMs) && options.pollMs > 0
@@ -26,22 +26,25 @@ export function createHostConfigWriteGate(options = {}) {
   const setTimer = typeof options.setTimer === "function" ? options.setTimer : setTimeout;
   const clearTimer = typeof options.clearTimer === "function" ? options.clearTimer : clearTimeout;
 
-  let timer = null;
+  let timer      = null;
   let cancelled = false;
-  let settled = null;
-  let resolveSettled = null;
+  let settled      = null;
+  let resolveSettled      = null;
 
-  function liveMatchesStarted() {
-    if (!readLive) return true;
+  function readLiveBranch() {
+    if (!readLive) return { readable: false, branch: undefined };
     try {
-      return isDeepStrictEqual(pluginsBranch(readLive()), startedPlugins);
+      return { readable: true, branch: pluginsBranch(readLive()) };
     } catch (_) {
-
-      return true;
+      return { readable: false, branch: undefined };
     }
   }
 
-  function finish(outcome) {
+  function matchesStarted(live     ) {
+    return !live.readable || isDeepStrictEqual(live.branch, startedPlugins);
+  }
+
+  function finish(outcome     ) {
     if (timer !== null) {
       clearTimer(timer);
       timer = null;
@@ -57,19 +60,28 @@ export function createHostConfigWriteGate(options = {}) {
       resolveSettled = resolve;
     });
     const startedAt = now();
-    const matchedAtStart = liveMatchesStarted();
-    let matchingSince = matchedAtStart ? startedAt : null;
+    const atStart = readLiveBranch();
+    const matchedAtStart = matchesStarted(atStart);
+
+    const inFlightBranch = matchedAtStart ? null : { branch: atStart.branch };
+    let matchingSince      = matchedAtStart ? startedAt : null;
+    let lastBranch = atStart.branch;
     const tick = () => {
       timer = null;
       if (cancelled) return;
       const at = now();
       const waitedMs = at - startedAt;
-      if (liveMatchesStarted()) {
-        if (matchingSince === null) matchingSince = at;
+      const live = readLiveBranch();
+      const matched = matchesStarted(live);
+      const published = !matched && inFlightBranch !== null && live.readable &&
+        !isDeepStrictEqual(live.branch, inFlightBranch.branch);
+      if (matched || published) {
+
+        if (matchingSince === null || !isDeepStrictEqual(live.branch, lastBranch)) matchingSince = at;
         if (at - matchingSince >= settleMs) {
           finish({
             settled: true,
-            reason: matchedAtStart ? "live-config-current" : "activation-committed",
+            reason: matchedAtStart ? "live-config-current" : matched ? "activation-committed" : "live-config-published",
             waitedMs,
           });
           return;
@@ -77,6 +89,7 @@ export function createHostConfigWriteGate(options = {}) {
       } else {
         matchingSince = null;
       }
+      lastBranch = live.branch;
       if (waitedMs >= maxWaitMs) {
         finish({ settled: false, reason: "max-wait-elapsed", waitedMs });
         return;

@@ -1,9 +1,6 @@
 import { realpathSync } from "node:fs";
-
 import { createRequire } from "node:module";
-
 import { pathToFileURL } from "node:url";
-
 import process from "node:process";
 import { setupInstallation, FIRST_USE_RETRY, firstUseSuccessLines, OPTIONAL_SETUP_HANDOFF_LINES } from "./setup-journey.js";
 import { resolveSetupStateDir } from "./setup-controller.js";
@@ -246,6 +243,8 @@ export const SETUP_WELCOME_CANCELLED_MESSAGE =
 export const SETUP_WELCOME_UNAVAILABLE_MESSAGE =
   "This host cannot show the glasses welcome right now.\nInstallation is done; the welcome double-tap is still pending.";
 
+const FIRST_USE_TEST_INPUT_MESSAGE = "Test input exercised; no real wearer acceptance recorded.";
+
 const WELCOME_PHONE_REASONS = ["setup-phone-session-ambiguous-or-disconnected",
   "setup-phone-session-unavailable", "setup-phone-binding-changed"];
 
@@ -299,6 +298,11 @@ export async function runSetupWelcome(api     , options      = {}, io      = {})
       for (const line of OPTIONAL_SETUP_HANDOFF_LINES) output.write(`${line}\n`);
       return { ok: true, outcome: "dismissed", reason: null, record };
     }
+
+    if (record.welcome?.status === "completed" && record.acceptance === "test-input-only") {
+      output.write(`${FIRST_USE_TEST_INPUT_MESSAGE}\n`);
+      return { ok: true, outcome: "dismissed", reason: null, record };
+    }
     const reason = record.welcome?.reason ?? null;
     if (cancelling || reason === "cancelled") {
       output.write(`${SETUP_WELCOME_CANCELLED_MESSAGE}\n`);
@@ -337,14 +341,36 @@ export async function runSetupWelcome(api     , options      = {}, io      = {})
 export const FIRST_USE_RECEIPT_MESSAGE =
   "Your phone reported SDK acceptance of the reply.";
 
+export const FIRST_USE_RETRY_CHECKING_MESSAGE = "Checking the first message again…";
+
 export const FIRST_USE_RECEIPT_STALL_MAX_MS = 120000;
 
 export const FIRST_USE_RECEIPT_GAP_MS = 3000;
 export const FIRST_USE_RECEIPT_STALL_MESSAGE =
   "The gateway is slow to answer. Still waiting for the phone's receipt...";
 
-export const FIRST_USE_SEEN_PROMPT =
-  "Only if you saw that reply on G2, type SEEN ON G2 and press Enter: ";
+export const FIRST_USE_REPLY_GOT_MESSAGE = "Your phone got the reply.";
+
+export const FIRST_USE_SEEN_PROMPT = "Did the reply appear on your Even G2? [yes/no]: ";
+
+export const FIRST_USE_SEEN_ANSWER = "SEEN ON G2";
+
+export function seenOnG2Typed(typed     )          {
+  return String(typed ?? "").trim().toLowerCase() === "yes";
+}
+
+export function notSeenOnG2Typed(typed     )          {
+  return String(typed ?? "").trim().toLowerCase() === "no";
+}
+
+export const FIRST_USE_SIMULATOR_MESSAGE =
+  "This was the simulator, so setup can't check the glasses itself.";
+export const FIRST_USE_SIMULATOR_REASON = "simulator_lane_not_eligible";
+
+export const FIRST_USE_NOT_CONFIRMED_LINES = [
+  "Nothing was recorded, because the reply was not confirmed on your Even G2.",
+  "Run `openclaw ocuclaw first-use --retry` if the reply never appears.",
+];
 
 export function createFirstUseCommand(api     ) {
   return async function firstUse(options      = {}, io      = {}) {
@@ -354,7 +380,9 @@ export function createFirstUseCommand(api     ) {
       output.write("First-use confirmation requires your own interactive terminal. Piped input cannot confirm G2.\n");
       return { exitCode: 2 };
     }
-    const testInput = options.testInput === true || !!(io.input || io.request);
+
+    const relayedKeys = !!io.input && io.input.speckLook === true;
+    const testInput = options.testInput === true || !!((io.input && !relayedKeys) || io.request);
     const installation = setupInstallation(resolveSetupStateDir(api));
 
     const rawCall = (params     ) => (io.request ?? setupFirstUseRequest)({ ...params, installationId: installation.id, testInput });
@@ -398,7 +426,7 @@ export function createFirstUseCommand(api     ) {
         else if (char === "\u007f" || char === "\b") {
           if (answer.length) { answer = answer.slice(0, -1); output.write("\b \b"); }
         }
-        else if (/^[A-Z0-9 ]$/.test(char) && answer.length < 32) { answer += char; output.write(char); }
+        else if (/^[A-Za-z0-9 ]$/.test(char) && answer.length < 32) { answer += char; output.write(char); }
         else { armed = false; finish(""); }
       }
     };
@@ -414,6 +442,7 @@ export function createFirstUseCommand(api     ) {
     try {
       input.setRawMode(true);
       input.resume();
+      if (options.retry === true) output.write(`${FIRST_USE_RETRY_CHECKING_MESSAGE}\n`);
       const result = await call({ operation: "begin", sessionKey: options.session, retry: options.retry === true });
       let r = result?.record;
       if (result?.installation?.id !== installation.id || !r || r.installationId !== installation.id) throw new Error("context-mismatch");
@@ -422,8 +451,8 @@ export function createFirstUseCommand(api     ) {
         if (r.replyEvidence === "client_sdk_receipt") output.write(`${FIRST_USE_RECEIPT_MESSAGE}\n`);
         return await showWelcome();
       }
+
       output.write(terminalText("OpenClaw first reply\n", "heading", output, io.env));
-      output.write(terminalText(`Session: ${r.sessionKey}\n`, "detail", output, io.env));
       if (r.status === "awaiting-reply") {
 
         if (options.waitForReply === false) { output.write(`${FIRST_USE_RETRY}\n`); return { exitCode: 0 }; }
@@ -487,6 +516,7 @@ export function createFirstUseCommand(api     ) {
       }
       if ((r.status !== "awaiting-confirmation" && r.confirmation?.source !== "test-input") || !r.reply?.runId || !r.attemptId) throw new Error("reply-required");
 
+      let simulatorReply = r.replyEvidenceReason === FIRST_USE_SIMULATOR_REASON;
       if (r.status === "awaiting-confirmation") {
 
         const settleNow = io.now ?? (() => Date.now());
@@ -508,6 +538,7 @@ export function createFirstUseCommand(api     ) {
             await cancellableSleep(1000);
             continue;
           }
+          if (seen.replyEvidenceReason === FIRST_USE_SIMULATOR_REASON) simulatorReply = true;
           const answeredAt = settleNow();
           spent += Math.min(answeredAt - lastAnswerAt, FIRST_USE_RECEIPT_GAP_MS);
           lastAnswerAt = answeredAt;
@@ -528,8 +559,10 @@ export function createFirstUseCommand(api     ) {
           await cancellableSleep(200);
         }
       }
-      output.write(terminalText(`The phone reply completed at ${new Date(r.reply.completedAt).toISOString()}.\n`, "detail", output, io.env));
 
+      if (options.waitForReply !== false) output.write(terminalText(`${FIRST_USE_REPLY_GOT_MESSAGE}\n`, "detail", output, io.env));
+
+      if (simulatorReply) output.write(terminalText(`${FIRST_USE_SIMULATOR_MESSAGE}\n`, "detail", output, io.env));
       output.write("If it never appeared, cancel and run openclaw ocuclaw first-use --retry\nbefore sending a fresh phone message.\n\n");
       output.write(terminalText("Enter alone or Ctrl-C leaves setup unfinished.\n", "detail", output, io.env));
       output.write(terminalText(FIRST_USE_SEEN_PROMPT, "action", output, io.env));
@@ -538,15 +571,19 @@ export function createFirstUseCommand(api     ) {
       if (!cancelled) armed = true;
       timer = setTimeout(stop, io.timeoutMs ?? 120000);
       const typed = await decision;
-      if (typed !== "SEEN ON G2" || cancelled) {
+      if (notSeenOnG2Typed(typed) && !cancelled) {
+        output.write(`\n${FIRST_USE_NOT_CONFIRMED_LINES.join("\n")}\n`);
+        return { exitCode: 1 };
+      }
+      if (!seenOnG2Typed(typed) || cancelled) {
         output.write("\nG2 confirmation is still pending. Run openclaw ocuclaw first-use when ready; no need to pair again.\n");
         return { exitCode: 1 };
       }
       const confirmed = createFirstUseStore(resolveSetupStateDir(api)).confirm({
         installationId: installation.id, attemptId: r.attemptId, testInput,
-        sessionKey: r.sessionKey, runId: r.reply.runId, source: "direct-wearer-terminal", answer: typed });
+        sessionKey: r.sessionKey, runId: r.reply.runId, source: "direct-wearer-terminal", answer: FIRST_USE_SEEN_ANSWER });
       if (testInput) {
-        output.write("\nTest input exercised; no real wearer acceptance recorded.\n");
+        output.write(`\n${FIRST_USE_TEST_INPUT_MESSAGE}\n`);
         return { exitCode: 0, testInput: true };
       }
       if (confirmed?.status === "awaiting-welcome" && confirmed.attemptId === r.attemptId) {

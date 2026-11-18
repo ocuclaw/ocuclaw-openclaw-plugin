@@ -1,8 +1,11 @@
 import {
   clearNeedsAuthorizationMarker,
   daemonState,
+  BUNDLE_HERMES,
   detect,
   DETECT_CLOUDWAYS,
+  HERMES_RECEIPT_PROVISIONER,
+  moveToPlatformBinary,
   readCloudwaysState,
   RECEIPT_PROVISIONER,
   resolveLayout,
@@ -14,7 +17,7 @@ import { readTailscaleCliReceipt } from "./private-route.js";
 
 export const SUPERVISOR_INTERVAL_MS = 60000;
 
-export const SUPERVISED_PROVISIONERS = [RECEIPT_PROVISIONER];
+export const SUPERVISED_PROVISIONERS = [RECEIPT_PROVISIONER, HERMES_RECEIPT_PROVISIONER];
 
 export function supervisionDecision(layout     ) {
   const receipt = readTailscaleCliReceipt(layout.hostStateDir);
@@ -22,8 +25,13 @@ export function supervisionDecision(layout     ) {
   const state = readCloudwaysState(layout);
   if (state === null) return { supervise: false, reason: "no-cloudways-state" };
   if (state.enabled === false) return { supervise: false, reason: "supervision-disabled" };
-  if (!SUPERVISED_PROVISIONERS.includes(receipt.provisioner)) {
+  const provisioner = layout.provisioner || RECEIPT_PROVISIONER;
+  if (receipt.provisioner !== provisioner) {
     return { supervise: false, reason: `receipt-provisioned-by-${receipt.provisioner}` };
+  }
+
+  if (provisioner === HERMES_RECEIPT_PROVISIONER && state.supervisor !== "runtime") {
+    return { supervise: false, reason: "hermes-cron-watchdog-still-supervises" };
   }
   return { supervise: true, reason: "receipt-and-state-agree" };
 }
@@ -33,6 +41,15 @@ export async function superviseOnce(deps      = {}) {
   const decide = typeof deps.decide === "function" ? deps.decide : supervisionDecision;
   const decision = decide(layout);
   if (!decision.supervise) return { action: "skipped", reason: decision.reason };
+  if (deps.moveToPlatform === true) {
+
+    const move = typeof deps.moveToPlatformBinary === "function" ? deps.moveToPlatformBinary : moveToPlatformBinary;
+    const moved = await move(layout, deps);
+    if (moved.moved && moved.restarted) {
+      return { action: "moved", reason: "platform-binary", state: moved.daemon ? moved.daemon.state : null };
+    }
+
+  }
   const observe = typeof deps.daemonState === "function" ? deps.daemonState : daemonState;
   const observed = await observe(layout, deps);
   if (observed.state === STATE_RUNNING) {
@@ -62,6 +79,7 @@ export function createCloudwaysSupervisor(options      = {}) {
   const detectHost = typeof options.detect === "function" ? options.detect : detect;
   let timer      = null;
   let running = false;
+  let moveChecked = false;
   let last      = null;
 
   async function onCloudwaysHost() {
@@ -79,13 +97,18 @@ export function createCloudwaysSupervisor(options      = {}) {
     if (running) return last;
     running = true;
     try {
-      last = await pass(options);
-      if (last.action === "started") {
+
+      last = await pass(moveChecked ? options : { ...options, moveToPlatform: true });
+      if (last.action !== "skipped" && last.action !== "failed") moveChecked = true;
+      if (last.action === "moved") {
+        logger.info(`[ocuclaw] cloudways supervisor moved tailscaled onto the platform binary: ${last.state}`);
+      } else if (last.action === "started") {
         logger.info(`[ocuclaw] cloudways supervisor started tailscaled (${reason}): ${last.state}`);
       } else if (last.action === "start-failed" || last.action === "refused") {
         logger.warn(`[ocuclaw] cloudways supervisor could not start tailscaled: ${last.detail || last.reason}`);
       } else if (last.action === "needs-authorization") {
-        logger.warn("[ocuclaw] cloudways tailscaled needs authorization: run `openclaw ocuclaw cloudways retry`");
+        const cli = options.layoutOptions && options.layoutOptions.bundle === BUNDLE_HERMES ? "hermes" : "openclaw";
+        logger.warn(`[ocuclaw] cloudways tailscaled needs authorization: run \`${cli} ocuclaw cloudways retry\``);
       }
       return last;
     } catch (error     ) {

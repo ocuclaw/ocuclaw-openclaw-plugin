@@ -16,9 +16,9 @@ const LEFTOVER_EMOJI_CONTROL_RE =
   /[\uFE0E\uFE0F\u20E3\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]/gu;
 
 const NEURAL_MARKUP_TAG_RE =
-  /<\/?(?:emoji(?::[^<>\r\n]*)?|dwell|skim|beat)(?:\s[^<>\r\n]*)?\s*\/?>/giu;
+  /<\/?(?:emoji(?::[^<>\r\n]*)?|speck:[^<>\r\n]*|dwell|skim|beat)(?:\s[^<>\r\n]*)?\s*\/?>/giu;
 const TRAILING_NEURAL_MARKUP_RE =
-  /<\/?(?:emoji(?::[^<>\r\n]*)?|dwell|skim|beat)[^<>\r\n]*$/giu;
+  /<\/?(?:emoji(?::[^<>\r\n]*)?|speck:[^<>\r\n]*|dwell|skim|beat)[^<>\r\n]*$/giu;
 
 function createOptionalRegex(pattern, flags) {
   try {
@@ -224,7 +224,7 @@ export function filterRawEmojiText(text) {
   return filterEmojiText(text, "raw");
 }
 
-export function filterPlainAssistantOutputText(text) {
+export function filterPlainAssistantOutputText(text     ) {
   if (typeof text !== "string" || !text) return "";
   const withoutMarkup = stripInvalidNeuralMarkup(text)
     .replace(NEURAL_MARKUP_TAG_RE, "")

@@ -1,19 +1,45 @@
 import * as http from "node:http";
-
 import { stdin, stdout, stderr, env } from "node:process";
-
 import process from "node:process";
 import { PAIRING_CONTROL_PATH } from "../domain/pairing/pairing-endpoint-address.js";
 import { PAIRING_CONTROL_AUTH_HEADER, PAIRING_CONTROL_SECRET_HEADER } from "../domain/pairing/pairing-control-service.js";
-import { terminalAllowsColor, terminalText } from "./terminal-text.js";
-import {
-  QR_REDRAW_BIGGER_LINE,
-  QR_REDRAW_PAIRING_LEAD,
-  qrFitsWindow,
-  renderPairingQr,
-  zoomKeyFor,
-} from "../domain/pairing/pairing-bootstrap-presenter.js";
-import { parseQrPayload } from "../domain/pairing/qr-terminal.js";
+import { terminalText } from "./terminal-text.js";
+import { manualPairingBlock } from "../domain/pairing/pairing-bootstrap-presenter.js";
+
+export const PHONE_CODE_COMPUTER = "In OcuClaw tap Pair with your agent, then type the phone code it shows:\n";
+export const PHONE_CODE_DASHBOARD = "In OcuClaw tap Pair with your agent.\nIt shows a phone code.\nPaste or type the phone code here:\n";
+export const PHONE_CODE_MANUAL = "For manual pairing, type m.\n";
+export const PHONE_CODE_SENT = "Sent to your phone.\nCheck the four words on your glasses\nor in OcuClaw. They should match the\nwords that appear here.\n";
+export const PHONE_CODE_OUTAGE = "Phone codes aren't working right now, so here's manual pairing.\n";
+export const PHONE_CODE_MISSING = "No phone is waiting with that code. Check the code in OcuClaw. If it ran out, tap Get a new code there.\n";
+export const PHONE_CODE_PAIRING_TYPED = "That's the pairing code, which goes into the phone. Here, type the 6-digit phone code that OcuClaw shows.\n";
+
+function replyValue(value         )                {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return null;
+  return value.trim() || null;
+}
+
+function firstValue(lines                   , label        )                {
+  const prefix = `${label}:`;
+  for (const line of lines) {
+    const plain = line.replace(/\u001b\[[0-9;]*m/g, "").trim();
+    if (plain.startsWith(prefix)) {
+      const value = plain.slice(prefix.length).trim();
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+export function manualPairingText(created                     )         {
+  const lines = String(created.bootstrapBlock ?? "").split(/\r?\n/);
+  const address = replyValue(created.address) ?? firstValue(lines, "Address");
+  const pairingCode = replyValue(created.pairingCode) ?? firstValue(lines, "Pairing code");
+  if (address && pairingCode) return manualPairingBlock(address, pairingCode, created.expiresInSeconds);
+  const kept = lines.filter((line) => !/[▀▄█]/.test(line) &&
+    !(line.includes("\u001b[") && !line.replace(/\u001b\[[0-9;]*m/g, "").trim()));
+  return `${kept.join("\n").replace(/\n+$/, "")}\n`;
+}
 
 class PairingControlError extends Error {
            reason                                           ;
@@ -80,6 +106,8 @@ function probeTerminalUnicode(input     , output     , timeoutMs = PROBE_TIMEOUT
     const wasPaused = input.isPaused();
     let reply = "";
     let done = false;
+
+    let drawn = false;
     const finish = (answer                ) => {
       if (done) return;
       done = true;
@@ -103,6 +131,15 @@ function probeTerminalUnicode(input     , output     , timeoutMs = PROBE_TIMEOUT
         return;
       }
       const match = CURSOR_REPORT.exec(reply);
+      if (match && !drawn) {
+
+        drawn = true;
+        reply = reply.slice(match.index + match[0].length);
+        clearTimeout(timer);
+        timer = setTimeout(onFailure, timeoutMs);
+        try { output.write(PROBE_CHAR + "\u001b[6n"); } catch { finish(null); }
+        return;
+      }
       if (match) {
         const advance = Number(match[1]) - 1;
         finish(advance === 1 ? true : advance === 2 ? false : null);
@@ -110,18 +147,21 @@ function probeTerminalUnicode(input     , output     , timeoutMs = PROBE_TIMEOUT
       }
       if (reply.length > 64) finish(null);
     };
-    const timer = setTimeout(onFailure, timeoutMs);
+    let timer = setTimeout(onFailure, timeoutMs);
     input.on("data", onData);
     input.on("error", onFailure);
     input.on("end", onFailure);
     try {
       input.setRawMode(true);
       input.resume();
-      output.write("\r\u001b[2K" + PROBE_CHAR + "\u001b[6n");
+      output.write("\r\u001b[2K\u001b[6n");
     } catch { finish(null); }
   });
 }
 
+const PAIRING_WATCH_MS = 315_000;
+
+const PAIRING_READY_WAIT_MS = 600_000;
 const PAIRING_ANSWER_PROMPT = "Type approve, refuse, or cancel: ";
 const APPROVE_ANSWERS = ["yes", "approve", "approved"];
 const DENY_ANSWERS = ["no", "refuse", "refused", "deny"];
@@ -157,6 +197,70 @@ export function classifyPairingAnswer(raw        )                              
   return { kind: "unclear", near };
 }
 
+export function readConfirmationLine(input     , options                                                                                     = {})                         {
+  return new Promise((resolve) => {
+    let buffer = "";
+    let pending = "";
+    let done = false;
+    let escapeTimer                                           ;
+    const finish = (value               ) => {
+      if (done) return;
+      done = true;
+      clearTimeout(escapeTimer);
+      input.off?.("data", onData);
+      input.off?.("end", onEnd);
+      input.off?.("close", onCancel);
+      input.off?.("error", onCancel);
+      options.signal?.removeEventListener("abort", onCancel);
+      input.pause?.();
+      resolve(value);
+    };
+    const onCancel = () => finish(null);
+    const onEnd = () => finish(options.raw ? null : buffer);
+    const onData = (chunk         ) => {
+      pending += String(chunk);
+      clearTimeout(escapeTimer);
+      while (pending) {
+        if (options.raw) {
+          const report = /^\u001b\[[0-9]+;[0-9]+R/.exec(pending);
+          if (report) { pending = pending.slice(report[0].length); continue; }
+          if (/^\u001b\[[0-9;]*$/.test(pending)) {
+            escapeTimer = setTimeout(onCancel, 30);
+            return;
+          }
+        }
+
+        const markers = ["\u001b[200~", "\u001b[201~"];
+        const marker = markers.find((value) => pending.startsWith(value));
+        if (marker) { pending = pending.slice(marker.length); continue; }
+        if (markers.some((value) => value.startsWith(pending))) {
+          escapeTimer = setTimeout(onCancel, 30);
+          return;
+        }
+        const char = pending[0];
+        pending = pending.slice(1);
+        if (options.raw && /[\u0003\u0004\u001b]/.test(char)) return onCancel();
+        if (char === "\n" || (options.raw && char === "\r")) return finish(buffer);
+        if (options.raw && (char === "\u007f" || char === "\b")) {
+          if (buffer.length) { buffer = buffer.slice(0, -1); options.output?.write("\b \b"); }
+        }
+        else if (!options.raw || char >= " ") {
+          if (buffer.length >= 256) return finish("");
+          buffer += char;
+          if (options.raw) options.output?.write(char);
+        }
+      }
+    };
+    input.on("data", onData);
+    input.once("end", onEnd);
+    input.once("close", onCancel);
+    input.once("error", onCancel);
+    options.signal?.addEventListener("abort", onCancel, { once: true });
+    if (options.signal?.aborted) return onCancel();
+    input.resume?.();
+  });
+}
+
 function pairingWordsBox(line        , unicode         )         {
   const [tl, tr, bl, br, h, v] = unicode ? "\u250c\u2510\u2514\u2518\u2500\u2502" : "++++-|";
   const inner = `   ${line}   `;
@@ -167,6 +271,8 @@ export async function runPairingTerminal(connection                           , 
   const input = io.input ?? stdin;
   const output = io.output ?? stdout;
   const error = io.error ?? stderr;
+
+  const dashboard = connection.dashboardTerminal === true || env.OPENCLAW_TERMINAL === "1";
   const result                        = { exitCode: 1, outcome: "failed", credentialDelivery: "not-observed", phoneConnection: "not-observed" };
   if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") {
     error.write("Run pairing directly in an interactive terminal.\nPiped or redirected input/output cannot approve pairing.\n");
@@ -174,7 +280,7 @@ export async function runPairingTerminal(connection                           , 
   }
   const request = io.request ?? pairingControlRequest;
   const pollMs = io.pollMs ?? 1000;
-  const deadline = Date.now() + Math.min(io.deadlineMs ?? 135000, 135000);
+  let deadline = Date.now() + Math.min(io.deadlineMs ?? PAIRING_WATCH_MS, PAIRING_WATCH_MS);
   let secret = "";
   let exchangeId = "";
   let finished = false;
@@ -184,7 +290,9 @@ export async function runPairingTerminal(connection                           , 
   let decision                = null;
   const wasRaw = input.isRaw;
   const wasPaused = input.isPaused();
-  const stop = () => { cancelled = true; };
+  const inputAbort = new AbortController();
+  let codePhase = false;
+  const stop = () => { cancelled = true; inputAbort.abort(); };
 
   let held = "";
   const withoutCursorReports = (chunk        ) => {
@@ -200,6 +308,7 @@ export async function runPairingTerminal(connection                           , 
   };
 
   const onData = (chunk         ) => {
+    if (codePhase) return;
 
     const text = withoutCursorReports(String(chunk));
 
@@ -216,23 +325,13 @@ export async function runPairingTerminal(connection                           , 
     }
   };
 
-  let redraw                                                                                    = null;
-
-  let sizedFor = { columns: 0, rows: 0 };
-  const tryRedraw = () => {
-    if (redraw === null || cancelled) return;
-    if (!qrFitsWindow(redraw, { columns: output.columns || 0, rows: output.rows || 0 }, sizedFor)) return;
-    output.write(`\n${QR_REDRAW_PAIRING_LEAD}\n${redraw.text}\n`);
-    redraw = null;
-  };
-
   const pause = async () => {
     for (let left = pollMs; left > 0 && !cancelled; left -= 500) {
       await new Promise      ((resolve) => setTimeout(resolve, Math.min(left, 500)));
-      tryRedraw();
     }
   };
-  const call = (op        , extra                          = {}) => request(connection, { op, ...extra }, secret);
+  const call = (op        , extra                          = {}) =>
+    request(connection, { op, ...extra }, secret, op === "create" ? 12000 : op === "phone-code-status" ? 4000 : 3000);
 
   const probed = await probeTerminalUnicode(input, output, io.probeTimeoutMs);
   const unicode = probed === null
@@ -247,12 +346,75 @@ export async function runPairingTerminal(connection                           , 
   try {
     input.setRawMode(true);
     input.resume();
-    const terminal = { unicode, color: terminalAllowsColor(output, env),
-      columns: output.columns || 0, rows: output.rows || 0,
 
-      redraw: true, zoom: zoomKeyFor(env, process.platform) };
-    const created = await call("create", { address: connection.phoneAddress, lightTerminal: connection.lightTerminal === true,
-      terminal });
+    const create = (phoneCode         ) => call("create", { address: connection.phoneAddress,
+      ...(connection.customRoute ? { customRoute: true } : {}),
+      ...(phoneCode === undefined ? {} : { phoneCode }) });
+    let created                                 ;
+    let askedCode = false;
+
+    {
+      let status                     ;
+      try { status = await call("phone-code-status", { address: connection.phoneAddress, customRoute: connection.customRoute === true }); }
+      catch { status = { available: false, reason: "off" }; }
+      if (status.available === true && !cancelled) {
+        askedCode = true;
+        codePhase = true;
+        output.write(terminalText("\nPair your phone\n", "heading", output));
+        output.write(dashboard ? PHONE_CODE_DASHBOARD : PHONE_CODE_COMPUTER);
+        output.write(PHONE_CODE_MANUAL);
+        let tries = 3;
+        while (!cancelled && tries > 0) {
+          codePhase = true;
+          const line = readConfirmationLine(input, { raw: true, signal: inputAbort.signal, output });
+          output.write("> ");
+          const code = await line;
+          codePhase = false;
+          input.resume();
+          output.write("\n");
+          if (code === null) { stop(); break; }
+          if (!code.trim()) continue;
+          if (code.trim().toLowerCase() === "m") break;
+          const reply = await create(code);
+          if (reply.reason === "pairing_code_typed") { output.write(PHONE_CODE_PAIRING_TYPED); continue; }
+          if (["malformed", "no_code", "spent"].includes(reply.reason)) {
+            output.write(PHONE_CODE_MISSING);
+            tries--;
+            if (tries) output.write(`${tries} ${tries === 1 ? "try" : "tries"} left.\n`);
+            continue;
+          }
+          created = reply;
+          break;
+        }
+        codePhase = false;
+        input.resume();
+      } else if (!cancelled && status.reason === "unavailable") output.write(PHONE_CODE_OUTAGE);
+    }
+
+    const readyLines = io.readyLines ?? [];
+    if (!askedCode && !cancelled && readyLines.length) {
+      for (const line of readyLines) output.write(`${terminalText(line, "action", output)}\n`);
+      const gate = new AbortController();
+      const endGate = () => gate.abort();
+      let waitedOut = false;
+      inputAbort.signal.addEventListener("abort", endGate, { once: true });
+      const timer = setTimeout(() => { waitedOut = true; endGate(); }, io.readyWaitMs ?? PAIRING_READY_WAIT_MS);
+      codePhase = true;
+      const ready = await readConfirmationLine(input, { raw: true, signal: gate.signal });
+      codePhase = false;
+      clearTimeout(timer);
+      inputAbort.signal.removeEventListener("abort", endGate);
+      input.resume();
+
+      if (ready === null && !waitedOut) stop();
+    }
+    if (cancelled && !created) {
+      result.outcome = "cancelled";
+      output.write("\nPairing cancelled. Start pairing again to retry.\n");
+      return result;
+    }
+    created ??= await create();
+    deadline = Date.now() + Math.min(io.deadlineMs ?? PAIRING_WATCH_MS, PAIRING_WATCH_MS);
     if (typeof created.controlSecret !== "string" || !created.controlSecret || typeof created.exchangeId !== "string") throw new Error("Invalid control response");
     secret = created.controlSecret;
     exchangeId = created.exchangeId;
@@ -261,16 +423,15 @@ export async function runPairingTerminal(connection                           , 
       output.write("\nPairing cancelled. Start pairing again to retry.\n");
       return result;
     }
-    if (typeof created.bootstrapBlock !== "string") throw new Error("Invalid bootstrap");
-    output.write(terminalText("\nPair your phone\n", "heading", output));
-    output.write(terminalText("Keep the pairing code and words private. Do not paste them into chats or logs.\n", "detail", output));
-    output.write(created.bootstrapBlock);
-    output.write("Waiting for the phone. Ctrl-C cancels.\n");
-    if (created.bootstrapBlock.includes(QR_REDRAW_BIGGER_LINE) && typeof created.payloadText === "string") {
-      const payload = parseQrPayload(created.payloadText);
-      if (payload) redraw = renderPairingQr(payload, terminal, connection.lightTerminal === true);
-      sizedFor = { columns: terminal.columns, rows: terminal.rows };
+    if (created.delivery === "sent") output.write(PHONE_CODE_SENT);
+    else {
+      if (typeof created.bootstrapBlock !== "string") throw new Error("Invalid bootstrap");
+      if (created.delivery === "unavailable") output.write(PHONE_CODE_OUTAGE);
+      if (!askedCode) output.write(terminalText("\nPair your phone\n", "heading", output));
+      output.write(terminalText("Keep the pairing code and words private. Do not paste them into chats or logs.\n", "detail", output));
+      output.write(manualPairingText(created));
     }
+    output.write("Waiting for the phone. Ctrl-C cancels.\n");
     result.phase = "waiting-for-phone";
     let prompted = false;
     while (!cancelled && Date.now() < deadline) {
@@ -283,6 +444,7 @@ export async function runPairingTerminal(connection                           , 
         finished = true;
         result.outcome = state.failure?.reason === "expired" ? "expired" : "failed";
         if (result.outcome === "expired") result.failureReason = "expired";
+        if (state.failure?.reason === "phone_key_mismatch") result.failureReason = "phone_key_mismatch";
         break;
       }
       if (state.state === "completed") {
@@ -295,10 +457,7 @@ export async function runPairingTerminal(connection                           , 
         }
         break;
       }
-
-      if (state.state === "awaiting-approval" || state.state === "awaiting-phone-completion") redraw = null;
       if (state.prompt && !prompted) {
-        redraw = null;
         const words = state.prompt.safetyPhrase;
         if (state.prompt.exchangeId !== exchangeId || !Array.isArray(words) || words.length !== 4 || !words.every((word         ) => typeof word === "string" && /^[a-z]+$/.test(word))) throw new Error("Invalid comparison");
 
@@ -387,7 +546,8 @@ export async function runPairingTerminal(connection                           , 
   } else {
 
     const ending = result.outcome === "expired"
-      ? "Pairing took longer than the two-minute window."
+      ? "Pairing took longer than the five-minute window."
+      : result.failureReason === "phone_key_mismatch" ? "Pairing stopped."
       : `Pairing ${result.outcome}.`;
     output.write(`\n${ending} ${result.credentialDelivery === "uncertain" ? "Credential delivery is uncertain; check the phone before retrying." : "No credential delivery was observed. Start pairing again to retry."}\n`);
   }

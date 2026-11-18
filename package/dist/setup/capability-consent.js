@@ -5,7 +5,7 @@ export const CAPABILITY_CONSENT_COMMAND = "openclaw plugins enable ocuclaw --acc
 const PLUGIN_ID = "ocuclaw";
 const INSTALLED_INDEX_STATE_KEY = "plugins.installedIndex";
 
-function builtin(name) {
+function builtin(name     ) {
   try {
     return typeof process?.getBuiltinModule === "function" ? process.getBuiltinModule(name) : null;
   } catch (_) {
@@ -13,24 +13,24 @@ function builtin(name) {
   }
 }
 
-function recordIntegrity(record) {
+function recordIntegrity(record     ) {
   return record.integrity ?? record.npmIntegrity ?? record.clawpackSha256 ?? record.gitCommit ?? undefined;
 }
 
-function result(status, evidence) {
+function result(status     , evidence     ) {
   return status === "required"
     ? { status, evidence, command: CAPABILITY_CONSENT_COMMAND }
     : { status, evidence };
 }
 
-export function readCapabilityConsent(options = {}) {
+export function readCapabilityConsent(options      = {}) {
   const stateDir = options.stateDir;
   if (typeof stateDir !== "string" || !stateDir) return result("unknown", "state-dir-unavailable");
   const fs = builtin("node:fs");
   const path = builtin("node:path");
   if (!fs || !path) return result("unknown", "host-modules-unavailable");
   const dbPath = path.join(stateDir, "state", "openclaw.sqlite");
-  let index;
+  let index     ;
   try {
 
     if (!fs.existsSync(dbPath)) return result("not-applicable", "no-installed-plugin-index");
@@ -55,7 +55,7 @@ export function readCapabilityConsent(options = {}) {
   }
   if (!index || typeof index !== "object") return result("unknown", "installed-plugin-index-unreadable");
   const plugins = Array.isArray(index.plugins) ? index.plugins : [];
-  const plugin = plugins.find((item) => item && item.pluginId === PLUGIN_ID);
+  const plugin = plugins.find((item     ) => item && item.pluginId === PLUGIN_ID);
 
   if (plugin && plugin.enabled === false) return result("not-applicable", "plugin-disabled");
   const owner = plugin && typeof plugin.installOwner === "string" ? plugin.installOwner : PLUGIN_ID;
@@ -72,7 +72,7 @@ export function readCapabilityConsent(options = {}) {
   return result("accepted", "install-record-accepted-capabilities");
 }
 
-export function capabilityConsentLine(report) {
+export function capabilityConsentLine(report     ) {
   const consent = report && report.plugin && report.plugin.capabilityConsent;
   if (!consent || consent.status !== "required") return null;
   return `OpenClaw needs you to approve OcuClaw's permissions again. Run: ${consent.command || CAPABILITY_CONSENT_COMMAND}`;

@@ -1,11 +1,8 @@
 import { spawn } from "node:child_process";
-
 import fs from "node:fs";
-
+import http from "node:http";
 import os from "node:os";
-
 import path from "node:path";
-
 import process from "node:process";
 
 export const ISSUANCE_AVAILABLE = "available";
@@ -24,7 +21,7 @@ const CERT_DIR_PREFIX = "ocuclaw-cert-";
 
 const STALE_DIR_MS = 15 * 60 * 1000;
 
-function sweepStaleDirs(tmpRoot) {
+function sweepStaleDirs(tmpRoot     ) {
   try {
     const uid = typeof process.getuid === "function" ? process.getuid() : null;
     for (const name of fs.readdirSync(tmpRoot)) {
@@ -38,7 +35,7 @@ function sweepStaleDirs(tmpRoot) {
   } catch (_) {  }
 }
 
-export function certificateCommand(tailscaleArgv, dnsName, dir) {
+export function certificateCommand(tailscaleArgv     , dnsName     , dir     ) {
   const prefix = Array.isArray(tailscaleArgv) && tailscaleArgv.length > 0
     ? tailscaleArgv.slice()
     : ["tailscale"];
@@ -52,25 +49,25 @@ export function certificateCommand(tailscaleArgv, dnsName, dir) {
   ]);
 }
 
-export function certificateOutcome(code, output) {
+export function certificateOutcome(code     , output     ) {
   if (code === 0) return ISSUANCE_AVAILABLE;
   const lowered = String(output || "").toLowerCase();
-  if (UNAVAILABLE_SIGNATURES.some((signature) => lowered.includes(signature))) {
+  if (UNAVAILABLE_SIGNATURES.some((signature     ) => lowered.includes(signature))) {
     return ISSUANCE_UNAVAILABLE;
   }
   return ISSUANCE_UNKNOWN;
 }
 
-export function startCertificateIssuance(tailscaleArgv, dnsName, budgetMs, deps = {}) {
+export function startCertificateIssuance(tailscaleArgv     , dnsName     , budgetMs     , deps      = {}) {
   const spawnFn = typeof deps.spawn === "function" ? deps.spawn : spawn;
   const tmpRoot = typeof deps.tmpDir === "string" && deps.tmpDir ? deps.tmpDir : os.tmpdir();
-  let outcome = null;
+  let outcome      = null;
   let output = "";
-  let child = null;
-  let timer = null;
-  let dir = null;
+  let child      = null;
+  let timer      = null;
+  let dir      = null;
   const startedAt = Date.now();
-  let ranMs = null;
+  let ranMs      = null;
 
   const removeFiles = () => {
     const folder = dir;
@@ -78,7 +75,7 @@ export function startCertificateIssuance(tailscaleArgv, dnsName, budgetMs, deps 
     if (!folder) return;
     try { fs.rmSync(folder, { recursive: true, force: true }); } catch (_) {  }
   };
-  const settle = (value) => {
+  const settle = (value     ) => {
     if (outcome === null) {
       outcome = value;
       ranMs = Date.now() - startedAt;
@@ -102,7 +99,7 @@ export function startCertificateIssuance(tailscaleArgv, dnsName, budgetMs, deps 
     return { poll: () => outcome, ranMs: () => ranMs, stop: () => {} };
   }
 
-  const collect = (chunk) => {
+  const collect = (chunk     ) => {
     if (output.length < OUTPUT_LIMIT) output += String(chunk);
   };
   if (child.stdout) child.stdout.on("data", collect);
@@ -111,7 +108,7 @@ export function startCertificateIssuance(tailscaleArgv, dnsName, budgetMs, deps 
     settle(ISSUANCE_UNKNOWN);
     removeFiles();
   });
-  child.once("close", (code) => {
+  child.once("close", (code     ) => {
     settle(certificateOutcome(code, output));
     removeFiles();
   });
@@ -132,4 +129,69 @@ export function startCertificateIssuance(tailscaleArgv, dnsName, budgetMs, deps 
       removeFiles();
     },
   };
+}
+
+export const ENABLE_LINK_TIMEOUT_MS = 10000;
+const ENABLE_LINK_PATH = "/localapi/v0/query-feature?feature=serve";
+const ENABLE_LINK_MAX_LENGTH = 2048;
+const ENABLE_LINK_RE = /^https:\/\/[A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]+$/;
+const ENABLE_LINK_BODY_LIMIT = 64 * 1024;
+
+export function enableLinkFrom(document     ) {
+  if (!document || typeof document !== "object" || Array.isArray(document)) return null;
+  const url = document.URL;
+  if (typeof url !== "string" || url.length > ENABLE_LINK_MAX_LENGTH || !ENABLE_LINK_RE.test(url)) return null;
+  return url;
+}
+
+export function queryHttpsEnableLink(socketPath     , timeoutMs      = ENABLE_LINK_TIMEOUT_MS) {
+  return new Promise((resolve     ) => {
+    if (typeof socketPath !== "string" || !socketPath) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    let request      = null;
+    const settle = (value     ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { if (request) request.destroy(); } catch (_) {  }
+      resolve(value);
+    };
+    const timer = setTimeout(() => settle(null), Number(timeoutMs) > 0 ? Number(timeoutMs) : ENABLE_LINK_TIMEOUT_MS);
+    try {
+      request = http.request({
+        socketPath,
+        method: "POST",
+        path: ENABLE_LINK_PATH,
+        headers: { Host: "local-tailscaled.sock", "Content-Length": "0" },
+        agent: false,
+      }, (response     ) => {
+        if (response.statusCode !== 200) {
+          response.resume();
+          settle(null);
+          return;
+        }
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk     ) => {
+          body += chunk;
+          if (body.length > ENABLE_LINK_BODY_LIMIT) settle(null);
+        });
+        response.on("end", () => {
+          try {
+            settle(enableLinkFrom(JSON.parse(body)));
+          } catch (_) {
+            settle(null);
+          }
+        });
+        response.on("error", () => settle(null));
+      });
+      request.on("error", () => settle(null));
+      request.end();
+    } catch (_) {
+      settle(null);
+    }
+  });
 }

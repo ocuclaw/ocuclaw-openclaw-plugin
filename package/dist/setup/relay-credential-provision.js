@@ -4,10 +4,23 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { hostIsCloudways, hostSummary, isCloudwaysManagedHost } from "./cloudways-host.js";
+import { applyCodexReasoningSummary, readAgentCodexConfigTomls } from "./codex-reasoning-summary.js";
 
 export const PROVISION_RELAY_CREDENTIAL_OPERATION = "provision_relay_credential";
 
-export function provisionFollowUp(requiresRestart, host = null) {
+export function readCodexConfigTomlsSafely(api     , config     ) {
+  try {
+    const stateApi = api && api.runtime && api.runtime.state;
+    const stateDir = stateApi && typeof stateApi.resolveStateDir === "function"
+      ? stateApi.resolveStateDir((globalThis       ).process?.env)
+      : null;
+    return readAgentCodexConfigTomls(typeof stateDir === "string" ? stateDir : null, config);
+  } catch (_) {
+    return [];
+  }
+}
+
+export function provisionFollowUp(requiresRestart     , host      = null) {
 
   let resolved = typeof host === "function" ? safeCall(host) : host;
   if (!resolved || typeof resolved !== "object") resolved = safeHostSummary();
@@ -36,7 +49,7 @@ export const PROVISION_APPROVAL_RESTART_SENTENCE =
 export const PROVISION_APPROVAL_HOT_RELOAD_SENTENCE =
   "The relay loads it by itself; no gateway restart is needed on this host.";
 
-export function provisionApprovalDescription(host = undefined) {
+export function provisionApprovalDescription(host      = undefined) {
   let resolved = typeof host === "function" ? safeCall(host) : host;
   const cloudways = resolved === undefined || resolved === null
     ? isCloudwaysManagedHost()
@@ -54,7 +67,7 @@ function safeHostSummary() {
   }
 }
 
-function safeCall(factory) {
+function safeCall(factory     ) {
   try {
     return factory();
   } catch (_) {
@@ -64,17 +77,17 @@ function safeCall(factory) {
 
 const CREDENTIAL_BYTES = 32;
 
-function isRecord(value) {
+function isRecord(value     ) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function validateProvisionRelayCredentialParams(params) {
+export function validateProvisionRelayCredentialParams(params     ) {
   if (
     !isRecord(params) ||
     params.operation !== PROVISION_RELAY_CREDENTIAL_OPERATION ||
     Object.keys(params).some((key) => key !== "operation")
   ) {
-    const err = new Error(
+    const err      = new Error(
       "invalid_input: provision_relay_credential takes no arguments; the credential is generated on the host and is never supplied by a caller",
     );
     err.code = "invalid_input";
@@ -83,13 +96,13 @@ export function validateProvisionRelayCredentialParams(params) {
   return { operation: PROVISION_RELAY_CREDENTIAL_OPERATION };
 }
 
-function boundedProvisionError(code, message) {
-  const err = new Error(`${code}: ${message}`);
+function boundedProvisionError(code     , message     ) {
+  const err      = new Error(`${code}: ${message}`);
   err.code = code;
   return err;
 }
 
-export function classifyConfiguredRelayCredential(config) {
+export function classifyConfiguredRelayCredential(config     ) {
   if (!isRecord(config)) return "ambiguous";
   for (const key of ["plugins", "entries", "ocuclaw", "config"]) {
     if (!Object.prototype.hasOwnProperty.call(config, key)) return "absent";
@@ -105,18 +118,18 @@ export function classifyConfiguredRelayCredential(config) {
   return value.trim().length === 0 ? "empty" : "present";
 }
 
-function describeValueType(value) {
+function describeValueType(value     ) {
   if (value === null) return "null";
   if (Array.isArray(value)) return "an array";
   if (typeof value === "object") return "an object";
   return `a ${typeof value}`;
 }
 
-export function describeRelayCredentialAmbiguity(config) {
+export function describeRelayCredentialAmbiguity(config     ) {
   if (!isRecord(config)) {
     return `the host configuration document is not an object (found ${describeValueType(config)})`;
   }
-  let node = config;
+  let node      = config;
   let traversed = "";
   for (const key of ["plugins", "entries", "ocuclaw", "config"]) {
     if (!Object.prototype.hasOwnProperty.call(node, key)) return null;
@@ -136,14 +149,14 @@ export function describeRelayCredentialAmbiguity(config) {
   return null;
 }
 
-function ambiguityDetail(config) {
+function ambiguityDetail(config     ) {
   return (
     describeRelayCredentialAmbiguity(config) ??
     "the shape of the OcuClaw configuration branch could not be assessed"
   );
 }
 
-function ensurePluginConfig(draft) {
+function ensurePluginConfig(draft     ) {
   if (!isRecord(draft.plugins)) draft.plugins = {};
   if (!isRecord(draft.plugins.entries)) draft.plugins.entries = {};
   if (!isRecord(draft.plugins.entries.ocuclaw)) draft.plugins.entries.ocuclaw = {};
@@ -153,14 +166,14 @@ function ensurePluginConfig(draft) {
   return draft.plugins.entries.ocuclaw.config;
 }
 
-function readOnlyHostError(target) {
+function readOnlyHostError(target     ) {
   return boundedProvisionError(
     "read_only_host",
     `this OpenClaw configuration is externally managed and not writable by the gateway process (${target}); the deployment owner must provision plugins.entries.ocuclaw.config.relayToken in the managed source. No write was attempted.`,
   );
 }
 
-export function probeConfigWritable(configPath) {
+export function probeConfigWritable(configPath     ) {
   if (typeof configPath !== "string" || configPath.length === 0) {
     return { decided: false, writable: null, evidence: "config-path-unavailable" };
   }
@@ -190,7 +203,7 @@ export function probeConfigWritable(configPath) {
   return { decided: true, writable: true, evidence: "config-path-writable" };
 }
 
-function resolveUserPath(value, environment) {
+function resolveUserPath(value     , environment     ) {
   const raw = String(value).trim();
   if (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\")) {
     const home =
@@ -207,7 +220,7 @@ function resolveUserPath(value, environment) {
   return path.resolve(raw);
 }
 
-export function resolveHostConfigPath(api, env) {
+export function resolveHostConfigPath(api     , env     ) {
   const environment = isRecord(env) ? env : {};
   const override = environment.OPENCLAW_CONFIG_PATH;
   if (typeof override === "string" && override.trim().length > 0) {
@@ -232,7 +245,7 @@ export const PROVISION_AFTER_WRITE_RESTART = Object.freeze({
   reason: "OcuClaw relay credential provisioned",
 });
 
-export function createRelayCredentialProvision(api, options = {}) {
+export function createRelayCredentialProvision(api     , options      = {}) {
   const runtimeConfig = api?.runtime?.config;
 
   const loadedAtBootOption = isRecord(options) ? options.relayCredentialLoadedAtBoot : undefined;
@@ -243,7 +256,7 @@ export function createRelayCredentialProvision(api, options = {}) {
     ? options.afterWrite
     : PROVISION_AFTER_WRITE_RESTART;
 
-  return async function provisionRelayCredential(rawParams, handoff) {
+  return async function provisionRelayCredential(rawParams     , handoff     ) {
     const loadedAtBoot = resolveLoadedAtBoot();
     validateProvisionRelayCredentialParams(rawParams);
     if (
@@ -307,13 +320,15 @@ export function createRelayCredentialProvision(api, options = {}) {
       throw readOnlyHostError(writable.evidence);
     }
 
+    const codexConfigTomls = readCodexConfigTomlsSafely(api, current);
+    let codexReasoningSummary      = null;
     const provisioned = randomBytes(CREDENTIAL_BYTES).toString("base64url");
-    let mutation;
+    let mutation     ;
     try {
       mutation = await runtimeConfig.mutateConfigFile({
 
         afterWrite: { ...afterWrite },
-        mutate(draft, context) {
+        mutate(draft     , context     ) {
 
           const snapshotPath = context?.snapshot?.path;
           if (typeof snapshotPath === "string" && snapshotPath.length > 0) {
@@ -341,10 +356,16 @@ export function createRelayCredentialProvision(api, options = {}) {
             );
           }
           ensurePluginConfig(draft).relayToken = provisioned;
+
+          try {
+            codexReasoningSummary = applyCodexReasoningSummary(draft, { codexConfigTomls });
+          } catch (_) {
+            codexReasoningSummary = null;
+          }
           return { provisioned: true };
         },
       });
-    } catch (err) {
+    } catch (err     ) {
       if (
         err?.code === "stale_precondition" ||
         err?.code === "read_only_host" ||
@@ -377,7 +398,7 @@ export function createRelayCredentialProvision(api, options = {}) {
         code: typeof err?.code === "string" ? err.code : null,
         message: typeof err?.message === "string" ? err.message : null,
       };
-      const failure = boundedProvisionError(
+      const failure      = boundedProvisionError(
         "mutation_failed",
         `OpenClaw did not confirm the relay-credential write; treat credential state as unknown and re-read setup state before retrying. Host error: ${JSON.stringify(hostError)}`,
       );
@@ -408,12 +429,16 @@ export function createRelayCredentialProvision(api, options = {}) {
         disclosure: "never-in-model-output-logs-or-receipts",
       },
       verification: { status: "passed", evidence: "persisted-config-readback" },
+
+      ...(codexReasoningSummary && codexReasoningSummary.status === "set"
+        ? { codexReasoningSummary: "set" }
+        : {}),
       followUp: provisionFollowUp(mutation?.followUp?.requiresRestart, options && options.hostSummary),
     };
   };
 }
 
-export function relayCredentialProvisioningCapability(api) {
+export function relayCredentialProvisioningCapability(api     ) {
   if (api?.registrationMode !== "full") return "unavailable";
   const runtimeConfig = api?.runtime?.config;
   return runtimeConfig &&
@@ -424,8 +449,8 @@ export function relayCredentialProvisioningCapability(api) {
     : "unavailable";
 }
 
-export function createRelayCredentialApprovalHook(options = {}) {
-  return async function requireRelayCredentialApproval(event) {
+export function createRelayCredentialApprovalHook(options      = {}) {
+  return async function requireRelayCredentialApproval(event     ) {
     if (
       event?.toolName !== "ocuclaw_setup" ||
       event?.params?.operation !== PROVISION_RELAY_CREDENTIAL_OPERATION
@@ -434,7 +459,7 @@ export function createRelayCredentialApprovalHook(options = {}) {
     }
     try {
       validateProvisionRelayCredentialParams(event.params);
-    } catch (err) {
+    } catch (err     ) {
       return {
         block: true,
         blockReason: err.message,
