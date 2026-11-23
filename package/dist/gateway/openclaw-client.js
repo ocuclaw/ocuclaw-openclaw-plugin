@@ -72,6 +72,28 @@ const THINKING_FRAME_TRUNCATION_PREFIX = "[truncated]...";
 
 const RPC_ACK_TIMEOUT_MS = 15000;
 
+const STARTUP_UNAVAILABLE_RETRY_BUDGET_MS = 60000;
+const STARTUP_UNAVAILABLE_RETRY_DEFAULT_MS = 500;
+const STARTUP_UNAVAILABLE_RETRY_MIN_MS = 100;
+const STARTUP_UNAVAILABLE_RETRY_MAX_MS = 2000;
+
+export function startupUnavailableRetryDelayMs(err     , method        ) {
+  if (!isObject(err)) return null;
+  if (Reflect.get(err, "code") !== "UNAVAILABLE") return null;
+  const details = Reflect.get(err, "details");
+  if (!isObject(details) || details.reason !== "startup-sidecars") return null;
+
+  if (details.method !== undefined && details.method !== method) return null;
+  const hint = Reflect.get(err, "retryAfterMs");
+  const base = typeof hint === "number" && Number.isFinite(hint)
+    ? Math.floor(hint)
+    : STARTUP_UNAVAILABLE_RETRY_DEFAULT_MS;
+  return Math.min(
+    Math.max(base, STARTUP_UNAVAILABLE_RETRY_MIN_MS),
+    STARTUP_UNAVAILABLE_RETRY_MAX_MS,
+  );
+}
+
 const ESTABLISH_TIMEOUT_MS = 10000;
 
 const TICK_WATCH_MAX_INTERVAL_MS = 60000;
@@ -1094,6 +1116,8 @@ class OpenClawClient extends EventEmitter {
   _liveThinkingRunIds     ;
   _heldThinking     ;
   _lateSummaryHoldMs     ;
+  _startupRetryBudgetMs        ;
+  _startupRetryWaits                       ;
   _activeRunId     ;
   _activeRunStartedAtMs     ;
   _activeRunSessionKey     ;
@@ -1223,6 +1247,12 @@ class OpenClawClient extends EventEmitter {
       typeof holdMs === "number" && Number.isFinite(holdMs)
         ? Math.max(0, holdMs)
         : LATE_SUMMARY_HOLD_MS;
+    const startupRetryBudgetMs = (opts       ).startupRetryBudgetMs;
+    this._startupRetryBudgetMs =
+      typeof startupRetryBudgetMs === "number" && Number.isFinite(startupRetryBudgetMs)
+        ? Math.max(0, startupRetryBudgetMs)
+        : STARTUP_UNAVAILABLE_RETRY_BUDGET_MS;
+    this._startupRetryWaits = new Set();
   }
 
   setLogger(logger) {
@@ -1334,6 +1364,43 @@ class OpenClawClient extends EventEmitter {
   }
 
   _requestFrame(method     , params     , opts     ) {
+    const first = this._sendRequestFrame(method, params, opts);
+    if (method === "connect") return first;
+    const ws = this._ws;
+    const gen = this._socketGeneration;
+    const deadline = Date.now() + this._startupRetryBudgetMs;
+    const retryRefusal = (sent              , attempt        )               =>
+      sent.catch((err) => {
+        const delayMs = startupUnavailableRetryDelayMs(err, method);
+        if (
+          delayMs === null ||
+          !this._isCurrentSocket(ws, gen) ||
+          Date.now() + delayMs > deadline
+        ) {
+          throw err;
+        }
+        const note = `[openclaw] ${method} refused while the gateway starts; retrying in ${delayMs}ms (attempt ${attempt})`;
+        if (attempt === 1) this._logger.info(note);
+        else this._logger.debug(note);
+        return new Promise((resolve, reject) => {
+          const wait                   = {
+            timer: setTimeout(() => {
+              this._startupRetryWaits.delete(wait);
+              if (!this._isCurrentSocket(ws, gen)) {
+                reject(err);
+                return;
+              }
+              resolve(retryRefusal(this._sendRequestFrame(method, params, opts), attempt + 1));
+            }, delayMs),
+            reject,
+          };
+          this._startupRetryWaits.add(wait);
+        });
+      });
+    return retryRefusal(first, 1);
+  }
+
+  _sendRequestFrame(method     , params     , opts     ) {
 
     const ws = this._ws;
     const gen = this._socketGeneration;
@@ -3512,6 +3579,11 @@ class OpenClawClient extends EventEmitter {
       pending.reject(err);
     }
     this._pending.clear();
+    for (const wait of this._startupRetryWaits) {
+      clearTimeout(wait.timer);
+      wait.reject(err);
+    }
+    this._startupRetryWaits.clear();
   }
 }
 

@@ -8,7 +8,7 @@ export function isRetryableGreetingRefusal(err     ) {
   if (!err || typeof err !== "object") return false;
   const code = typeof err.code === "string" ? err.code.trim().toUpperCase() : "";
   const message = typeof err.message === "string" ? err.message : "";
-  return code === "UNAVAILABLE" && /\btry again\b/i.test(message);
+  return code === "UNAVAILABLE" && /\b(?:try again|retry)\b/i.test(message);
 }
 
 function normalizeSessionKey(sessionKey     ) {
